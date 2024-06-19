@@ -1,12 +1,16 @@
+import gc
 import os
 import pathlib
-from typing import Any, Callable, Dict, List, NewType, Optional, Tuple
+import shutil
+import time
+from typing import Any, Callable, Dict, List, NewType, Optional, Protocol, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.tensorboard
 import torch_geometric.data as gd
+import wandb
 from omegaconf import OmegaConf
 from rdkit import RDLogger
 from rdkit.Chem.rdchem import Mol as RDMol
@@ -15,7 +19,13 @@ from torch.utils.data import DataLoader, Dataset
 
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.data.sampling_iterator import SamplingIterator
-from gflownet.envs.synthesis_building_env import ActionCategorical, ReactionTemplateEnv, ReactionTemplateEnvContext
+
+from gflownet.envs.synthesis.env import SynthesisEnv
+from gflownet.envs.synthesis.env_context import SynthesisEnvContext
+from gflownet.envs.synthesis.action_categorical import ReactionActionCategorical
+from gflownet.envs.seq_building_env import SeqBatch
+
+
 from gflownet.utils.misc import create_logger
 from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
 
@@ -30,6 +40,11 @@ RewardScalar = NewType("RewardScalar", Tensor)  # type: ignore
 
 
 class GFNAlgorithm:
+    updates: int = 0
+
+    def step(self):
+        self.updates += 1
+
     def compute_batch_losses(
         self, model: nn.Module, batch: gd.Batch, num_bootstrap: Optional[int] = 0
     ) -> Tuple[Tensor, Dict[str, Tensor]]:
@@ -89,17 +104,22 @@ class GFNTask:
         raise NotImplementedError()
 
 
+class Closable(Protocol):
+    def close(self):
+        pass
+
+
 class GFNTrainer:
-    def __init__(self, hps: Dict[str, Any], profiler=None):
+    def __init__(self, config: Config, print_config=True):
         """A GFlowNet trainer. Contains the main training loop in `run` and should be subclassed.
 
         Parameters
         ----------
-        hps: Dict[str, Any]
-            A dictionary of hyperparameters. These override default values obtained by the `set_default_hps` method.
-        device: torch.device
-            The torch device of the main worker.
+        config: Config
+            The hyperparameters for the trainer.
         """
+        self.print_config = print_config
+        self.to_terminate: List[Closable] = []
         # self.setup should at least set these up:
         self.training_data: Dataset
         self.test_data: Dataset
@@ -109,24 +129,23 @@ class GFNTrainer:
         self.sampling_model: nn.Module
         self.replay_buffer: Optional[ReplayBuffer]
         self.mb_size: int
-        # self.env: GraphBuildingEnv
-        # self.ctx: GraphBuildingEnvContext
-        self.env: ReactionTemplateEnv
-        self.ctx: ReactionTemplateEnvContext
+        self.env: SynthesisEnv
+        self.ctx: SynthesisEnvContext
         self.task: GFNTask
         self.algo: GFNAlgorithm
-        self.profiler = profiler
 
         # There are three sources of config values
         #   - The default values specified in individual config classes
         #   - The default values specified in the `default_hps` method, typically what is defined by a task
         #   - The values passed in the constructor, typically what is called by the user
-        # The final config is obtained by merging the three sources
-        self.hps = hps
-        self.cfg: Config = OmegaConf.structured(Config())
-        self.set_default_hps(self.cfg)
-        # OmegaConf returns a fancy object but we can still pretend it's a Config instance
-        self.cfg = OmegaConf.merge(self.cfg, hps)  # type: ignore
+        # The final config is obtained by merging the three sources with the following precedence:
+        #   config classes < default_hps < constructor (i.e. the constructor overrides the default_hps, and so on)
+        self.default_cfg: Config = Config()
+        self.set_default_hps(self.default_cfg)
+        assert isinstance(self.default_cfg, Config) and isinstance(
+            config, Config
+        )  # make sure the config is a Config object, and not the Config class itself
+        self.cfg = OmegaConf.merge(self.default_cfg, config)
 
         self.device = torch.device(self.cfg.device)
         # Print the loss every `self.print_every` iterations
@@ -161,10 +180,18 @@ class GFNTrainer:
         raise NotImplementedError()
 
     def setup(self):
+        if os.path.exists(self.cfg.log_dir):
+            if self.cfg.overwrite_existing_exp:
+                shutil.rmtree(self.cfg.log_dir)
+            else:
+                raise ValueError(
+                    f"Log dir {self.cfg.log_dir} already exists. Set overwrite_existing_exp=True to delete it."
+                )
+        os.makedirs(self.cfg.log_dir)
+
         RDLogger.DisableLog("rdApp.*")
         self.rng = np.random.default_rng(142857)
-        # self.env = GraphBuildingEnv()
-        self.env = ReactionTemplateEnv()
+        self.env = SynthesisEnv(self.cfg.env_dir)
         self.setup_data()
         self.setup_task()
         self.setup_env_context()
@@ -177,13 +204,14 @@ class GFNTrainer:
         if send_to_device:
             obj.to(self.device)
         if self.cfg.num_workers > 0 and obj is not None:
-            placeholder = mp_object_wrapper(
+            wapper = mp_object_wrapper(
                 obj,
                 self.cfg.num_workers,
-                cast_types=(gd.Batch, ActionCategorical),
+                cast_types=(gd.Batch, ReactionActionCategorical, SeqBatch),
                 pickle_messages=self.cfg.pickle_mp_messages,
             )
-            return placeholder, torch.device("cpu")
+            self.to_terminate.append(wapper.terminate)
+            return wapper.placeholder, torch.device("cpu")
         else:
             return obj, self.device
 
@@ -206,6 +234,7 @@ class GFNTrainer:
             ratio=self.cfg.algo.offline_ratio,
             log_dir=str(pathlib.Path(self.cfg.log_dir) / "train"),
             random_action_prob=self.cfg.algo.train_random_action_prob,
+            det_after=self.cfg.algo.train_det_after,
             hindsight_ratio=self.cfg.replay.hindsight_ratio,
         )
         for hook in self.sampling_hooks:
@@ -231,7 +260,7 @@ class GFNTrainer:
             illegal_action_logreward=self.cfg.algo.illegal_action_logreward,
             ratio=self.cfg.algo.valid_offline_ratio,
             log_dir=str(pathlib.Path(self.cfg.log_dir) / "valid"),
-            sample_cond_info=self.cfg.algo.valid_sample_cond_info,
+            sample_cond_info=self.cfg.cond.valid_sample_cond_info,
             stream=False,
             random_action_prob=self.cfg.algo.valid_random_action_prob,
         )
@@ -262,7 +291,6 @@ class GFNTrainer:
             random_action_prob=0.0,
             hindsight_ratio=0.0,
             init_train_iter=self.cfg.num_training_steps,
-            final=True,
         )
         for hook in self.sampling_hooks:
             iterator.add_log_hook(hook)
@@ -275,11 +303,14 @@ class GFNTrainer:
         )
 
     def train_batch(self, batch: gd.Batch, epoch_idx: int, batch_idx: int, train_it: int) -> Dict[str, Any]:
+        tick = time.time()
+        self.model.train()
         try:
             loss, info = self.algo.compute_batch_losses(self.model, batch)
             if not torch.isfinite(loss):
                 raise ValueError("loss is not finite")
             step_info = self.step(loss)
+            self.algo.step()
             if self._validate_parameters and not all([torch.isfinite(i).all() for i in self.model.parameters()]):
                 raise ValueError("parameters are not finite")
         except ValueError as e:
@@ -291,12 +322,16 @@ class GFNTrainer:
             info.update(step_info)
         if hasattr(batch, "extra_info"):
             info.update(batch.extra_info)
+        info["train_time"] = time.time() - tick
         return {k: v.item() if hasattr(v, "item") else v for k, v in info.items()}
 
     def evaluate_batch(self, batch: gd.Batch, epoch_idx: int = 0, batch_idx: int = 0) -> Dict[str, Any]:
+        tick = time.time()
+        self.model.eval()
         loss, info = self.algo.compute_batch_losses(self.model, batch)
         if hasattr(batch, "extra_info"):
             info.update(batch.extra_info)
+        info["eval_time"] = time.time() - tick
         return {k: v.item() if hasattr(v, "item") else v for k, v in info.items()}
 
     def run(self, logger=None):
@@ -311,16 +346,22 @@ class GFNTrainer:
         valid_freq = self.cfg.validate_every
         # If checkpoint_every is not specified, checkpoint at every validation epoch
         ckpt_freq = self.cfg.checkpoint_every if self.cfg.checkpoint_every is not None else valid_freq
-        with self.profiler.profile("data_loading"):
-            train_dl = self.build_training_data_loader()
-            valid_dl = self.build_validation_data_loader()
+        train_dl = self.build_training_data_loader()
+        valid_dl = self.build_validation_data_loader()
         if self.cfg.num_final_gen_steps:
             final_dl = self.build_final_data_loader()
         callbacks = self.build_callbacks()
         start = self.cfg.start_at_step + 1
         num_training_steps = self.cfg.num_training_steps
         logger.info("Starting training")
+        start_time = time.time()
         for it, batch in zip(range(start, 1 + num_training_steps), cycle(train_dl)):
+            # the memory fragmentation or allocation keeps growing, how often should we clean up?
+            # is changing the allocation strategy helpful?
+
+            if it % 1024 == 0:
+                gc.collect()
+                torch.cuda.empty_cache()
             epoch_idx = it // epoch_length
             batch_idx = it % epoch_length
             if self.replay_buffer is not None and len(self.replay_buffer) < self.replay_buffer.warmup:
@@ -328,54 +369,90 @@ class GFNTrainer:
                     f"iteration {it} : warming up replay buffer {len(self.replay_buffer)}/{self.replay_buffer.warmup}"
                 )
                 continue
-            with self.profiler.profile("training_it"):
-                info = self.train_batch(batch.to(self.device), epoch_idx, batch_idx, it)
+            info = self.train_batch(batch.to(self.device), epoch_idx, batch_idx, it)
+            info["time_spent"] = time.time() - start_time
+            start_time = time.time()
             self.log(info, it, "train")
             if it % self.print_every == 0:
                 logger.info(f"iteration {it} : " + " ".join(f"{k}:{v:.2f}" for k, v in info.items()))
 
             if valid_freq > 0 and it % valid_freq == 0:
-                with self.profiler.profile("validation"):
-                    for batch in valid_dl:
-                        info = self.evaluate_batch(batch.to(self.device), epoch_idx, batch_idx)
-                        self.log(info, it, "valid")
-                        logger.info(
-                            f"validation - iteration {it} : " + " ".join(f"{k}:{v:.2f}" for k, v in info.items())
-                        )
-                    end_metrics = {}
-                    for c in callbacks.values():
-                        if hasattr(c, "on_validation_end"):
-                            c.on_validation_end(end_metrics)
-                    self.log(end_metrics, it, "valid_end")
+                for batch in valid_dl:
+                    info = self.evaluate_batch(batch.to(self.device), epoch_idx, batch_idx)
+                    self.log(info, it, "valid")
+                    logger.info(f"validation - iteration {it} : " + " ".join(f"{k}:{v:.2f}" for k, v in info.items()))
+                end_metrics = {}
+                for c in callbacks.values():
+                    if hasattr(c, "on_validation_end"):
+                        c.on_validation_end(end_metrics)
+                self.log(end_metrics, it, "valid_end")
             if ckpt_freq > 0 and it % ckpt_freq == 0:
                 self._save_state(it)
         self._save_state(num_training_steps)
 
         num_final_gen_steps = self.cfg.num_final_gen_steps
+        final_info = {}
         if num_final_gen_steps:
             logger.info(f"Generating final {num_final_gen_steps} batches ...")
             for it, batch in zip(
-                range(num_training_steps, num_training_steps + num_final_gen_steps + 1),
+                range(num_training_steps + 1, num_training_steps + num_final_gen_steps + 1),
                 cycle(final_dl),
             ):
-                pass
-            logger.info("Final generation steps completed.")
+                if hasattr(batch, "extra_info"):
+                    for k, v in batch.extra_info.items():
+                        if k not in final_info:
+                            final_info[k] = []
+                        if hasattr(v, "item"):
+                            v = v.item()
+                        final_info[k].append(v)
+                if it % self.print_every == 0:
+                    logger.info(f"Generating mols {it - num_training_steps}/{num_final_gen_steps}")
+            final_info = {k: np.mean(v) for k, v in final_info.items()}
+
+            logger.info("Final generation steps completed - " + " ".join(f"{k}:{v:.2f}" for k, v in final_info.items()))
+            self.log(final_info, num_training_steps, "final")
+
+        # for pypy and other GC having implementations, we need to manually clean up
+        del train_dl
+        del valid_dl
+        if self.cfg.num_final_gen_steps:
+            del final_dl
+
+    def terminate(self):
+        for hook in self.sampling_hooks:
+            if hasattr(hook, "terminate") and hook.terminate not in self.to_terminate:
+                hook.terminate()
+
+        for terminate in self.to_terminate:
+            terminate()
 
     def _save_state(self, it):
-        torch.save(
-            {
-                "models_state_dict": [self.model.state_dict()],
-                "cfg": self.cfg,
-                "step": it,
-            },
-            open(pathlib.Path(self.cfg.log_dir) / "model_state.pt", "wb"),
-        )
+        state = {
+            "models_state_dict": [self.model.state_dict()],
+            "cfg": self.cfg,
+            "step": it,
+        }
+        if self.sampling_model is not self.model:
+            state["sampling_model_state_dict"] = [self.sampling_model.state_dict()]
+        fn = pathlib.Path(self.cfg.log_dir) / "model_state.pt"
+        with open(fn, "wb") as fd:
+            torch.save(
+                state,
+                fd,
+            )
+        if self.cfg.store_all_checkpoints:
+            shutil.copy(fn, pathlib.Path(self.cfg.log_dir) / f"model_state_{it}.pt")
 
     def log(self, info, index, key):
         if not hasattr(self, "_summary_writer"):
             self._summary_writer = torch.utils.tensorboard.SummaryWriter(self.cfg.log_dir)
         for k, v in info.items():
             self._summary_writer.add_scalar(f"{key}_{k}", v, index)
+        if wandb.run is not None:
+            wandb.log({f"{key}_{k}": v for k, v in info.items()}, step=index)
+
+    def __del__(self):
+        self.terminate()
 
 
 def cycle(it):

@@ -1,16 +1,44 @@
-[![arXiv](https://img.shields.io/badge/arXiv-1234.56789-b31b1b.svg)](https://arxiv.org/abs/2405.01155)
+
+
+[![Build-and-Test](https://github.com/recursionpharma/gflownet/actions/workflows/build-and-test.yaml/badge.svg)](https://github.com/recursionpharma/gflownet/actions/workflows/build-and-test.yaml)
+[![Code Quality](https://github.com/recursionpharma/gflownet/actions/workflows/code-quality.yaml/badge.svg)](https://github.com/recursionpharma/gflownet/actions/workflows/code-quality.yaml)
 [![Python versions](https://img.shields.io/badge/Python-3.9%2B-blue)](https://www.python.org/downloads/)
 [![license: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
-![GFlowNet](docs/synflownet_logo.png)
+# gflownet
 
-# SynFlowNet - Towards molecule design with guaranteed synthesis pathways
+GFlowNet-related training and environment code on graphs.
 
-Official implementation of SynFlowNet, a GFlowNet model with a synthesis action space, by Miruna Cretu, Charles Harris, Julien Roy, Emmanuel Bengio and Pietro Liò.
+**Primer**
 
-SynFlowNet learns how to generate molecules from chemical reactions and available building blocks. We implemented a new Environment, which defines an MDP which starts from an empty graph, followed by an Enamine building block. Stepping forward in the environment consists in running a reaction using RDKit. This repo contains a specific categorical distribution type for SynFlowNet actions, `ActionCategorical`, and a `GraphTransfomerReactionsGFN` class for a model which outputs an `ActionCategorical`. This project builds upon the code provided by [recursionpharma/gflownet](https://github.com/recursionpharma/gflownet), available under the [MIT](https://github.com/recursionpharma/gflownet/blob/trunk/LICENSE) license. For a primer and repo overview visit [recursionpharma/gflownet](https://github.com/recursionpharma/gflownet).
+[GFlowNet](https://yoshuabengio.org/2022/03/05/generative-flow-networks/), short for Generative Flow Network, is a novel generative modeling framework, particularly suited for discrete, combinatorial objects. Here in particular it is implemented for graph generation.
 
-![GFlowNet](docs/concept.png)
+The idea behind GFN is to estimate flows in a (graph-theoretic) directed acyclic network*. The network represents all possible ways of constructing an object, and so knowing the flow gives us a policy which we can follow to sequentially construct objects. Such a sequence of partially constructed objects is a _trajectory_. *Perhaps confusingly, the _network_ in GFN refers to the state space, not a neural network architecture.
+
+Here the objects we construct are themselves graphs (e.g. graphs of atoms), which are constructed node by node. To make policy predictions, we use a graph neural network. This GNN outputs per-node logits (e.g. add an atom to this atom, or add a bond between these two atoms), as well as per-graph logits (e.g. stop/"done constructing this object").
+
+The GNN model can be trained on a mix of existing data (offline) and self-generated data (online), the latter being obtained by querying the model sequentially to obtain trajectories. For offline data, we can easily generate trajectories since we know the end state.
+
+## Repo overview
+
+- [algo](src/gflownet/algo), contains GFlowNet algorithms implementations ([Trajectory Balance](https://arxiv.org/abs/2201.13259), [SubTB](https://arxiv.org/abs/2209.12782), [Flow Matching](https://arxiv.org/abs/2106.04399)), as well as some baselines. These implement how to sample trajectories from a model and compute the loss from trajectories.
+- [data](src/gflownet/data), contains dataset definitions, data loading and data sampling utilities.
+- [envs](src/gflownet/envs), contains environment classes; a graph-building environment base, and a molecular graph context class. The base environment is agnostic to what kind of graph is being made, and the context class specifies mappings from graphs to objects (e.g. molecules) and torch geometric Data.
+- [examples](docs/examples), contains simple example implementations of GFlowNet.
+- [models](src/gflownet/models), contains model definitions.
+- [tasks](src/gflownet/tasks), contains training code.
+    -  [qm9](src/gflownet/tasks/qm9/qm9.py), temperature-conditional molecule sampler based on QM9's HOMO-LUMO gap data as a reward.
+    -  [seh_frag](src/gflownet/tasks/seh_frag.py), reproducing Bengio et al. 2021, fragment-based molecule design targeting the sEH protein
+    -  [seh_frag_moo](src/gflownet/tasks/seh_frag_moo.py), same as the above, but with multi-objective optimization (incl. QED, SA, and molecule weight objectives).
+- [utils](src/gflownet/utils), contains utilities (multiprocessing, metrics, conditioning).
+- [`trainer.py`](src/gflownet/trainer.py), defines a general harness for training GFlowNet models.
+- [`online_trainer.py`](src/gflownet/online_trainer.py), defines a typical online-GFN training loop.
+
+See [implementation notes](docs/implementation_notes.md) for more.
+
+## Getting started
+
+A good place to get started is with the [sEH fragment-based MOO task](src/gflownet/tasks/seh_frag_moo.py). The file `seh_frag_moo.py` is runnable as-is (although you may want to change the default configuration in `main()`).
 
 ## Installation
 
@@ -27,26 +55,21 @@ Or for CPU use:
 pip install -e . --find-links https://data.pyg.org/whl/torch-2.1.2+cpu.html
 ```
 
-## Reproducing results
-
-### Data
-
-The training relies on two data sources: modified _Hartenfeller-Button_ reaction templates and Enamine building blocks. The building blocks are not freely available and can be obtained upon request from [enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Global stock" data and selected 6000 random molecules from here to train the model. After pre-processing the building blocks files using the scripts in `src/gflownet/data/building_blocks`, make sure that the file names match those in `src/gflownet/tasks/config.py`.
-
-### Training
-
-The model can be trained using the sEH binding affinity proxy as reward by running `src/gflownet/tasks/seh_reactions.py`. You may want to change the default configuration in `main()`. The reward proxy is imported from `src/gflownet/models/bengio2021flow.py`.
-
-
-# Citation
-
-If you use this code in your research, please cite the following paper:
-
+To install or [depend on](https://matiascodesal.com/blog/how-use-git-repository-pip-dependency/) a specific tag, for example here `v0.0.10`, use the following scheme:
+```bash
+pip install git+https://github.com/recursionpharma/gflownet.git@v0.0.10 --find-links ...
 ```
-@article{cretu2024synflownet,
-      title={SynFlowNet: Towards Molecule Design with Guaranteed Synthesis Pathways},
-      author={Miruna Cretu and Charles Harris and Julien Roy and Emmanuel Bengio and Pietro Liò},
-      journal={arXiv preprint arXiv},
-      year={2024}
-}
+
+If package dependencies seem not to work, you may need to install the exact frozen versions listed `requirements/`, i.e. `pip install -r requirements/main-3.10.txt`.
+
+## Developing & Contributing
+
+External contributions are welcome.
+
+To install the developers dependencies
 ```
+pip install -e '.[dev]' --find-links https://data.pyg.org/whl/torch-2.1.2+cu121.html
+```
+
+We use `tox` to run tests and linting, and `pre-commit` to run checks before committing.
+To ensure that these checks pass, simply run `tox -e style` and `tox run` to run linters and tests, respectively.

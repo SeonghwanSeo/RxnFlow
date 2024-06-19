@@ -1,8 +1,7 @@
 import os
 import sqlite3
 from collections.abc import Iterable
-from copy import deepcopy
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 import numpy as np
 import torch
@@ -11,7 +10,7 @@ from rdkit import RDLogger
 from torch.utils.data import Dataset, IterableDataset
 
 from gflownet.data.replay_buffer import ReplayBuffer
-from gflownet.envs.synthesis_building_env import ActionCategorical
+from gflownet.envs.graph_building_env import GraphActionCategorical
 
 
 class SamplingIterator(IterableDataset):
@@ -40,9 +39,9 @@ class SamplingIterator(IterableDataset):
         log_dir: str = None,
         sample_cond_info: bool = True,
         random_action_prob: float = 0.0,
+        det_after: Optional[int] = None,
         hindsight_ratio: float = 0.0,
         init_train_iter: int = 0,
-        final: bool = False,
     ):
         """Parameters
         ----------
@@ -80,8 +79,6 @@ class SamplingIterator(IterableDataset):
             The probability of taking a random action, passed to the graph sampler
         init_train_iter: int
             The initial training iteration, incremented and passed to task.sample_conditional_information
-        final: bool
-            Whether these are the final generation steps. Useful because beta is set to 64.0 for these
         """
         self.data = dataset
         self.model = model
@@ -102,8 +99,8 @@ class SamplingIterator(IterableDataset):
         self.hindsight_ratio = hindsight_ratio
         self.train_it = init_train_iter
         self.do_validate_batch = False  # Turn this on for debugging
-        self.final = final
-
+        self.iter = 0
+        self.det_after = det_after
         # Slightly weird semantics, but if we're sampling x given some fixed cond info (data)
         # then "offline" now refers to cond info and online to x, so no duplication and we don't end
         # up with 2*batch_size accidentally
@@ -126,7 +123,10 @@ class SamplingIterator(IterableDataset):
         if self.stream:
             # If we're streaming data, just sample `offline_batch_size` indices
             while True:
-                yield self.rng.integers(0, len(self.data), self.offline_batch_size)
+                if self.offline_batch_size == 0 or len(self.data) == 0:
+                    yield np.arange(0, 0)
+                else:
+                    yield self.rng.integers(0, len(self.data), self.offline_batch_size)
         else:
             # Otherwise, figure out which indices correspond to this worker
             worker_info = torch.utils.data.get_worker_info()
@@ -160,6 +160,9 @@ class SamplingIterator(IterableDataset):
         return len(self.data)
 
     def __iter__(self):
+        self.iter += 1
+        if self.det_after is not None and self.iter > self.det_after:
+            self.random_action_prob = 0
         worker_info = torch.utils.data.get_worker_info()
         self._wid = worker_info.id if worker_info is not None else 0
         # Now that we know we are in a worker instance, we can initialize per-worker things
@@ -177,7 +180,7 @@ class SamplingIterator(IterableDataset):
             if self.sample_cond_info:
                 num_online = self.online_batch_size
                 cond_info = self.task.sample_conditional_information(
-                    num_offline + self.online_batch_size, self.train_it, final=self.final
+                    num_offline + self.online_batch_size, self.train_it
                 )
 
                 # Sample some dataset data
@@ -185,9 +188,13 @@ class SamplingIterator(IterableDataset):
                 flat_rewards = (
                     list(self.task.flat_reward_transform(torch.stack(flat_rewards))) if len(flat_rewards) else []
                 )
-                trajs = self.algo.create_training_data_from_graphs(
-                    graphs, self.model, cond_info["encoding"][:num_offline]
-                )
+
+                if num_offline > 0:
+                    trajs = self.algo.create_training_data_from_graphs(
+                        graphs, self.model, cond_info["encoding"][:num_offline], 0
+                    )
+                else:
+                    trajs = []
 
             else:  # If we're not sampling the conditionals, then the idcs refer to listed preferences
                 num_online = num_offline
@@ -205,6 +212,7 @@ class SamplingIterator(IterableDataset):
                         self.model,
                         num_online,
                         cond_info["encoding"][num_offline:],
+                        random_action_prob=self.random_action_prob,
                     )
                 if self.algo.bootstrap_own_reward:
                     # The model can be trained to predict its own reward,
@@ -231,16 +239,21 @@ class SamplingIterator(IterableDataset):
                     is_valid[valid_idcs] = True
                     flat_rewards += list(pred_reward)
                     # Override the is_valid key in case the task made some mols invalid
-                    # for i in range(num_online):
-                    #     trajs[num_offline + i]["is_valid"] = is_valid[num_offline + i].item()
+                    for i in range(num_online):
+                        trajs[num_offline + i]["is_valid"] = is_valid[num_offline + i].item()
 
             # Compute scalar rewards from conditional information & flat rewards
             flat_rewards = torch.stack(flat_rewards)
             log_rewards = self.task.cond_info_to_logreward(cond_info, flat_rewards)
             log_rewards[torch.logical_not(is_valid)] = self.illegal_action_logreward
 
+            assert len(trajs) == num_online + num_offline
             # Computes some metrics
-            extra_info = {}
+            extra_info = {"random_action_prob": self.random_action_prob}
+            if num_online > 0:
+                H = sum(i["fwd_logprob"] for i in trajs[num_offline:])
+                extra_info["entropy"] = -H / num_online
+                extra_info["length"] = np.mean([len(i["traj"]) for i in trajs[num_offline:]])
             if not self.sample_cond_info:
                 # If we're using a dataset of preferences, the user may want to know the id of the preference
                 for i, j in zip(trajs, idcs):
@@ -251,19 +264,20 @@ class SamplingIterator(IterableDataset):
             rewards = torch.exp(log_rewards / cond_info["beta"])
             if num_online > 0 and self.log_dir is not None:
                 self.log_generated(
-                    deepcopy(trajs[num_offline:]),
-                    deepcopy(rewards[num_offline:]),
-                    deepcopy(flat_rewards[num_offline:]),
-                    {k: v[num_offline:] for k, v in deepcopy(cond_info).items()},
+                    trajs[num_offline:],
+                    rewards[num_offline:],
+                    flat_rewards[num_offline:],
+                    {k: v[num_offline:] for k, v in cond_info.items()},
                 )
             if num_online > 0:
+                extra_info["sampled_reward_avg"] = rewards[num_offline:].mean().item()
                 for hook in self.log_hooks:
                     extra_info.update(
                         hook(
-                            deepcopy(trajs[num_offline:]),
-                            deepcopy(rewards[num_offline:]),
-                            deepcopy(flat_rewards[num_offline:]),
-                            {k: v[num_offline:] for k, v in deepcopy(cond_info).items()},
+                            trajs[num_offline:],
+                            rewards[num_offline:],
+                            flat_rewards[num_offline:],
+                            {k: v[num_offline:] for k, v in cond_info.items()},
                         )
                     )
 
@@ -278,22 +292,22 @@ class SamplingIterator(IterableDataset):
                 # push the online trajectories in the replay buffer and sample a new 'online' batch
                 for i in range(num_offline, len(trajs)):
                     self.replay_buffer.push(
-                        deepcopy(trajs[i]),
-                        deepcopy(log_rewards[i]),
-                        deepcopy(flat_rewards[i]),
-                        deepcopy(cond_info[i]),
-                        deepcopy(is_valid[i]),
+                        trajs[i],
+                        log_rewards[i],
+                        flat_rewards[i],
+                        cond_info[i],
+                        is_valid[i],
                     )
                 replay_trajs, replay_logr, replay_fr, replay_condinfo, replay_valid = self.replay_buffer.sample(
                     num_online
                 )
 
                 # append the online trajectories to the offline ones
-                trajs[num_offline:] = replay_trajs
-                log_rewards[num_offline:] = replay_logr
-                flat_rewards[num_offline:] = replay_fr
-                cond_info[num_offline:] = replay_condinfo
-                is_valid[num_offline:] = replay_valid
+                trajs = trajs[:num_offline] + replay_trajs
+                log_rewards = torch.cat([log_rewards[:num_offline], replay_logr], dim=0)
+                flat_rewards = torch.cat([flat_rewards[:num_offline], replay_fr], dim=0)
+                cond_info = cond_info[:num_offline] + replay_condinfo  # list of dicts
+                is_valid = torch.cat([is_valid[:num_offline], replay_valid], dim=0)
 
                 # convert cond_info back to a dict
                 cond_info = {k: torch.stack([d[k] for d in cond_info]) for k in cond_info[0]}
@@ -318,6 +332,10 @@ class SamplingIterator(IterableDataset):
             batch.preferences = cond_info.get("preferences", None)
             batch.focus_dir = cond_info.get("focus_dir", None)
             batch.extra_info = extra_info
+            if self.ctx.has_n():
+                log_ns = [self.ctx.traj_log_n(i["traj"]) for i in trajs]
+                batch.log_n = torch.tensor([i[-1] for i in log_ns], dtype=torch.float32)
+                batch.log_ns = torch.tensor(sum(log_ns, start=[]), dtype=torch.float32)
             # TODO: we could very well just pass the cond_info dict to construct_batch above,
             # and the algo can decide what it wants to put in the batch object
 
@@ -331,11 +349,15 @@ class SamplingIterator(IterableDataset):
 
     def validate_batch(self, batch, trajs):
         for actions, atypes in [(batch.actions, self.ctx.action_type_order)] + (
-            batch.bck_actions if hasattr(batch, "bck_actions") else []
+            [(batch.bck_actions, self.ctx.bck_action_type_order)]
+            if hasattr(batch, "bck_actions") and hasattr(self.ctx, "bck_action_type_order")
+            else []
         ):
-            mask_cat = ActionCategorical(
+            mask_cat = GraphActionCategorical(
                 batch,
-                self.model.action_to_mask(batch),
+                [self.model._action_type_to_mask(t, batch) for t in atypes],
+                [self.model._action_type_to_key[t] for t in atypes],
+                [None for _ in atypes],
             )
             masked_action_is_used = 1 - mask_cat.log_prob(actions, logprobs=mask_cat.logits)
             num_trajs = len(trajs)
@@ -351,7 +373,6 @@ class SamplingIterator(IterableDataset):
     def log_generated(self, trajs, rewards, flat_rewards, cond_info):
         if hasattr(self.ctx, "object_to_log_repr"):
             mols = [self.ctx.object_to_log_repr(t["result"]) if t["is_valid"] else "" for t in trajs]
-            syntheses = [self.ctx.traj_to_log_repr(t["traj"]) if t["is_valid"] else "" for t in trajs]
         else:
             mols = [""] * len(trajs)
 
@@ -362,7 +383,7 @@ class SamplingIterator(IterableDataset):
         logged_keys = [k for k in sorted(cond_info.keys()) if k not in ["encoding", "preferences", "focus_dir"]]
 
         data = [
-            [mols[i], rewards[i], syntheses[i]]
+            [mols[i], rewards[i]]
             + flat_rewards[i]
             + preferences[i]
             + focus_dir[i]
@@ -371,7 +392,7 @@ class SamplingIterator(IterableDataset):
         ]
 
         data_labels = (
-            ["smi", "r", "traj"]
+            ["smi", "r"]
             + [f"fr_{i}" for i in range(len(flat_rewards[0]))]
             + [f"pref_{i}" for i in range(len(preferences[0]))]
             + [f"focus_{i}" for i in range(len(focus_dir[0]))]

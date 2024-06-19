@@ -3,7 +3,7 @@ from enum import Enum
 from typing import Optional
 
 
-class TBVariant(Enum):
+class TBVariant(int, Enum):
     """See algo.trajectory_balance.TrajectoryBalance for details."""
 
     TB = 0
@@ -29,6 +29,8 @@ class TBConfig:
         Whether to correct for idempotent actions
     do_parameterize_p_b : bool
         Whether to parameterize the P_B distribution (otherwise it is uniform)
+    do_predict_n : bool
+        Whether to predict the number of paths in the graph
     do_length_normalize : bool
         Whether to normalize the loss by the length of the trajectory
     subtb_max_len : int
@@ -45,12 +47,44 @@ class TBConfig:
     variant: TBVariant = TBVariant.TB
     do_correct_idempotent: bool = False
     do_parameterize_p_b: bool = False
+    do_predict_n: bool = False
     do_sample_p_b: bool = False
     do_length_normalize: bool = False
     subtb_max_len: int = 128
     Z_learning_rate: float = 1e-4
     Z_lr_decay: float = 50_000
     cum_subtb: bool = True
+
+
+@dataclass
+class MOQLConfig:
+    gamma: float = 1
+    num_omega_samples: int = 32
+    num_objectives: int = 2
+    lambda_decay: int = 10_000
+    penalty: float = -10
+
+
+@dataclass
+class A2CConfig:
+    entropy: float = 0.01
+    gamma: float = 1
+    penalty: float = -10
+
+
+@dataclass
+class FMConfig:
+    epsilon: float = 1e-38
+    balanced_loss: bool = False
+    leaf_coef: float = 10
+    correct_idempotent: bool = False
+
+
+@dataclass
+class SQLConfig:
+    alpha: float = 0.01
+    gamma: float = 1
+    penalty: float = -10
 
 
 @dataclass
@@ -78,15 +112,15 @@ class AlgoConfig:
         Idem but for validation, and `self.test_data`.
     train_random_action_prob : float
         The probability of taking a random action during training
+    train_det_after: Optional[int]
+        Do not take random actions after this number of steps
     valid_random_action_prob : float
         The probability of taking a random action during validation
-    valid_sample_cond_info : bool
-        Whether to sample conditioning information during validation (if False, expects a validation set of cond_info)
     sampling_tau : float
         The EMA factor for the sampling model (theta_sampler = tau * theta_sampler + (1-tau) * theta)
     """
 
-    method: str = "TB"
+    method: str = "ASTB"
     global_batch_size: int = 64
     max_len: int = 128
     max_nodes: int = 128
@@ -95,7 +129,11 @@ class AlgoConfig:
     offline_ratio: float = 0.5
     valid_offline_ratio: float = 1
     train_random_action_prob: float = 0.0
+    train_det_after: Optional[int] = None
     valid_random_action_prob: float = 0.0
-    valid_sample_cond_info: bool = True
     sampling_tau: float = 0.0
     tb: TBConfig = TBConfig()
+    moql: MOQLConfig = MOQLConfig()
+    a2c: A2CConfig = A2CConfig()
+    fm: FMConfig = FMConfig()
+    sql: SQLConfig = SQLConfig()

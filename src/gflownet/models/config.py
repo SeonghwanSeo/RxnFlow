@@ -9,7 +9,7 @@ class GraphTransformerConfig:
     num_mlp_layers: int = 0
 
 
-class SeqPosEnc(Enum):
+class SeqPosEnc(int, Enum):
     Pos = 0
     Rotary = 1
 
@@ -35,5 +35,8 @@ class ModelConfig:
     num_layers: int = 3
     num_emb: int = 128
     dropout: float = 0
+    num_layers_building_block: int = 3
+    num_emb_building_block: int = 128
     graph_transformer: GraphTransformerConfig = GraphTransformerConfig()
+    graph_transformer_building_block: GraphTransformerConfig = GraphTransformerConfig()
     seq_transformer: SeqTransformerConfig = SeqTransformerConfig()

@@ -74,10 +74,7 @@ dependencies = [
     "gpytorch",
     "omegaconf>=2.3",
     "wandb",
-    "seaborn",
-    "matplotlib",
-    "pandas",
-    "lightning",
+    "pandas", # needed for QM9 and HDF5 support.
 ]
 
 [project.optional-dependencies]
