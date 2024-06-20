@@ -145,7 +145,8 @@ class SynthesisSampler:
 
                 else:  # If not done, step the self.environment
                     rdmol = self.env.step(rdmols[i], reaction_actions[j])
-                    if rdmol is not None:
+                    if rdmol is None:
+                        done[i] = True
                         data[i]["is_valid"] = False
                         continue
 
