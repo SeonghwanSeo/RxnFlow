@@ -1,4 +1,5 @@
 from copy import deepcopy
+import math
 from typing import Any, Dict, List, Optional, Tuple
 
 import networkx as nx
@@ -209,13 +210,11 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
 
         def traj_to_Data(traj, tj_idx):
             g = traj[tj_idx][0]
-            if tj_idx == 0:
-                return self.ctx.graph_to_Data(g, tj_idx, None)
-            else:
-                prev_a = traj[tj_idx - 1][1]
-                return self.ctx.graph_to_Data(g, tj_idx, prev_a)
+            prev_action = None if tj_idx == 0 else traj[tj_idx - 1][1]
+            return self.ctx.graph_to_Data(g, tj_idx, do_bck=True, prev_action=prev_action)
 
         if self.model_is_autoregressive:
+            raise NotImplementedError
             torch_graphs = [self.ctx.graph_to_Data(tj["traj"][-1][0], len(tj["traj"]), None) for tj in trajs]
             actions = [
                 self.ctx.ReactionAction_to_aidx(g, i[1]) for g, tj in zip(torch_graphs, trajs) for i in tj["traj"]
@@ -230,7 +229,6 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         batch.traj_lens = torch.tensor([len(i["traj"]) for i in trajs])
         batch.log_p_B = torch.cat([i["bck_logprobs"] for i in trajs], 0)  # ASTB - In this work, dummy
         batch.log_n_B = torch.cat([i["bck_log_n_actions"] for i in trajs], 0)  # ASTB - In this work, dummy
-        batch.block_indices = torch.cat([i["block_indices"] for i in trajs], 0)
         batch.actions = torch.tensor(actions)
         if self.cfg.do_parameterize_p_b:
             batch.bck_actions = torch.tensor(
@@ -245,8 +243,8 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         batch.is_valid = torch.tensor([i.get("is_valid", True) for i in trajs]).float()
 
         # NOTE: ASTB -> all trajectory with same traj idx in on batch share the block indices
-        batch.block_indices = trajs[0]["block_indices"]
         # NOTE: NON-TENSOR-DATA for BUILDING BLOCK MASKING
+        batch.block_indices = trajs[0]["block_indices"]
         batch.graphs = [i[0] for tj in trajs for i in tj["traj"]]
 
         if self.cfg.do_correct_idempotent:
@@ -357,10 +355,10 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
                 log_n_B = bck_cat.log_n_actions(batch.bck_ip_actions)
         else:
             # Else just naively take the logprob of the actions we took
-            log_p_F = fwd_cat.log_prob(batch.actions, batch.traj_idx, model, batch.graphs, batch.block_indices)
+            log_p_F = fwd_cat.log_prob(batch.actions, batch.graphs, batch.block_indices)
             log_n_F = fwd_cat.log_n_actions(batch.actions)
             if self.cfg.do_parameterize_p_b:
-                log_p_B = bck_cat.log_prob(batch.bck_actions, batch.traj_idx, model, batch.graphs, batch.block_indices)
+                log_p_B = bck_cat.log_prob(batch.bck_actions, batch.graphs, batch.block_indices)
                 log_n_B = bck_cat.log_n_actions(batch.bck_actions)
 
         if self.cfg.do_parameterize_p_b:
@@ -420,14 +418,8 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             log_Z = per_graph_out[first_graph_idx, 0]
         else:
             # Compute log numerator and denominator of the ASTB objective
-            if traj_log_p_F.sum().isnan():
-                # print(log_Z.sum().item(), traj_log_p_F.sum().item(), clip_log_R.sum().item(), traj_log_p_B.sum().item())
-                print(traj_log_p_F)
-                print(log_p_F)
-            numerator = log_Z + traj_log_p_F
-            denominator = clip_log_R + traj_log_p_B
-            # numerator = log_Z + traj_log_n_F + traj_log_p_F
-            # denominator = clip_log_R + traj_log_n_B + traj_log_p_B
+            numerator = log_Z + traj_log_n_F + traj_log_p_F
+            denominator = clip_log_R + traj_log_n_B + traj_log_p_B
 
             if self.mask_invalid_rewards:
                 # Instead of being rude to the model and giving a

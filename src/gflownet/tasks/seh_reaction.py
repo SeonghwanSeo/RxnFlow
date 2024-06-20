@@ -80,7 +80,7 @@ class SEHReactionTrainer(StandardOnlineTrainer):
     def set_default_hps(self, cfg: Config):
         cfg.hostname = socket.gethostname()
         cfg.pickle_mp_messages = False
-        cfg.num_workers = 8
+        cfg.num_workers = 0
         cfg.opt.learning_rate = 1e-4
         cfg.opt.weight_decay = 1e-8
         cfg.opt.momentum = 0.9
@@ -91,15 +91,16 @@ class SEHReactionTrainer(StandardOnlineTrainer):
 
         cfg.model.num_emb = 128
         cfg.model.num_layers = 4
-        cfg.model.num_emb_building_block = 16
-        cfg.model.num_layers_building_block = 1
+        cfg.model.num_emb_building_block = 64
+        cfg.model.num_layers_building_block = 4
 
         cfg.algo.method = "ASTB"
         cfg.algo.max_len = 4
         cfg.algo.global_batch_size = 64
-        cfg.algo.sampling_tau = 0.9
+        cfg.algo.num_block_sampling = 5000
+        cfg.algo.sampling_tau = 0.99
         cfg.algo.illegal_action_logreward = -75
-        cfg.algo.offline_ratio = 0
+        cfg.algo.offline_ratio = 0.0
         cfg.algo.train_random_action_prob = 0.0
         cfg.algo.valid_random_action_prob = 0.0
         cfg.algo.valid_offline_ratio = 0
@@ -109,6 +110,9 @@ class SEHReactionTrainer(StandardOnlineTrainer):
         cfg.algo.tb.Z_lr_decay = 50_000
         cfg.algo.tb.do_parameterize_p_b = True
         cfg.algo.tb.do_sample_p_b = False
+
+        cfg.cond.temperature.sample_dist = "uniform"
+        cfg.cond.temperature.dist_params = [0, 64.0]
 
         cfg.replay.use = False
         cfg.replay.capacity = 10_000
@@ -122,24 +126,21 @@ class SEHReactionTrainer(StandardOnlineTrainer):
         )
 
     def setup_env_context(self):
-        self.ctx = SynthesisEnvContext(self.env, num_cond_dim=self.task.num_cond_dim)
+        self.ctx = SynthesisEnvContext(
+            self.env, num_cond_dim=self.task.num_cond_dim, num_block_sampling=self.cfg.algo.num_block_sampling
+        )
 
 
 def main():
     """Example of how this trainer can be run"""
     config = init_empty(Config())
-    config.print_every = 1
-    config.log_dir = "./logs/debug_run_seh_reaction_pb/"
-    config.env_dir = "./data/envs/subsampled_6000/"
+    config.print_every = 10
+    config.validate_every = 100
+    config.log_dir = "./logs/debug_run_seh_reaction_pb_5000_100000_64_4/"
+    config.env_dir = "./data/envs/subsampled_100000/"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
-    config.overwrite_existing_exp = True
+    config.overwrite_existing_exp = False
     config.num_training_steps = 10_000
-    config.num_workers = 0
-    config.opt.lr_decay = 20_000
-    config.algo.sampling_tau = 0.99
-    config.algo.offline_ratio = 0.0
-    config.cond.temperature.sample_dist = "uniform"
-    config.cond.temperature.dist_params = [0, 64.0]
 
     trial = SEHReactionTrainer(config)
     trial.run()

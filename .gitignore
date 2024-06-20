@@ -1,8 +1,10 @@
 # Model cache
 src/gflownet/models/cache/
-data/
-log/
-
+data/building_blocks/Enamine*
+envs/
+logs/
+.github/
+wandb_run/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

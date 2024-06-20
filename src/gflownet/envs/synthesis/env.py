@@ -42,7 +42,7 @@ class SynthesisEnv:
 
     def __init__(self, env_dir: Union[str, Path]):
         """A reaction template and building block environment instance"""
-        env_dir = Path(env_dir)
+        self.env_dir = env_dir = Path(env_dir)
         reaction_template_path = env_dir / "template.txt"
         building_block_path = env_dir / "building_block.smi"
         pre_computed_building_block_mask_path = env_dir / "precompute_bb_mask.npy"

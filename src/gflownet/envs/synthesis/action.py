@@ -37,6 +37,20 @@ class ReactionActionType(enum.Enum):
 ReactionActionIdx = Tuple[int, int, int, int, int]
 
 
+def get_action_idx(
+    type_idx: int,
+    is_stop: bool = False,
+    rxn_idx: Optional[int] = None,
+    block_idx: Optional[int] = None,
+    block_is_first: Optional[bool] = None,
+) -> ReactionActionIdx:
+    _is_stop = int(is_stop)
+    _rxn_idx = -1 if rxn_idx is None else rxn_idx
+    _block_idx = -1 if block_idx is None else block_idx
+    _block_is_first = -1 if block_is_first is None else int(block_is_first)
+    return (type_idx, _is_stop, _rxn_idx, _block_idx, _block_is_first)
+
+
 class ReactionAction:
     def __init__(
         self,

@@ -81,13 +81,8 @@ class ASTB_GFN(nn.Module):
         # Here we define the number of inputs and outputs of each of those (potential) MLPs.
         self._action_type_to_num_inputs_outputs = {
             ReactionActionType.Stop: (num_glob_final, 1),
-            # ReactionActionType.AddFirstReactant: (num_glob_final + num_emb_block, 1),
-            # ReactionActionType.AddReactant: (num_glob_final + env_ctx.num_bimolecular_rxns + num_emb_block, 1),
-            ReactionActionType.AddFirstReactant: (num_glob_final, env_ctx.num_building_blocks),
-            ReactionActionType.AddReactant: (
-                num_glob_final + env_ctx.num_bimolecular_rxns,
-                env_ctx.num_building_blocks,
-            ),
+            ReactionActionType.AddFirstReactant: (num_glob_final + num_emb_block, 1),
+            ReactionActionType.AddReactant: (num_glob_final + env_ctx.num_bimolecular_rxns + num_emb_block, 1),
             ReactionActionType.ReactUni: (num_glob_final, env_ctx.num_unimolecular_rxns),
             ReactionActionType.ReactBi: (num_glob_final, env_ctx.num_bimolecular_rxns),
             ReactionActionType.BckReactUni: (num_glob_final, env_ctx.num_unimolecular_rxns),
@@ -119,14 +114,8 @@ class ASTB_GFN(nn.Module):
         return logits
 
     def _make_cat(self, g, emb, action_types, fwd):
-        return ReactionActionCategorical(
-            self.env_ctx,
-            g,
-            emb,
-            logits={typ: self._action_type_to_logit(typ, emb, g) for typ in action_types},
-            # masks={typ: self._action_type_to_mask(typ, g) for typ in action_types},
-            fwd=fwd,
-        )
+        logits = {typ: self._action_type_to_logit(typ, emb, g) for typ in action_types}
+        return ReactionActionCategorical(g, logits, emb, model=self, fwd=fwd)
 
     def add_first_reactant_hook(self, graph_embedding: torch.Tensor, block_emb: torch.Tensor):
         """
@@ -143,66 +132,11 @@ class ASTB_GFN(nn.Module):
         torch.Tensor
             The logits or output of the MLP after being called with the expanded input.
         """
-        return self.mlps[ReactionActionType.AddFirstReactant.cname](graph_embedding)
-        _emb = graph_embedding.unsqueeze(1).repeat(1, block_emb.size(0), 1)
-        block_emb = block_emb.unsqueeze(0)
-        if _emb.size(0) > 1:
-            block_emb = block_emb.repeat(_emb.size(0), 1, 1)
-        expanded_input = torch.cat((_emb, block_emb), dim=-1)  # [N, N_block, 2 * F]
-
+        _emb = graph_embedding.unsqueeze(0).repeat(block_emb.size(0), 1)
+        expanded_input = torch.cat((_emb, block_emb), dim=-1)  # [N_block, 2 * F]
         return self.mlps[ReactionActionType.AddFirstReactant.cname](expanded_input).squeeze(-1)
 
     def add_reactant_hook(self, rxn_id: int, graph_embedding: torch.Tensor, block_emb: torch.Tensor):
-        """
-        The hook function to be called for the AddReactant action.
-        Parameters
-        rxn_id : int
-            The ID of the reaction selected by the sampler.
-        emb : torch.Tensor
-            The embedding tensor for the current state.
-        block_emb : torch.Tensor
-            The embedding tensor for building blocks.
-
-        Returns
-        torch.Tensor
-            The logits or output of the MLP after being called with the expanded input.
-        """
-
-        # Convert `rxn_id` to a one-hot vector
-        rxn_features = torch.zeros(self.env_ctx.num_bimolecular_rxns, device=graph_embedding.device)
-        rxn_features[rxn_id] = 1
-
-        expanded_input = torch.cat((graph_embedding, rxn_features), dim=-1)
-        return self.mlps[ReactionActionType.AddReactant.cname](expanded_input)
-        expanded_input = expanded_input.unsqueeze(0).repeat(block_emb.size(0), 1)
-        expanded_input = torch.cat((expanded_input, block_emb), dim=-1)  # [N_block, 2 * F + Fcond]
-
-        return self.mlps[ReactionActionType.AddReactant.cname](expanded_input).squeeze(-1)
-
-    def add_first_reactant_hook_bkup(self, graph_embedding: torch.Tensor, block_emb: torch.Tensor):
-        """
-        The hook function to be called for the AddFirstReactant action.
-        Parameters
-        emb : torch.Tensor
-            The embedding tensor for the current states.
-        block_emb : torch.Tensor
-            The embedding tensor for building blocks.
-        g : Graph
-            The current graph.
-
-        Returns
-        torch.Tensor
-            The logits or output of the MLP after being called with the expanded input.
-        """
-        _emb = graph_embedding.unsqueeze(1).repeat(1, block_emb.size(0), 1)
-        block_emb = block_emb.unsqueeze(0)
-        if _emb.size(0) > 1:
-            block_emb = block_emb.repeat(_emb.size(0), 1, 1)
-        expanded_input = torch.cat((_emb, block_emb), dim=-1)  # [N, N_block, 2 * F]
-
-        return self.mlps[ReactionActionType.AddFirstReactant.cname](expanded_input).squeeze(-1)
-
-    def add_reactant_hook_bkup(self, rxn_id: int, graph_embedding: torch.Tensor, block_emb: torch.Tensor):
         """
         The hook function to be called for the AddReactant action.
         Parameters

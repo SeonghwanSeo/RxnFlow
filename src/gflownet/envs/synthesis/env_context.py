@@ -59,7 +59,7 @@ class SynthesisEnvContext:
         self,
         env: SynthesisEnv,
         num_cond_dim: int = 0,
-        num_block_sampling: int = 6000,
+        num_block_sampling: int = 3000,
         *args,
         atoms: List[str] = ATOMS,
         chiral_types: List = DEFAULT_CHIRAL_TYPES,
@@ -120,18 +120,12 @@ class SynthesisEnvContext:
         self.reactions: List[Reaction] = env.reactions
         self.unimolecular_reactions = env.unimolecular_reactions
         self.bimolecular_reactions = env.bimolecular_reactions
+        self.unimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.unimolecular_reactions)}
+        self.bimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.bimolecular_reactions)}
         self.num_unimolecular_rxns = len(self.unimolecular_reactions)
         self.num_bimolecular_rxns = len(self.bimolecular_reactions)
 
-        self.building_blocks: List[str] = env.building_blocks
-        self.building_block_mols: List[Chem.Mol] = env.building_block_mols
-        self.num_building_blocks: int = len(self.building_blocks)
-        self.building_block_datas: List[gd.Data] = [
-            self.graph_to_Data_block(self.mol_to_graph(bb)) for bb in tqdm(self.building_block_mols)
-        ]
-        self.num_block_sampling: int = min(num_block_sampling, self.num_building_blocks)
-        self.precomputed_bb_masks = env.precomputed_bb_masks
-
+        # NOTE: Action Type Order
         self.primary_action_type_order = [
             ReactionActionType.Stop,
             ReactionActionType.ReactUni,
@@ -151,17 +145,34 @@ class SynthesisEnvContext:
         self.secondary_bck_action_type_order = []
         self.bck_action_type_order = self.primary_bck_action_type_order + self.secondary_bck_action_type_order
 
-    def sample_blocks(self) -> Tuple[List[int], gd.Batch]:
+        self.building_blocks: List[str] = env.building_blocks
+        self.building_block_mols: List[Chem.Mol] = env.building_block_mols
+        self.num_building_blocks: int = len(self.building_blocks)
+        self.num_block_sampling: int = min(num_block_sampling, self.num_building_blocks)
+        self.precomputed_bb_masks = env.precomputed_bb_masks
+
+        # NOTE: Setup Building Block Datas
+        self.building_block_datas: List[gd.Data] = [
+            self.graph_to_Data_block(self.mol_to_graph(bb)) for bb in tqdm(self.building_block_mols)
+        ]
+
+    def setup_blocks(self):
+        block_lmdb_path = self.env.env_dir / "building_block_graph"
+
+    def sample_blocks(self) -> List[int]:
         if self.num_block_sampling == self.num_building_blocks:
             block_indices = list(range(self.num_building_blocks))
-            block_g = gd.Batch.from_data_list(self.building_block_datas)
         else:
             assert self.num_block_sampling < self.num_building_blocks
-            block_indices = list(range(self.num_block_sampling))
-            # block_indices = np.random.choice(self.num_building_blocks, self.num_block_sampling, replace=False).tolist()
-            # block_indices.sort()
-            block_g = gd.Batch.from_data_list([self.building_block_datas[idx] for idx in block_indices])
-        return block_indices, block_g
+            block_indices = np.random.choice(self.num_building_blocks, self.num_block_sampling, replace=False).tolist()
+            block_indices.sort()
+        return block_indices
+
+    def get_block_data(self, block_indices: Union[torch.Tensor, List[int]]):
+        if self.num_block_sampling == self.num_building_blocks:
+            return gd.Batch.from_data_list(self.building_block_datas)
+        else:
+            return gd.Batch.from_data_list([self.building_block_datas[idx] for idx in block_indices])
 
     def aidx_to_ReactionAction(
         self, g: gd.Data, action_idx: ReactionActionIdx, fwd: bool = True, block_indices: Optional[List[int]] = None
@@ -228,33 +239,40 @@ class SynthesisEnvContext:
         elif action.action is ReactionActionType.ReactUni:
             assert isinstance(action, ForwardAction)
             assert action.reaction is not None
-            rxn_idx = self.unimolecular_reactions.index(action.reaction)
+            rxn_idx = self.unimolecular_reaction_to_idx[action.reaction]
         elif action.action is ReactionActionType.ReactBi:
             assert isinstance(action, ForwardAction)
             assert (
                 action.reaction is not None and action.block_local_idx is not None and action.block_is_first is not None
             )
-            rxn_idx = self.bimolecular_reactions.index(action.reaction)
+            rxn_idx = self.bimolecular_reaction_to_idx[action.reaction]
             block_local_idx = action.block_local_idx
             block_is_first = int(action.block_is_first)
+
         elif action.action is ReactionActionType.BckRemoveFirstReactant:
             assert isinstance(action, BackwardAction)
             pass
         elif action.action is ReactionActionType.BckReactUni:
             assert isinstance(action, BackwardAction)
             assert action.reaction is not None
-            rxn_idx = self.unimolecular_reactions.index(action.reaction)
+            rxn_idx = self.unimolecular_reaction_to_idx[action.reaction]
         elif action.action is ReactionActionType.BckReactBi:
             assert isinstance(action, BackwardAction)
             assert action.reaction is not None and action.block_is_first is not None
-            rxn_idx = self.bimolecular_reactions.index(action.reaction)
+            rxn_idx = self.bimolecular_reaction_to_idx[action.reaction]
             block_is_first = action.block_is_first
         else:
             raise ValueError(action)
         is_stop = action.action is ReactionActionType.Stop
         return (type_idx, is_stop, rxn_idx, block_local_idx, block_is_first)
 
-    def graph_to_Data(self, g: Graph, traj_idx: int, prev_action: Optional[ForwardAction]) -> gd.Data:
+    def graph_to_Data(
+        self,
+        g: Graph,
+        traj_idx: int,
+        do_bck: bool = True,
+        prev_action: Optional[ForwardAction] = None,
+    ) -> gd.Data:
         """Convert a networkx Graph to a torch geometric Data instance"""
         x = np.zeros((max(1, len(g.nodes)), self.num_node_dim), dtype=np.float32)
         x[0, -1] = len(g.nodes) == 0  # If there are no nodes, set the last dimension to 1
@@ -273,36 +291,37 @@ class SynthesisEnvContext:
                 edge_attr[i * 2, sl + idx] = 1
                 edge_attr[i * 2 + 1, sl + idx] = 1
         edge_index = np.array([e for i, j in g.edges for e in [(i, j), (j, i)]]).reshape((-1, 2)).T.astype(np.int64)
-
-        react_uni_mask = self.create_masks(g, fwd=True, unimolecular=True)
-        react_bi_mask = self.create_masks(g, fwd=True, unimolecular=False)
-        bck_react_uni_mask = self.create_masks(g, fwd=False, unimolecular=True)
-        bck_react_bi_mask = self.create_masks(g, fwd=False, unimolecular=False)
-
-        # NOTE: prevent the rdkit bck-reaction error
-        # if (R1, ...) -> P with rxn R,
-        # There are cases where the reverse reaction R is not possible to P although P was performed with R.
-        if prev_action is not None:
-            if prev_action.action is ReactionActionType.ReactUni:
-                assert prev_action.reaction is not None
-                rxn_idx = self.unimolecular_reactions.index(prev_action.reaction)
-                bck_react_uni_mask[0, rxn_idx] = True
-            elif prev_action.action is ReactionActionType.ReactBi:
-                assert prev_action.reaction is not None
-                rxn_idx = self.bimolecular_reactions.index(prev_action.reaction)
-                bck_react_bi_mask[0, rxn_idx] = True
-
         data = dict(
             x=x,
             edge_index=edge_index,
             edge_attr=edge_attr,
             traj_idx=np.array([traj_idx], dtype=np.int32),
-            # add attribute for masks
-            react_uni_mask=react_uni_mask,
-            react_bi_mask=react_bi_mask,
-            bck_react_uni_mask=bck_react_uni_mask,
-            bck_react_bi_mask=bck_react_bi_mask,
         )
+
+        # NOTE: add attribute for masks
+        data["react_uni_mask"] = self.create_masks(g, fwd=True, unimolecular=True)
+        data["react_bi_mask"] = self.create_masks(g, fwd=True, unimolecular=False)
+
+        # NOTE: mask construction is bottleneck -> add flag `do_bck`
+        if do_bck:
+            bck_react_uni_mask = self.create_masks(g, fwd=False, unimolecular=True)
+            bck_react_bi_mask = self.create_masks(g, fwd=False, unimolecular=False)
+
+            # NOTE: prevent the rdkit bck-reaction error
+            # if (R1, ...) -> P with rxn R,
+            # There are cases where the reverse reaction R is not possible to P although P was performed with R.
+            if prev_action is not None:
+                if prev_action.action is ReactionActionType.ReactUni:
+                    assert prev_action.reaction is not None
+                    rxn_idx = self.unimolecular_reaction_to_idx[prev_action.reaction]
+                    bck_react_uni_mask[0, rxn_idx] = True
+                elif prev_action.action is ReactionActionType.ReactBi:
+                    assert prev_action.reaction is not None
+                    rxn_idx = self.bimolecular_reaction_to_idx[prev_action.reaction]
+                    bck_react_bi_mask[0, rxn_idx] = True
+            data["bck_react_uni_mask"] = bck_react_uni_mask
+            data["bck_react_bi_mask"] = bck_react_bi_mask
+
         data = gd.Data(**{k: torch.from_numpy(v) for k, v in data.items()})
         return data
 
@@ -475,6 +494,7 @@ class SynthesisEnvContext:
 
     def create_masks_for_bb(self, smi: Union[str, Chem.Mol, Graph], bimolecular_rxn_idx: int) -> np.ndarray:
         """Create masks for building blocks for a given molecule."""
+        raise NotImplementedError()
         mol = self.get_mol(smi)
         reaction = self.bimolecular_reactions[bimolecular_rxn_idx]
         reactants = reaction.rxn.GetReactants()

@@ -122,6 +122,7 @@ class AlgoConfig:
 
     method: str = "ASTB"
     global_batch_size: int = 64
+    num_block_sampling: int = 5000
     max_len: int = 128
     max_nodes: int = 128
     max_edges: int = 128
