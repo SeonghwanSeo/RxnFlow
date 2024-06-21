@@ -1,5 +1,6 @@
 import math
 import random
+import time
 
 from rdkit import Chem
 import torch
@@ -140,8 +141,8 @@ class ReactionActionCategorical:
 
         assert len(graphs) == self.num_graphs
         if block_emb is None:
-            block_g = self.ctx.get_block_data(block_indices).to(self.dev)
-            block_emb = self.model.block_transf.forward(block_g)
+            block_fp = self.ctx.get_block_data(block_indices, self.dev)
+            block_emb = self.model.block_mlp(block_fp)
 
         traj_idx = self.traj_indices[0]
         assert (self.traj_indices == traj_idx).all()  # For sampling, we use the same traj index
@@ -174,8 +175,8 @@ class ReactionActionCategorical:
             elif t == ReactionActionType.ReactUni:
                 actions.append(get_action_idx(type_idx, rxn_idx=rxn_idx))
             elif t == ReactionActionType.ReactBi:  # sample reactant
-                mask = self.ctx.create_masks_for_bb_from_precomputed(graphs[i], rxn_idx)
-                mask = torch.from_numpy(mask[block_indices]).to(self.dev)
+                mask = self.ctx.create_masks_for_bb_from_precomputed(graphs[i], rxn_idx, block_indices)
+                mask = torch.from_numpy(mask).to(self.dev)
                 reactant_mask = torch.any(mask, dim=1)
 
                 if not torch.any(reactant_mask):
@@ -249,8 +250,9 @@ class ReactionActionCategorical:
         """Access the log-probability of forward actions"""
         if not self.setuped:
             if block_emb is None:
-                block_g = self.ctx.get_block_data(block_indices).to(self.dev)
-                block_emb = self.model.block_transf.forward(block_g)
+                block_fp = self.ctx.get_block_data(block_indices, self.dev)
+                block_emb = self.model.block_mlp(block_fp)
+
             for i, action in enumerate(actions):
                 type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action
                 t = self.types[type_idx]
@@ -260,7 +262,7 @@ class ReactionActionCategorical:
                     self.logits[ReactionActionType.AddFirstReactant][i] = logit
 
                 elif t is ReactionActionType.ReactBi:  # secondary logits were computed
-                    mask = self.ctx.create_masks_for_bb_from_precomputed(graphs[i], rxn_idx)[block_indices].any(axis=1)
+                    mask = self.ctx.create_masks_for_bb_from_precomputed(graphs[i], rxn_idx, block_indices).any(axis=1)
                     mask = torch.from_numpy(mask).to(self.dev)
                     logit = self.model.add_reactant_hook(rxn_idx, self.graph_embedding[i], block_emb)
                     logit = self._mask(logit, mask)

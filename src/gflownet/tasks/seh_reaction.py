@@ -91,8 +91,9 @@ class SEHReactionTrainer(StandardOnlineTrainer):
 
         cfg.model.num_emb = 128
         cfg.model.num_layers = 4
-        cfg.model.num_emb_building_block = 64
-        cfg.model.num_layers_building_block = 4
+        cfg.model.fp_nbits_building_block = 1024
+        cfg.model.num_emb_building_block = 128
+        cfg.model.num_layers_building_block = 0
 
         cfg.algo.method = "ASTB"
         cfg.algo.max_len = 4
@@ -127,19 +128,24 @@ class SEHReactionTrainer(StandardOnlineTrainer):
 
     def setup_env_context(self):
         self.ctx = SynthesisEnvContext(
-            self.env, num_cond_dim=self.task.num_cond_dim, num_block_sampling=self.cfg.algo.num_block_sampling
+            self.env,
+            num_cond_dim=self.task.num_cond_dim,
+            fp_radius_building_block=self.cfg.model.fp_radius_building_block,
+            fp_nbits_building_block=self.cfg.model.fp_nbits_building_block,
+            num_block_sampling=self.cfg.algo.num_block_sampling,
         )
 
 
 def main():
     """Example of how this trainer can be run"""
     config = init_empty(Config())
-    config.print_every = 10
-    config.validate_every = 100
+    config.print_every = 1
+    config.validate_every = 10
     config.log_dir = "./logs/debug_run_seh_reaction_pb_5000_100000_64_4/"
-    config.env_dir = "./data/envs/subsampled_100000/"
+    # config.env_dir = "./data/envs/20240610_1309285/"
+    config.env_dir = "./data/envs/subsampled_100000"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
-    config.overwrite_existing_exp = False
+    config.overwrite_existing_exp = True
     config.num_training_steps = 10_000
 
     trial = SEHReactionTrainer(config)

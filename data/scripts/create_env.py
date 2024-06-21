@@ -21,14 +21,14 @@ def precompute_bb_masks(building_block_path, template_path, save_directory):
     bimolecular_reactions = [r for r in reactions if r.num_reactants == 2]
     building_block_mols = [Chem.MolFromSmiles(bb) for bb in BUILDING_BLOCKS]
 
-    masks = np.zeros((2, len(bimolecular_reactions), len(building_block_mols)), dtype=np.bool_)
+    masks = np.zeros((len(bimolecular_reactions), len(building_block_mols), 2), dtype=np.bool_)
     for rxn_i, reaction in enumerate(tqdm(bimolecular_reactions)):
         reactants = reaction.rxn.GetReactants()
         for bb_j, bb in enumerate(building_block_mols):
             if bb.HasSubstructMatch(reactants[0]):
-                masks[0, rxn_i, bb_j] = 1
+                masks[rxn_i, bb_j, 0] = 1
             if bb.HasSubstructMatch(reactants[1]):
-                masks[1, rxn_i, bb_j] = 1
+                masks[rxn_i, bb_j, 1] = 1
 
     save_directory = Path(save_directory)
     save_template_path = save_directory / "template.txt"

@@ -1,6 +1,7 @@
 from pathlib import Path
 import warnings
 
+from tqdm import tqdm
 import numpy as np
 import networkx as nx
 from rdkit import Chem, RDLogger
@@ -60,7 +61,9 @@ class SynthesisEnv:
         self.bimolecular_reactions = [r for r in self.reactions if r.num_reactants == 2]
         self.building_blocks: List[str] = BUILDING_BLOCKS
         self.building_block_ids: List[str] = BUILDING_BLOCK_IDS
-        self.building_block_mols: List[Chem.Mol] = [Chem.MolFromSmiles(bb) for bb in self.building_blocks]
+        # NOTE: Setup Building Block Molecules
+        print("Building Block Molecule Construction...")
+        self.building_block_mols: List[Chem.Mol] = [Chem.MolFromSmiles(bb) for bb in tqdm(self.building_blocks)]
         self.building_block_set: Set[str] = set(BUILDING_BLOCKS)
         self.precomputed_bb_masks = PRECOMPUTED_BB_MASKS
 
@@ -93,12 +96,13 @@ class SynthesisEnv:
             elif action.action is ReactionActionType.ReactUni:
                 assert isinstance(action.reaction, Reaction)
                 p = action.reaction.run_reactants((mol,))
+                assert p is not None, "reaction is Fail"
                 return p
             elif action.action is ReactionActionType.ReactBi:
                 assert isinstance(action.reaction, Reaction)
                 assert isinstance(action.block, Chem.Mol)
                 p = action.reaction.run_reactants((mol, action.block))
-                assert p is not None
+                assert p is not None, "reaction is Fail"
                 return p
             else:
                 raise ValueError

@@ -35,8 +35,9 @@ class ModelConfig:
     num_layers: int = 3
     num_emb: int = 128
     dropout: float = 0
-    num_layers_building_block: int = 3
+    fp_radius_building_block: int = 2
+    fp_nbits_building_block: int = 1024
+    num_layers_building_block: int = 0
     num_emb_building_block: int = 128
     graph_transformer: GraphTransformerConfig = GraphTransformerConfig()
-    graph_transformer_building_block: GraphTransformerConfig = GraphTransformerConfig()
     seq_transformer: SeqTransformerConfig = SeqTransformerConfig()

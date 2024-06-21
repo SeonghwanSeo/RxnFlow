@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch_geometric.data as gd
 from rdkit import Chem, RDLogger
+from rdkit.Chem import AllChem, DataStructs
 from rdkit.Chem import BondType, ChiralType
 from tqdm import tqdm
 
@@ -59,6 +60,8 @@ class SynthesisEnvContext:
         self,
         env: SynthesisEnv,
         num_cond_dim: int = 0,
+        fp_radius_building_block: int = 2,
+        fp_nbits_building_block: int = 1024,
         num_block_sampling: int = 3000,
         *args,
         atoms: List[str] = ATOMS,
@@ -152,12 +155,18 @@ class SynthesisEnvContext:
         self.precomputed_bb_masks = env.precomputed_bb_masks
 
         # NOTE: Setup Building Block Datas
-        self.building_block_datas: List[gd.Data] = [
-            self.graph_to_Data_block(self.mol_to_graph(bb)) for bb in tqdm(self.building_block_mols)
-        ]
+        print("Fingerprint Construction...")
 
-    def setup_blocks(self):
-        block_lmdb_path = self.env.env_dir / "building_block_graph"
+        self.building_block_fps: np.ndarray = np.empty(
+            (self.num_building_blocks, fp_nbits_building_block), dtype=np.uint8
+        )
+
+        def convert_fp(mol: Chem.Mol):
+            fp = AllChem.GetMorganFingerprintAsBitVect(mol, fp_radius_building_block, fp_nbits_building_block)
+            return np.frombuffer(fp.ToBitString().encode(), "u1") - ord("0")
+
+        for i, bb in enumerate(tqdm(self.building_block_mols)):
+            self.building_block_fps[i] = convert_fp(bb)
 
     def sample_blocks(self) -> List[int]:
         if self.num_block_sampling == self.num_building_blocks:
@@ -168,11 +177,13 @@ class SynthesisEnvContext:
             block_indices.sort()
         return block_indices
 
-    def get_block_data(self, block_indices: Union[torch.Tensor, List[int]]):
+    def get_block_data(self, block_indices: Union[torch.Tensor, List[int]], device: torch.device) -> torch.Tensor:
         if self.num_block_sampling == self.num_building_blocks:
-            return gd.Batch.from_data_list(self.building_block_datas)
+            return torch.from_numpy(self.building_block_fps)
         else:
-            return gd.Batch.from_data_list([self.building_block_datas[idx] for idx in block_indices])
+            out = torch.from_numpy(self.building_block_fps[block_indices])
+            out = out.to(device=device, dtype=torch.float)
+            return out
 
     def aidx_to_ReactionAction(
         self, g: gd.Data, action_idx: ReactionActionIdx, fwd: bool = True, block_indices: Optional[List[int]] = None
@@ -287,7 +298,10 @@ class SynthesisEnvContext:
         for i, e in enumerate(g.edges):
             ad = g.edges[e]
             for k, sl in zip(self.bond_attrs, self.bond_attr_slice):
-                idx = self.bond_attr_values[k].index(ad[k])
+                if ad[k] in self.bond_attr_values[k]:
+                    idx = self.bond_attr_values[k].index(ad[k])
+                else:
+                    idx = 0
                 edge_attr[i * 2, sl + idx] = 1
                 edge_attr[i * 2 + 1, sl + idx] = 1
         edge_index = np.array([e for i, j in g.edges for e in [(i, j), (j, i)]]).reshape((-1, 2)).T.astype(np.int64)
@@ -322,34 +336,6 @@ class SynthesisEnvContext:
             data["bck_react_uni_mask"] = bck_react_uni_mask
             data["bck_react_bi_mask"] = bck_react_bi_mask
 
-        data = gd.Data(**{k: torch.from_numpy(v) for k, v in data.items()})
-        return data
-
-    def graph_to_Data_block(self, g: Graph) -> gd.Data:
-        """Convert a networkx Graph to a torch geometric Data instance"""
-        x = np.zeros((max(1, len(g.nodes)), self.num_node_dim), dtype=np.float32)
-        x[0, -1] = len(g.nodes) == 0  # If there are no nodes, set the last dimension to 1
-
-        for i, n in enumerate(g.nodes):
-            ad = g.nodes[n]
-            for k, sl in zip(self.atom_attrs, self.atom_attr_slice):
-                idx = self.atom_attr_values[k].index(ad[k]) if k in ad else 0
-                x[i, sl + idx] = 1  # One-hot encode the attribute value
-
-        edge_attr = np.zeros((len(g.edges) * 2, self.num_edge_dim), dtype=np.float32)
-        for i, e in enumerate(g.edges):
-            ad = g.edges[e]
-            for k, sl in zip(self.bond_attrs, self.bond_attr_slice):
-                idx = self.bond_attr_values[k].index(ad[k])
-                edge_attr[i * 2, sl + idx] = 1
-                edge_attr[i * 2 + 1, sl + idx] = 1
-        edge_index = np.array([e for i, j in g.edges for e in [(i, j), (j, i)]]).reshape((-1, 2)).T.astype(np.int64)
-
-        data = dict(
-            x=x,
-            edge_index=edge_index,
-            edge_attr=edge_attr,
-        )
         data = gd.Data(**{k: torch.from_numpy(v) for k, v in data.items()})
         return data
 
@@ -513,7 +499,10 @@ class SynthesisEnvContext:
         return masks
 
     def create_masks_for_bb_from_precomputed(
-        self, smi: Union[str, Chem.Mol, Graph], bimolecular_rxn_idx: int
+        self,
+        smi: Union[str, Chem.Mol, Graph],
+        bimolecular_rxn_idx: int,
+        block_indices: Optional[List[int]],
     ) -> np.ndarray:
         """Creates masks for building blocks (for the 2nd reactant) for a given molecule and bimolecular reaction.
         Uses masks precomputed with data/building_blocks/precompute_bb_masks.py.
@@ -526,13 +515,12 @@ class SynthesisEnvContext:
         reaction = self.bimolecular_reactions[bimolecular_rxn_idx]
         reactants = reaction.rxn.GetReactants()
 
-        precomputed_bb_masks = self.precomputed_bb_masks[:, bimolecular_rxn_idx, :]
+        precomputed_bb_masks = self.precomputed_bb_masks[bimolecular_rxn_idx, block_indices, :]
+        num_blocks = precomputed_bb_masks.shape[0]
+        # we reverse the order of the reactants w.r.t BBs (i.e. reactants[1] first)
         mol_mask = np.array(
-            [  # we reverse the order of the reactants w.r.t BBs (i.e. reactants[1] first)
-                [mol.HasSubstructMatch(reactants[1])] * self.num_building_blocks,
-                [mol.HasSubstructMatch(reactants[0])] * self.num_building_blocks,
-            ],
+            [mol.HasSubstructMatch(reactants[1]), mol.HasSubstructMatch(reactants[0])],
             dtype=np.bool_,
-        )
+        ).reshape(1, 2)
         masks = mol_mask & precomputed_bb_masks
-        return masks.transpose(1, 0).reshape(self.num_building_blocks, 2)
+        return masks

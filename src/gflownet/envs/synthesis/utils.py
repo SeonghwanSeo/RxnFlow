@@ -97,12 +97,18 @@ class Reaction:
             p = ps[0][0]
             try:
                 Chem.SanitizeMol(p)
+                p = Chem.RemoveHs(p)
+                return p
             except (Chem.rdchem.KekulizeException, Chem.rdchem.AtomValenceException) as e:
-                warnings.warn(
-                    f"{e}: Reaction {self.template}, reactants {Chem.MolToSmiles(reactants[0])}, {Chem.MolToSmiles(reactants[1])}"
-                )
-            p = Chem.RemoveHs(p)
-            return p
+                if len(reactants) == 2:
+                    warnings.warn(
+                        f"{e}: BiMolecularReaction {self.template}, reactants {Chem.MolToSmiles(reactants[0])}, {Chem.MolToSmiles(reactants[1])}"
+                    )
+                else:
+                    warnings.warn(
+                        f"{e}: UniMolecularReaction {self.template}, reactant {Chem.MolToSmiles(reactants[0])}"
+                    )
+                return None
         else:
             return ps
 

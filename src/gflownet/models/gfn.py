@@ -47,13 +47,11 @@ class ASTB_GFN(nn.Module):
             ln_type=cfg.model.graph_transformer.ln_type,
         )
 
-        self.block_transf = GraphTransformer_Block(
-            x_dim=env_ctx.num_node_dim,
-            e_dim=env_ctx.num_edge_dim,
-            num_emb=cfg.model.num_emb_building_block,
-            num_layers=cfg.model.num_layers_building_block,
-            num_heads=cfg.model.graph_transformer_building_block.num_heads,
-            ln_type=cfg.model.graph_transformer_building_block.ln_type,
+        self.block_mlp = mlp(
+            cfg.model.fp_nbits_building_block,
+            cfg.model.num_emb_building_block,
+            cfg.model.num_emb_building_block,
+            cfg.model.num_layers_building_block,
         )
 
         num_emb = cfg.model.num_emb

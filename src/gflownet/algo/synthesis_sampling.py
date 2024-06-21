@@ -71,8 +71,8 @@ class SynthesisSampler:
 
         # NOTE: Block Sampling
         block_indices = self.ctx.sample_blocks()
-        block_g = self.ctx.get_block_data(block_indices).to(dev)
-        block_emb = model.block_transf.forward(block_g)
+        block_fp = self.ctx.get_block_data(block_indices, dev)
+        block_emb = model.block_mlp(block_fp)
 
         # This will be returned
         data = [{"traj": [], "reward_pred": None, "is_valid": True, "is_sink": []} for _ in range(n)]
@@ -144,21 +144,24 @@ class SynthesisSampler:
                     data[i]["is_sink"].append(1)
 
                 else:  # If not done, step the self.environment
-                    rdmol = self.env.step(rdmols[i], reaction_actions[j])
-                    if rdmol is None:
+                    try:
+                        new_rdmol = self.env.step(rdmols[i], reaction_actions[j])
+                    except:
+                        new_rdmol = None
+                    if new_rdmol is None:
                         done[i] = True
                         data[i]["is_valid"] = False
-                        continue
+                        new_rdmol = Chem.Mol()
 
                     if traj_idx == self.max_len - 1:
                         done[i] = True
 
-                    n_back = max(1, self.env.count_backward_transitions(rdmol))
+                    n_back = max(1, self.env.count_backward_transitions(new_rdmol))
                     bck_logprob[i].append(math.log(1 / n_back))
                     bck_log_n_action[i].append(math.log(n_back))
                     data[i]["is_sink"].append(0)
-                    rdmols[i] = rdmol
-                    graphs[i] = self.ctx.mol_to_graph(rdmol)
+                    rdmols[i] = new_rdmol
+                    graphs[i] = self.ctx.mol_to_graph(new_rdmol)
 
                 if False and done[i] and len(data[i]["traj"]) <= 2:
                     data[i]["is_valid"] = False
