@@ -93,12 +93,13 @@ class SynthesisEnv:
             elif action.action is ReactionActionType.ReactUni:
                 assert isinstance(action.reaction, Reaction)
                 p = action.reaction.run_reactants((mol,))
+                assert p is not None, "reaction is Fail"
                 return p
             elif action.action is ReactionActionType.ReactBi:
                 assert isinstance(action.reaction, Reaction)
                 assert isinstance(action.block, Chem.Mol)
                 p = action.reaction.run_reactants((mol, action.block))
-                assert p is not None
+                assert p is not None, "reaction is Fail"
                 return p
             else:
                 raise ValueError
