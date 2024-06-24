@@ -42,34 +42,11 @@ class ReactionActionCategorical:
 
         self.logits = logits
 
-        if ReactionActionType.AddFirstReactant in self.secondary_action_types:
-            # NOTE: PlaceHolder
-            self.logits[ReactionActionType.AddFirstReactant] = torch.full(
-                (self.num_graphs, self.ctx.num_block_sampling), -torch.inf, device=dev
-            )
-        if ReactionActionType.AddReactant in self.secondary_action_types:
-            self.logits[ReactionActionType.AddReactant] = torch.full(
-                (self.num_graphs, self.ctx.num_block_sampling), -torch.inf, device=dev
-            )
         self.batch = torch.arange(self.num_graphs, device=dev)
 
         self.logprobs: Optional[Dict[ReactionActionType, torch.Tensor]] = None
-        self.log_n: Dict[ReactionActionType, float] = self.compute_log_n()
 
         self.setuped: bool = False
-
-    def compute_log_n(self):
-        log_n = {}
-        # NOTE:
-        # AddFirstReactant, BckRemoveFirstReactant: Always at Step 0 -> math.log(1) + math.log(num_blocks)
-        log_n[ReactionActionType.Stop] = math.log(3)
-        log_n[ReactionActionType.AddFirstReactant] = math.log(self.ctx.num_block_sampling)
-        log_n[ReactionActionType.ReactUni] = math.log(3)
-        log_n[ReactionActionType.ReactBi] = math.log(3) + math.log(self.ctx.num_block_sampling)
-        log_n[ReactionActionType.BckRemoveFirstReactant] = math.log(self.ctx.num_building_blocks)
-        log_n[ReactionActionType.BckReactUni] = math.log(3)
-        log_n[ReactionActionType.BckReactBi] = math.log(3) + math.log(self.ctx.num_building_blocks)
-        return log_n
 
     def _compute_batchwise_max(self) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         """Compute the argmax for each batch element in the batch of logits.
@@ -143,6 +120,17 @@ class ReactionActionCategorical:
         if block_emb is None:
             block_fp = self.ctx.get_block_data(block_indices, self.dev)
             block_emb = self.model.block_mlp(block_fp)
+
+        if not self.setuped:
+            # NOTE: PlaceHolder
+            if ReactionActionType.AddFirstReactant in self.secondary_action_types:
+                self.logits[ReactionActionType.AddFirstReactant] = torch.full(
+                    (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
+                )
+            if ReactionActionType.AddReactant in self.secondary_action_types:
+                self.logits[ReactionActionType.AddReactant] = torch.full(
+                    (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
+                )
 
         traj_idx = self.traj_indices[0]
         assert (self.traj_indices == traj_idx).all()  # For sampling, we use the same traj index
@@ -253,6 +241,16 @@ class ReactionActionCategorical:
                 block_fp = self.ctx.get_block_data(block_indices, self.dev)
                 block_emb = self.model.block_mlp(block_fp)
 
+            # NOTE: PlaceHolder
+            if ReactionActionType.AddFirstReactant in self.secondary_action_types:
+                self.logits[ReactionActionType.AddFirstReactant] = torch.full(
+                    (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
+                )
+            if ReactionActionType.AddReactant in self.secondary_action_types:
+                self.logits[ReactionActionType.AddReactant] = torch.full(
+                    (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
+                )
+
             for i, action in enumerate(actions):
                 type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action
                 t = self.types[type_idx]
@@ -317,8 +315,19 @@ class ReactionActionCategorical:
             log_action_probs[i] = log_prob
         return log_action_probs
 
-    def log_n_actions(self, actions):
+    def log_n_actions(self, actions, action_sampling_size: int):
+        # NOTE:
+        # AddFirstReactant, BckRemoveFirstReactant: Always at Step 0 -> math.log(1) + math.log(num_blocks)
+        log_n = {}
+        log_n[ReactionActionType.Stop] = math.log(3)
+        log_n[ReactionActionType.AddFirstReactant] = math.log(action_sampling_size)
+        log_n[ReactionActionType.ReactUni] = math.log(3)
+        log_n[ReactionActionType.ReactBi] = math.log(3) + math.log(action_sampling_size)
+        log_n[ReactionActionType.BckRemoveFirstReactant] = math.log(action_sampling_size)
+        log_n[ReactionActionType.BckReactUni] = math.log(3)
+        log_n[ReactionActionType.BckReactBi] = math.log(3) + math.log(action_sampling_size)
+
         action_types = [
             (self.types[type_idx] if not is_stop else ReactionActionType.Stop) for type_idx, is_stop, *_ in actions
         ]
-        return torch.tensor([self.log_n[action_type] for action_type in action_types], device=self.dev)
+        return torch.tensor([log_n[action_type] for action_type in action_types], device=self.dev)

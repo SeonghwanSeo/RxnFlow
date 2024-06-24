@@ -34,22 +34,22 @@ ATOMS: List[str] = [
     "Br",
     "I",
     "B",
-    "Sn",
-    "Ca",
-    "Na",
-    "Ba",
-    "Zn",
-    "Rh",
-    "Ag",
-    "Li",
-    "Yb",
-    "K",
-    "Fe",
-    "Cs",
-    "Bi",
-    "Pd",
-    "Cu",
-    "Si",
+    # "Sn",
+    # "Ca",
+    # "Na",
+    # "Ba",
+    # "Zn",
+    # "Rh",
+    # "Ag",
+    # "Li",
+    # "Yb",
+    # "K",
+    # "Fe",
+    # "Cs",
+    # "Bi",
+    # "Pd",
+    # "Cu",
+    # "Si",
 ]
 
 
@@ -62,7 +62,6 @@ class SynthesisEnvContext:
         num_cond_dim: int = 0,
         fp_radius_building_block: int = 2,
         fp_nbits_building_block: int = 1024,
-        num_block_sampling: int = 3000,
         *args,
         atoms: List[str] = ATOMS,
         chiral_types: List = DEFAULT_CHIRAL_TYPES,
@@ -104,16 +103,16 @@ class SynthesisEnvContext:
         self.bond_attrs = sorted(self.bond_attr_values.keys())
         self.bond_attr_slice = [0] + list(np.cumsum([len(self.bond_attr_values[i]) for i in self.bond_attrs]))
         self.default_wildcard_replacement = "C"
-        self.negative_attrs = ["fill_wildcard"]
-        pt = Chem.GetPeriodicTable()
-
-        # We'll handle nitrogen valence later explicitly in graph_to_Data;
-        # wildcard atoms have 0 valence until filled in
-        self._max_atom_valence = {
-            **{a: max(pt.GetValenceList(a)) for a in atoms},
-            "N": 3 if not allow_5_valence_nitrogen else 5,
-            "*": 0,
-        }
+        # self.negative_attrs = ["fill_wildcard"]
+        # pt = Chem.GetPeriodicTable()
+        #
+        # # We'll handle nitrogen valence later explicitly in graph_to_Data;
+        # # wildcard atoms have 0 valence until filled in
+        # self._max_atom_valence = {
+        #     **{a: max(pt.GetValenceList(a)) for a in atoms},
+        #     "N": 3 if not allow_5_valence_nitrogen else 5,
+        #     "*": 0,
+        # }
         self.num_node_dim = sum(len(v) for v in self.atom_attr_values.values())
         self.num_edge_dim = sum(len(v) for v in self.bond_attr_values.values())
         self.num_cond_dim = num_cond_dim
@@ -151,7 +150,6 @@ class SynthesisEnvContext:
         self.building_blocks: List[str] = env.building_blocks
         self.building_block_mols: List[Chem.Mol] = env.building_block_mols
         self.num_building_blocks: int = len(self.building_blocks)
-        self.num_block_sampling: int = min(num_block_sampling, self.num_building_blocks)
         self.precomputed_bb_masks = env.precomputed_bb_masks
 
         # NOTE: Setup Building Block Datas
@@ -168,22 +166,20 @@ class SynthesisEnvContext:
         for i, bb in enumerate(tqdm(self.building_block_mols)):
             self.building_block_fps[i] = convert_fp(bb)
 
-    def sample_blocks(self) -> List[int]:
-        if self.num_block_sampling == self.num_building_blocks:
+    def sample_blocks(self, num_action_sampling: int) -> List[int]:
+        if num_action_sampling >= self.num_building_blocks:
             block_indices = list(range(self.num_building_blocks))
         else:
-            assert self.num_block_sampling < self.num_building_blocks
-            block_indices = np.random.choice(self.num_building_blocks, self.num_block_sampling, replace=False).tolist()
+            block_indices = np.random.choice(self.num_building_blocks, num_action_sampling, replace=False).tolist()
             block_indices.sort()
         return block_indices
 
     def get_block_data(self, block_indices: Union[torch.Tensor, List[int]], device: torch.device) -> torch.Tensor:
-        if self.num_block_sampling == self.num_building_blocks:
-            return torch.from_numpy(self.building_block_fps)
+        if len(block_indices) >= self.num_building_blocks:
+            out = torch.from_numpy(self.building_block_fps)
         else:
             out = torch.from_numpy(self.building_block_fps[block_indices])
-            out = out.to(device=device, dtype=torch.float)
-            return out
+        return out.to(device=device, dtype=torch.float)
 
     def aidx_to_ReactionAction(
         self, g: gd.Data, action_idx: ReactionActionIdx, fwd: bool = True, block_indices: Optional[List[int]] = None
@@ -298,7 +294,7 @@ class SynthesisEnvContext:
         for i, e in enumerate(g.edges):
             ad = g.edges[e]
             for k, sl in zip(self.bond_attrs, self.bond_attr_slice):
-                if ad[k] in self.bond_attr_values[k]:
+                if True and ad[k] in self.bond_attr_values[k]:
                     idx = self.bond_attr_values[k].index(ad[k])
                 else:
                     idx = 0

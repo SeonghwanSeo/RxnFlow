@@ -1,22 +1,22 @@
-import os
-import shutil
 import socket
 from typing import Callable, Dict, List, Tuple, Union
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch_geometric.data as gd
-from rdkit.Chem.rdchem import Mol as RDMol
 from torch import Tensor
+import torch_geometric.data as gd
+
+from rdkit.Chem.rdchem import Mol as RDMol
 
 from gflownet.config import Config, init_empty
 from gflownet.envs.synthesis import SynthesisEnvContext
-from gflownet.models import bengio2021flow
-from gflownet.online_trainer import StandardOnlineTrainer
-from gflownet.trainer import FlatRewards, GFNTask, RewardScalar
+from gflownet.astb_online_trainer import StandardOnlineTrainer
+from gflownet.astb_trainer import FlatRewards, GFNTask, RewardScalar
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.transforms import to_logreward
+
+from gflownet.models import bengio2021flow
 
 
 class SEHReactionTask(GFNTask):
@@ -98,19 +98,23 @@ class SEHReactionTrainer(StandardOnlineTrainer):
         cfg.algo.method = "ASTB"
         cfg.algo.max_len = 4
         cfg.algo.global_batch_size = 64
-        cfg.algo.num_block_sampling = 5000
         cfg.algo.sampling_tau = 0.99
         cfg.algo.illegal_action_logreward = -75
         cfg.algo.offline_ratio = 0.0
         cfg.algo.train_random_action_prob = 0.0
         cfg.algo.valid_random_action_prob = 0.0
         cfg.algo.valid_offline_ratio = 0
-        cfg.algo.tb.epsilon = None
-        cfg.algo.tb.bootstrap_own_reward = False
-        cfg.algo.tb.Z_learning_rate = 1e-3
-        cfg.algo.tb.Z_lr_decay = 50_000
-        cfg.algo.tb.do_parameterize_p_b = True
-        cfg.algo.tb.do_sample_p_b = False
+        cfg.algo.astb.epsilon = None
+        cfg.algo.astb.bootstrap_own_reward = False
+        cfg.algo.astb.Z_learning_rate = 1e-3
+        cfg.algo.astb.Z_lr_decay = 50_000
+        cfg.algo.astb.do_parameterize_p_b = True
+        cfg.algo.astb.do_sample_p_b = False
+
+        # NOTE: for ASTB
+        cfg.algo.astb.train_action_sampling_size = 5000
+        cfg.algo.astb.valid_action_sampling_size = 50000
+        cfg.algo.astb.final_action_sampling_size = 50000
 
         cfg.cond.temperature.sample_dist = "uniform"
         cfg.cond.temperature.dist_params = [0, 64.0]
@@ -132,7 +136,6 @@ class SEHReactionTrainer(StandardOnlineTrainer):
             num_cond_dim=self.task.num_cond_dim,
             fp_radius_building_block=self.cfg.model.fp_radius_building_block,
             fp_nbits_building_block=self.cfg.model.fp_nbits_building_block,
-            num_block_sampling=self.cfg.algo.num_block_sampling,
         )
 
 
@@ -142,11 +145,11 @@ def main():
     config.print_every = 1
     config.validate_every = 10
     config.log_dir = "./logs/debug_run_seh_reaction_pb_5000_100000_64_4/"
-    # config.env_dir = "./data/envs/20240610_1309285/"
-    config.env_dir = "./data/envs/subsampled_100000"
+    config.env_dir = "./data/envs/subsampled_10000/"
+    # config.env_dir = "./data/envs/subsampled_100000"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 10_000
+    config.num_training_steps = 10
 
     trial = SEHReactionTrainer(config)
     trial.run()

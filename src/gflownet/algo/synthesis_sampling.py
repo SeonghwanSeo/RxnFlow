@@ -43,7 +43,13 @@ class SynthesisSampler:
         self.pad_with_terminal_state = pad_with_terminal_state
 
     def sample_from_model(
-        self, model: nn.Module, n: int, cond_info: Tensor, dev: torch.device, random_action_prob: float = 0.0
+        self,
+        model: nn.Module,
+        n: int,
+        action_sampling_size: int,
+        cond_info: Tensor,
+        dev: torch.device,
+        random_action_prob: float = 0.0,
     ):
         """Samples a model in a minibatch
 
@@ -53,6 +59,8 @@ class SynthesisSampler:
             Model whose forward() method returns ActionCategorical instances
         n: int
             Number of graphs to sample
+        action_sampling_size: int,
+            Number of actions (building blocks) to sample
         cond_info: Tensor
             Conditional information of each trajectory, shape (n, n_info)
         dev: torch.device
@@ -70,7 +78,7 @@ class SynthesisSampler:
         """
 
         # NOTE: Block Sampling
-        block_indices = self.ctx.sample_blocks()
+        block_indices = self.ctx.sample_blocks(action_sampling_size)
         block_fp = self.ctx.get_block_data(block_indices, dev)
         block_emb = model.block_mlp(block_fp)
 
@@ -124,8 +132,9 @@ class SynthesisSampler:
                 self.ctx.aidx_to_ReactionAction(g, a, block_indices=block_indices)
                 for g, a in zip(torch_graphs, actions)
             ]
+            fwd_action_sampling_size = len(block_indices)
             log_probs = fwd_cat.log_prob(actions, not_done(rdmols), block_indices, block_emb=block_emb)
-            log_n_actions = fwd_cat.log_n_actions(actions)
+            log_n_actions = fwd_cat.log_n_actions(actions, fwd_action_sampling_size)
 
             # Step each trajectory, and accumulate statistics
             for i, j in zip(not_done(range(n)), range(n)):
@@ -176,7 +185,7 @@ class SynthesisSampler:
             data[i]["bck_logprobs"] = torch.tensor(bck_logprob[i], device=dev).reshape(-1)
             data[i]["bck_log_n_actions"] = torch.tensor(bck_log_n_action[i], device=dev).reshape(-1)
             data[i]["bck_a"] = bck_a[i]
-            data[i]["block_indices"] = block_indices
+            data[i]["action_indices"] = block_indices
             if self.pad_with_terminal_state:
                 data[i]["traj"].append((graphs[i], ForwardAction(ReactionActionType.Stop)))
                 data[i]["is_sink"].append(1)

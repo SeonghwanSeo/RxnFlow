@@ -2,6 +2,7 @@ import argparse
 import random
 from pathlib import Path
 from rdkit import Chem
+from rdkit.Chem import BondType
 from tqdm import tqdm
 
 ATOMS: list[str] = [
@@ -15,23 +16,24 @@ ATOMS: list[str] = [
     "Br",
     "I",
     "B",
-    "Sn",
-    "Ca",
-    "Na",
-    "Ba",
-    "Zn",
-    "Rh",
-    "Ag",
-    "Li",
-    "Yb",
-    "K",
-    "Fe",
-    "Cs",
-    "Bi",
-    "Pd",
-    "Cu",
-    "Si",
+    # "Sn",
+    # "Ca",
+    # "Na",
+    # "Ba",
+    # "Zn",
+    # "Rh",
+    # "Ag",
+    # "Li",
+    # "Yb",
+    # "K",
+    # "Fe",
+    # "Cs",
+    # "Bi",
+    # "Pd",
+    # "Cu",
+    # "Si",
 ]
+BONDS = [BondType.SINGLE, BondType.DOUBLE, BondType.TRIPLE, BondType.AROMATIC]
 
 
 def parse_bool(b):
@@ -77,13 +79,23 @@ if __name__ == "__main__":
                 mol = Chem.MolFromSmiles(_smi, replacements={"[2H]": "[H]"})
                 if mol is None:
                     continue
+                try:
+                    Chem.SanitizeMol(mol)
+                except:
+                    continue
+
                 fail = False
                 for atom in mol.GetAtoms():
                     if atom.GetSymbol() not in ATOMS:
                         fail = True
                         break
+                for bond in mol.GetBonds():
+                    if bond.GetBondType() not in BONDS:
+                        fail = True
+                        break
                 if fail:
                     continue
+
                 smi = Chem.MolToSmiles(mol)
                 if smi is None:
                     continue

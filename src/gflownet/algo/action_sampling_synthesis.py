@@ -11,8 +11,8 @@ from torch import Tensor
 from torch_scatter import scatter, scatter_sum
 
 from gflownet.algo.config import TBVariant
-from gflownet.algo.synthesis_sampling import SynthesisSampler
 from gflownet.config import Config
+from gflownet.algo.synthesis_sampling import SynthesisSampler
 from gflownet.envs.synthesis import (
     Graph,
     SynthesisEnv,
@@ -22,40 +22,6 @@ from gflownet.envs.synthesis import (
 )
 
 from gflownet.trainer import GFNAlgorithm
-
-
-def shift_right(x: torch.Tensor, z=0):
-    "Shift x right by 1, and put z in the first position"
-    x = torch.roll(x, 1, dims=0)
-    x[0] = z
-    return x
-
-
-def cross(x: torch.Tensor):
-    """
-    Calculate $y_{ij} = \sum_{t=i}^j x_t$.
-    The lower triangular portion is the inverse of the upper triangular one.
-    """
-    assert x.ndim == 1
-    y = torch.cumsum(x, 0)
-    return y[None] - shift_right(y)[:, None]
-
-
-def subTB(v: torch.tensor, x: torch.Tensor):
-    r"""
-    Compute the SubTB(1):
-    $\forall i \leq j: D[i,j] =
-        \log \frac{F(s_i) \prod_{k=i}^{j} P_F(s_{k+1}|s_k)}
-        {F(s_{j + 1}) \prod_{k=i}^{j} P_B(s_k|s_{k+1})}$
-      for a single trajectory.
-    Note that x_k should be P_F(s_{k+1}|s_k) - P_B(s_k|s_{k+1}).
-    """
-    assert v.ndim == x.ndim == 1
-    # D[i,j] = V[i] - V[j + 1]
-    D = v[:-1, None] - v[None, 1:]
-    # cross(x)[i, j] = sum(x[i:j+1])
-    D = D + cross(x)
-    return torch.triu(D)
 
 
 class TrajectoryBalanceModel(nn.Module):
@@ -115,7 +81,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         self.cfg = cfg.algo.tb
         self.max_len = cfg.algo.max_len
         self.max_nodes = cfg.algo.max_nodes
-        self.length_normalize_losses = cfg.algo.tb.do_length_normalize
+        self.length_normalize_losses = cfg.algo.astb.do_length_normalize
         # Experimental flags
         self.reward_loss_is_mae = True
         self.tb_loss_is_mae = False
@@ -139,11 +105,15 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             pad_with_terminal_state=self.cfg.do_parameterize_p_b,
         )
         if self.cfg.variant == TBVariant.SubTB1:
-            self._subtb_max_len = self.global_cfg.algo.max_len + 2
-            self._init_subtb(torch.device("cuda"))  # TODO: where are we getting device info?
+            raise NotImplementedError
 
     def create_training_data_from_own_samples(
-        self, model: TrajectoryBalanceModel, n: int, cond_info: Tensor, random_action_prob: float
+        self,
+        model: TrajectoryBalanceModel,
+        n: int,
+        action_sampling_size: int,
+        cond_info: Tensor,
+        random_action_prob: float,
     ):
         """Generate trajectories by sampling a model
 
@@ -153,6 +123,8 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
            The model being sampled
         n: int
             Number of trajectories to sample
+        action_sampling_size: int
+            Number of building blocks (action) to sample
         cond_info: torch.tensor
             Conditional information, shape (N, n_info)
         random_action_prob: float
@@ -171,7 +143,14 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         """
         dev = self.ctx.device
         cond_info = cond_info.to(dev)
-        data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob)
+        data = None
+        while data is None:
+            try:
+                data = self.graph_sampler.sample_from_model(
+                    model, n, action_sampling_size, cond_info, dev, random_action_prob
+                )
+            except Exception as e:
+                data = None
         logZ_pred = model.logZ(cond_info)
         for i in range(n):
             data[i]["logZ"] = logZ_pred[i].item()
@@ -180,7 +159,8 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
     def create_training_data_from_graphs(
         self,
         graphs,
-        model: Optional[TrajectoryBalanceModel] = None,
+        model: Optional[TrajectoryBalanceModel],
+        action_sampling_size: int,
         cond_info: Optional[Tensor] = None,
         random_action_prob: Optional[float] = None,
     ):
@@ -215,10 +195,6 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
 
         if self.model_is_autoregressive:
             raise NotImplementedError
-            torch_graphs = [self.ctx.graph_to_Data(tj["traj"][-1][0], len(tj["traj"]), None) for tj in trajs]
-            actions = [
-                self.ctx.ReactionAction_to_aidx(g, i[1]) for g, tj in zip(torch_graphs, trajs) for i in tj["traj"]
-            ]
         else:
             torch_graphs = [traj_to_Data(tj["traj"], tj_idx) for tj in trajs for tj_idx in range(len(tj["traj"]))]
             actions = [
@@ -244,32 +220,11 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
 
         # NOTE: ASTB -> all trajectory with same traj idx in on batch share the block indices
         # NOTE: NON-TENSOR-DATA for BUILDING BLOCK MASKING
-        batch.block_indices = trajs[0]["block_indices"]
+        batch.action_indices = trajs[0]["action_indices"]
         batch.graphs = [i[0] for tj in trajs for i in tj["traj"]]
 
         if self.cfg.do_correct_idempotent:
             raise NotImplementedError()
-            # Every timestep is a (graph_a, action, graph_b) triple
-            agraphs = [i[0] for tj in trajs for i in tj["traj"]]
-            # Here we start at the 1th timestep and append the result
-            bgraphs = sum([[i[0] for i in tj["traj"][1:]] + [tj["result"]] for tj in trajs], [])
-            gactions = [i[1] for tj in trajs for i in tj["traj"]]
-            ipa = [
-                self.get_idempotent_actions(g, gd, gp, a)
-                for g, gd, gp, a in zip(agraphs, torch_graphs, bgraphs, gactions)
-            ]
-            batch.ip_actions = torch.tensor(sum(ipa, []))
-            batch.ip_lens = torch.tensor([len(i) for i in ipa])
-            if self.cfg.do_parameterize_p_b:
-                # Here we start at the 0th timestep and prepend None (it will be unused)
-                bgraphs = sum([[None] + [i[0] for i in tj["traj"][:-1]] for tj in trajs], [])
-                gactions = [i for tj in trajs for i in tj["bck_a"]]
-                bck_ipa = [
-                    self.get_idempotent_actions(g, gd, gp, a)
-                    for g, gd, gp, a in zip(agraphs, torch_graphs, bgraphs, gactions)
-                ]
-                batch.bck_ip_actions = torch.tensor(sum(bck_ipa, []))
-                batch.bck_ip_lens = torch.tensor([len(i) for i in bck_ipa])
 
         return batch
 
@@ -326,40 +281,15 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         # Compute the log prob of each action in the trajectory
         if self.cfg.do_correct_idempotent:
             raise NotImplementedError()
-            # If we want to correct for idempotent actions, we need to sum probabilities
-            # i.e. to compute P(s' | s) = sum_{a that lead to s'} P(a|s)
-            # here we compute the indices of the graph that each action corresponds to, ip_lens
-            # contains the number of idempotent actions for each transition, so we
-            # repeat_interleave as with batch_idx
-            ip_batch_idces = torch.arange(batch.ip_lens.shape[0], device=dev).repeat_interleave(batch.ip_lens)
-            # Indicate that the `batch` corresponding to each action is the above
-            ip_log_prob = fwd_cat.log_prob(batch.ip_actions, batch=ip_batch_idces)
-            # take the logsumexp (because we want to sum probabilities, not log probabilities)
-            # TODO: numerically stable version:
-            p = scatter(ip_log_prob.exp(), ip_batch_idces, dim=0, dim_size=batch_idx.shape[0], reduce="sum")
-            # As a (reasonable) band-aid, ignore p < 1e-30, this will prevent underflows due to
-            # scatter(small number) = 0 on CUDA
-            log_p_F = p.clamp(1e-30).log()
-            log_n_F = fwd_cat.log_n_actions(batch.ip_actions)
-
-            if self.cfg.do_parameterize_p_b:
-                # Now we repeat this but for the backward policy
-                bck_ip_batch_idces = torch.arange(batch.bck_ip_lens.shape[0], device=dev).repeat_interleave(
-                    batch.bck_ip_lens
-                )
-                bck_ip_log_prob = bck_cat.log_prob(batch.bck_ip_actions, batch=bck_ip_batch_idces)
-                bck_p = scatter(
-                    bck_ip_log_prob.exp(), bck_ip_batch_idces, dim=0, dim_size=batch_idx.shape[0], reduce="sum"
-                )
-                log_p_B = bck_p.clamp(1e-30).log()
-                log_n_B = bck_cat.log_n_actions(batch.bck_ip_actions)
         else:
             # Else just naively take the logprob of the actions we took
-            log_p_F = fwd_cat.log_prob(batch.actions, batch.graphs, batch.block_indices)
-            log_n_F = fwd_cat.log_n_actions(batch.actions)
+            fwd_action_sampling_size = len(batch.action_indices)
+            log_p_F = fwd_cat.log_prob(batch.actions, batch.graphs, batch.action_indices)
+            log_n_F = fwd_cat.log_n_actions(batch.actions, fwd_action_sampling_size)
             if self.cfg.do_parameterize_p_b:
-                log_p_B = bck_cat.log_prob(batch.bck_actions, batch.graphs, batch.block_indices)
-                log_n_B = bck_cat.log_n_actions(batch.bck_actions)
+                bck_action_sampling_size = self.ctx.num_building_blocks
+                log_p_B = bck_cat.log_prob(batch.bck_actions, batch.graphs, batch.action_indices)
+                log_n_B = bck_cat.log_n_actions(batch.bck_actions, bck_action_sampling_size)
 
         if self.cfg.do_parameterize_p_b:
             # If we're modeling P_B then trajectories are padded with a virtual terminal state sF,
@@ -368,8 +298,6 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             log_n_F[final_graph_idx] = 0
             if self.cfg.variant == TBVariant.SubTB1 or self.cfg.variant == TBVariant.DB:
                 raise NotImplementedError
-                # Force the pad states' F(s) prediction to be R
-                per_graph_out[final_graph_idx, 0] = clip_log_R
 
             # To get the correct P_B we need to shift all predictions by 1 state, and ignore the
             # first P_B prediction of every trajectory.
@@ -396,26 +324,8 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
 
         if self.cfg.variant == TBVariant.SubTB1:
             raise NotImplementedError()
-            # SubTB interprets the per_graph_out predictions to predict the state flow F(s)
-            if self.cfg.cum_subtb:
-                traj_losses = self.subtb_cum(log_p_F, log_p_B, per_graph_out[:, 0], clip_log_R, batch.traj_lens)
-            else:
-                traj_losses = self.subtb_loss_fast(log_p_F, log_p_B, per_graph_out[:, 0], clip_log_R, batch.traj_lens)
-
-            # The position of the first graph of each trajectory
-            first_graph_idx = torch.zeros_like(batch.traj_lens)
-            torch.cumsum(batch.traj_lens[:-1], 0, out=first_graph_idx[1:])
-            log_Z = per_graph_out[first_graph_idx, 0]
         elif self.cfg.variant == TBVariant.DB:
             raise NotImplementedError()
-            F_sn = per_graph_out[:, 0]
-            F_sm = per_graph_out[:, 0].roll(-1)
-            F_sm[final_graph_idx] = clip_log_R
-            transition_losses = (F_sn + log_p_F - F_sm - log_p_B).pow(2)
-            traj_losses = scatter(transition_losses, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")
-            first_graph_idx = torch.zeros_like(batch.traj_lens)
-            torch.cumsum(batch.traj_lens[:-1], 0, out=first_graph_idx[1:])
-            log_Z = per_graph_out[first_graph_idx, 0]
         else:
             # Compute log numerator and denominator of the ASTB objective
             numerator = log_Z + traj_log_n_F + traj_log_p_F
@@ -475,114 +385,3 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             "loss": loss.item(),
         }
         return loss, info
-
-    def _init_subtb(self, dev):
-        r"""Precompute all possible subtrajectory indices that we will use for computing the loss:
-        \sum_{m=1}^{T-1} \sum_{n=m+1}^T
-            \log( \frac{F(s_m) \prod_{i=m}^{n-1} P_F(s_{i+1}|s_i)}
-                       {F(s_n) \prod_{i=m}^{n-1} P_B(s_i|s_{i+1})} )^2
-        """
-        ar = torch.arange(self._subtb_max_len, device=dev)
-        # This will contain a sequence of repeated ranges, e.g.
-        # tidx[4] == tensor([0, 0, 1, 0, 1, 2, 0, 1, 2, 3])
-        tidx = [torch.tril_indices(i, i, device=dev)[1] for i in range(self._subtb_max_len)]
-        # We need two sets of indices, the first are the source indices, the second the destination
-        # indices. We precompute such indices for every possible trajectory length.
-
-        # The source indices indicate where we index P_F and P_B, e.g. for m=3 and n=6 we'd need the
-        # sequence [3,4,5]. We'll simply concatenate all sequences, for every m and n (because we're
-        # computing \sum_{m=1}^{T-1} \sum_{n=m+1}^T), and get [0, 0,1, 0,1,2, ..., 3,4,5, ...].
-
-        # The destination indices indicate the index of the subsequence the source indices correspond to.
-        # This is used in the scatter sum to compute \log\prod_{i=m}^{n-1}. For the above example, we'd get
-        # [0, 1,1, 2,2,2, ..., 17,17,17, ...]
-
-        # And so with these indices, for example for m=0, n=3, the forward probability
-        # of that subtrajectory gets computed as result[2] = P_F[0] + P_F[1] + P_F[2].
-
-        self._precomp = [
-            (
-                torch.cat([i + tidx[T - i] for i in range(T)]),
-                torch.cat(
-                    [ar[: T - i].repeat_interleave(ar[: T - i] + 1) + ar[T - i + 1 : T + 1].sum() for i in range(T)]
-                ),
-            )
-            for T in range(1, self._subtb_max_len)
-        ]
-
-    def subtb_loss_fast(self, P_F, P_B, F, R, traj_lengths):
-        r"""Computes the full SubTB(1) loss (all arguments on log-scale).
-
-        Computes:
-            \sum_{m=1}^{T-1} \sum_{n=m+1}^T
-                \log( \frac{F(s_m) \prod_{i=m}^{n-1} P_F(s_{i+1}|s_i)}
-                           {F(s_n) \prod_{i=m}^{n-1} P_B(s_i|s_{i+1})} )^2
-            where T is the length of the trajectory, for every trajectory.
-
-        The shape of P_F, P_B, and F should be (total num steps,), i.e. sum(traj_lengths). The shape
-        of R and traj_lengths should be (num trajs,).
-
-        Parameters
-        ----------
-        P_F: Tensor
-            Forward policy log-probabilities
-        P_B: Tensor
-            Backward policy log-probabilities
-        F: Tensor
-            Log-scale flow predictions
-        R: Tensor
-            The log-reward of each trajectory
-        traj_lengths: Tensor
-            The length of each trajectory
-
-        Returns
-        -------
-        losses: Tensor
-            The SubTB(1) loss of each trajectory.
-        """
-        num_trajs = int(traj_lengths.shape[0])
-        max_len = int(traj_lengths.max() + 1)
-        dev = traj_lengths.device
-        cumul_lens = torch.cumsum(torch.cat([torch.zeros(1, device=dev), traj_lengths]), 0).long()
-        total_loss = torch.zeros(num_trajs, device=dev)
-        ar = torch.arange(max_len, device=dev)
-        car = torch.cumsum(ar, 0)
-        F_and_R = torch.cat([F, R])
-        R_start = F.shape[0]
-        for ep in range(traj_lengths.shape[0]):
-            offset = cumul_lens[ep]
-            T = int(traj_lengths[ep])
-            if self.cfg.do_parameterize_p_b:
-                # The length of the trajectory is the padded length, reduce by 1
-                T -= 1
-            idces, dests = self._precomp[T - 1]
-            fidces = torch.cat(
-                [torch.cat([ar[i + 1 : T] + offset, torch.tensor([R_start + ep], device=dev)]) for i in range(T)]
-            )
-            P_F_sums = scatter_sum(P_F[idces + offset], dests)
-            P_B_sums = scatter_sum(P_B[idces + offset], dests)
-            F_start = F[offset : offset + T].repeat_interleave(T - ar[:T])
-            F_end = F_and_R[fidces]
-            total_loss[ep] = (F_start - F_end + P_F_sums - P_B_sums).pow(2).sum() / car[T]
-        return total_loss
-
-    def subtb_cum(self, P_F, P_B, F, R, traj_lengths):
-        """
-        Calcualte the subTB(1) loss (all arguments on log-scale) using dynamic programming.
-
-        See also `subTB`
-        """
-        dev = traj_lengths.device
-        num_trajs = len(traj_lengths)
-        total_loss = torch.zeros(num_trajs, device=dev)
-        x = torch.cumsum(traj_lengths, 0)
-        # P_B is already shifted
-        pdiff = P_F - P_B
-        for ep, (s_idx, e_idx) in enumerate(zip(shift_right(x), x)):
-            if self.cfg.do_parameterize_p_b:
-                e_idx -= 1
-            n = e_idx - s_idx
-            fr = torch.cat([F[s_idx:e_idx], torch.tensor([R[ep]], device=F.device)])
-            p = pdiff[s_idx:e_idx]
-            total_loss[ep] = subTB(fr, p).pow(2).sum() / (n * n + n) * 2
-        return total_loss
