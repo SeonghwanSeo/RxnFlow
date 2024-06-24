@@ -4,9 +4,11 @@ import numpy as np
 import torch
 import torch_geometric.data as gd
 from rdkit import Chem, RDLogger
-from rdkit.Chem import AllChem, DataStructs
+from rdkit.Chem import AllChem
 from rdkit.Chem import BondType, ChiralType
 from tqdm import tqdm
+
+from gflownet.envs.graph_building_env import GraphBuildingEnvContext
 
 from gflownet.envs.synthesis.utils import Reaction
 from gflownet.envs.synthesis.env import SynthesisEnv, Graph
@@ -23,37 +25,10 @@ RDLogger.DisableLog("rdApp.*")
 
 DEFAULT_CHIRAL_TYPES = [ChiralType.CHI_UNSPECIFIED, ChiralType.CHI_TETRAHEDRAL_CW, ChiralType.CHI_TETRAHEDRAL_CCW]
 
-ATOMS: List[str] = [
-    "C",
-    "N",
-    "O",
-    "F",
-    "P",
-    "S",
-    "Cl",
-    "Br",
-    "I",
-    "B",
-    # "Sn",
-    # "Ca",
-    # "Na",
-    # "Ba",
-    # "Zn",
-    # "Rh",
-    # "Ag",
-    # "Li",
-    # "Yb",
-    # "K",
-    # "Fe",
-    # "Cs",
-    # "Bi",
-    # "Pd",
-    # "Cu",
-    # "Si",
-]
+ATOMS: List[str] = ["C", "N", "O", "F", "P", "S", "Cl", "Br", "I", "B"]
 
 
-class SynthesisEnvContext:
+class SynthesisEnvContext(GraphBuildingEnvContext):
     """This context specifies how to create molecules by applying reaction templates."""
 
     def __init__(
@@ -512,7 +487,6 @@ class SynthesisEnvContext:
         reactants = reaction.rxn.GetReactants()
 
         precomputed_bb_masks = self.precomputed_bb_masks[bimolecular_rxn_idx, block_indices, :]
-        num_blocks = precomputed_bb_masks.shape[0]
         # we reverse the order of the reactants w.r.t BBs (i.e. reactants[1] first)
         mol_mask = np.array(
             [mol.HasSubstructMatch(reactants[1]), mol.HasSubstructMatch(reactants[0])],

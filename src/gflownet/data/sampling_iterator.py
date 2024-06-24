@@ -189,12 +189,9 @@ class SamplingIterator(IterableDataset):
                     list(self.task.flat_reward_transform(torch.stack(flat_rewards))) if len(flat_rewards) else []
                 )
 
-                if num_offline > 0:
-                    trajs = self.algo.create_training_data_from_graphs(
-                        graphs, self.model, cond_info["encoding"][:num_offline], 0
-                    )
-                else:
-                    trajs = []
+                trajs = self.algo.create_training_data_from_graphs(
+                    graphs, self.model, cond_info["encoding"][:num_offline], 0
+                )
 
             else:  # If we're not sampling the conditionals, then the idcs refer to listed preferences
                 num_online = num_offline

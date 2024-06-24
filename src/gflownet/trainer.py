@@ -19,13 +19,8 @@ from torch.utils.data import DataLoader, Dataset
 
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.data.sampling_iterator import SamplingIterator
-
-from gflownet.envs.synthesis.env import SynthesisEnv
-from gflownet.envs.synthesis.env_context import SynthesisEnvContext
-from gflownet.envs.synthesis.action_categorical import ReactionActionCategorical
+from gflownet.envs.graph_building_env import GraphActionCategorical, GraphBuildingEnv, GraphBuildingEnvContext
 from gflownet.envs.seq_building_env import SeqBatch
-
-
 from gflownet.utils.misc import create_logger
 from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
 
@@ -129,8 +124,8 @@ class GFNTrainer:
         self.sampling_model: nn.Module
         self.replay_buffer: Optional[ReplayBuffer]
         self.mb_size: int
-        self.env: SynthesisEnv
-        self.ctx: SynthesisEnvContext
+        self.env: GraphBuildingEnv
+        self.ctx: GraphBuildingEnvContext
         self.task: GFNTask
         self.algo: GFNAlgorithm
 
@@ -191,7 +186,7 @@ class GFNTrainer:
 
         RDLogger.DisableLog("rdApp.*")
         self.rng = np.random.default_rng(142857)
-        self.env = SynthesisEnv(self.cfg.env_dir)
+        self.env = GraphBuildingEnv()
         self.setup_data()
         self.setup_task()
         self.setup_env_context()
@@ -207,7 +202,7 @@ class GFNTrainer:
             wapper = mp_object_wrapper(
                 obj,
                 self.cfg.num_workers,
-                cast_types=(gd.Batch, ReactionActionCategorical, SeqBatch),
+                cast_types=(gd.Batch, GraphActionCategorical, SeqBatch),
                 pickle_messages=self.cfg.pickle_mp_messages,
             )
             self.to_terminate.append(wapper.terminate)
@@ -449,7 +444,7 @@ class GFNTrainer:
         for k, v in info.items():
             self._summary_writer.add_scalar(f"{key}_{k}", v, index)
         if wandb.run is not None:
-            wandb.log({f"{key}/{k}": v for k, v in info.items()}, step=index)
+            wandb.log({f"{key}_{k}": v for k, v in info.items()}, step=index)
 
     def __del__(self):
         self.terminate()

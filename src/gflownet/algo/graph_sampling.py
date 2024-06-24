@@ -1,5 +1,4 @@
 import copy
-import math
 from typing import List, Optional
 
 import torch
@@ -94,8 +93,6 @@ class GraphSampler:
         # Let's also keep track of trajectory statistics according to the model
         fwd_logprob: List[List[Tensor]] = [[] for i in range(n)]
         bck_logprob: List[List[Tensor]] = [[] for i in range(n)]
-        fwd_log_n_action: List[List[Tensor]] = [[] for _ in range(n)]
-        bck_log_n_action: List[List[Tensor]] = [[] for _ in range(n)]
 
         graphs = [self.env.new() for i in range(n)]
         done = [False] * n
@@ -140,18 +137,15 @@ class GraphSampler:
                 actions = fwd_cat.sample()
             graph_actions = [self.ctx.aidx_to_GraphAction(g, a) for g, a in zip(torch_graphs, actions)]
             log_probs = fwd_cat.log_prob(actions)
-            log_n_actions = fwd_cat.log_n_actions(actions)
             # Step each trajectory, and accumulate statistics
             for i, j in zip(not_done(range(n)), range(n)):
                 fwd_logprob[i].append(log_probs[j].unsqueeze(0))
-                fwd_log_n_action[i].append(log_n_actions[j].unsqueeze(0))
                 data[i]["traj"].append((graphs[i], graph_actions[j]))
                 bck_a[i].append(self.env.reverse(graphs[i], graph_actions[j]))
                 # Check if we're done
                 if graph_actions[j].action is GraphActionType.Stop:
                     done[i] = True
                     bck_logprob[i].append(torch.tensor([1.0], device=dev).log())
-                    bck_log_n_action[i].append(torch.tensor([4.0], device=dev).log())  # Number of Backward actions
                     data[i]["is_sink"].append(1)
                 else:  # If not done, try to step the self.environment
                     gp = graphs[i]
@@ -163,7 +157,6 @@ class GraphSampler:
                         done[i] = True
                         data[i]["is_valid"] = False
                         bck_logprob[i].append(torch.tensor([1.0], device=dev).log())
-                        bck_log_n_action[i].append(torch.tensor([4.0], device=dev).log())  # Number of Backward actions
                         data[i]["is_sink"].append(1)
                         continue
                     if t == self.max_len - 1:
@@ -172,7 +165,6 @@ class GraphSampler:
                     # P_B = uniform backward
                     n_back = self.env.count_backward_transitions(gp, check_idempotent=self.correct_idempotent)
                     bck_logprob[i].append(torch.tensor([1 / n_back], device=dev).log())
-                    bck_log_n_action[i].append(torch.tensor([n_back], device=dev).log())
                     data[i]["is_sink"].append(0)
                     graphs[i] = gp
                 if done[i] and self.sanitize_samples and not self.ctx.is_sane(graphs[i]):
@@ -203,7 +195,6 @@ class GraphSampler:
             data[i]["fwd_logprob"] = sum(fwd_logprob[i])
             data[i]["bck_logprob"] = sum(bck_logprob[i])
             data[i]["bck_logprobs"] = torch.stack(bck_logprob[i]).reshape(-1)
-            data[i]["bck_log_n_actions"] = torch.tensor(bck_log_n_action[i], device=dev).reshape(-1)
             data[i]["result"] = graphs[i]
             data[i]["bck_a"] = bck_a[i]
             if self.pad_with_terminal_state:

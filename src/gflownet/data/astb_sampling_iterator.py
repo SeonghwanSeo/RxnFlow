@@ -7,10 +7,10 @@ import torch.nn as nn
 from torch.utils.data import Dataset
 
 from gflownet.data.replay_buffer import ReplayBuffer
-from gflownet.data import sampling_iterator
+from gflownet.data.sampling_iterator import SamplingIterator
 
 
-class SamplingIterator(sampling_iterator.SamplingIterator):
+class ASTBSamplingIterator(SamplingIterator):
     """This class allows us to parallelise and train faster.
 
     By separating sampling data/the model and building torch geometric

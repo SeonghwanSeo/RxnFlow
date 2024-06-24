@@ -1,35 +1,23 @@
-from copy import deepcopy
-import math
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Optional
 
-import networkx as nx
 import numpy as np
 import torch
-import torch.nn as nn
 import torch_geometric.data as gd
 from torch import Tensor
-from torch_scatter import scatter, scatter_sum
+from torch_scatter import scatter
 
 from gflownet.algo.config import TBVariant
 from gflownet.config import Config
+from gflownet.algo.trajectory_balance import TrajectoryBalanceModel
+from gflownet.trainer import GFNAlgorithm
+
 from gflownet.algo.synthesis_sampling import SynthesisSampler
 from gflownet.envs.synthesis import (
     Graph,
     SynthesisEnv,
     SynthesisEnvContext,
-    ReactionActionCategorical,
     ReactionAction,
 )
-
-from gflownet.trainer import GFNAlgorithm
-
-
-class TrajectoryBalanceModel(nn.Module):
-    def forward(self, batch: gd.Batch) -> Tuple[ReactionActionCategorical, Tensor]:
-        raise NotImplementedError()
-
-    def logZ(self, cond_info: Tensor) -> Tensor:
-        raise NotImplementedError()
 
 
 class ActionSamplingTrajectoryBalance(GFNAlgorithm):

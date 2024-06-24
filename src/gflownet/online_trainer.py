@@ -11,11 +11,8 @@ from gflownet.algo.advantage_actor_critic import A2C
 from gflownet.algo.flow_matching import FlowMatching
 from gflownet.algo.soft_q_learning import SoftQLearning
 from gflownet.algo.trajectory_balance import TrajectoryBalance
-from gflownet.algo.action_sampling_synthesis import ActionSamplingTrajectoryBalance
 from gflownet.data.replay_buffer import ReplayBuffer
-
-# from gflownet.models.graph_transformer import GraphTransformerGFN
-from gflownet.models.gfn import ASTB_GFN
+from gflownet.models.graph_transformer import GraphTransformerGFN
 
 from .trainer import GFNTrainer
 
@@ -30,7 +27,7 @@ def model_grad_norm(model):
 
 class StandardOnlineTrainer(GFNTrainer):
     def setup_model(self):
-        self.model = ASTB_GFN(
+        self.model = GraphTransformerGFN(
             self.ctx,
             self.cfg,
             do_bck=self.cfg.algo.tb.do_parameterize_p_b,
@@ -39,10 +36,7 @@ class StandardOnlineTrainer(GFNTrainer):
 
     def setup_algo(self):
         algo = self.cfg.algo.method
-        assert self.cfg.algo.method == "ASTB"
-        if algo == "ASTB":
-            algo = ActionSamplingTrajectoryBalance
-        elif algo == "TB":
+        if algo == "TB":
             algo = TrajectoryBalance
         elif algo == "FM":
             algo = FlowMatching

@@ -3,11 +3,11 @@ import warnings
 
 from tqdm import tqdm
 import numpy as np
-import networkx as nx
 from rdkit import Chem, RDLogger
 
 from typing import List, Set, Tuple, Union
 
+from gflownet.envs.graph_building_env import Graph, GraphBuildingEnv
 from gflownet.envs.synthesis.utils import Reaction
 from gflownet.envs.synthesis.action import (
     ReactionAction,
@@ -20,21 +20,7 @@ logger = RDLogger.logger()
 RDLogger.DisableLog("rdApp.*")
 
 
-class Graph(nx.Graph):
-    def __str__(self):
-        return repr(self)
-
-    def __repr__(self):
-        return f'<{list(self.nodes)}, {list(self.edges)}, {list(self.nodes[i]["v"] for i in self.nodes)}>'
-
-    def bridges(self):
-        return list(nx.bridges(self))
-
-    def relabel_nodes(self, rmap):
-        return nx.relabel_nodes(self, rmap)
-
-
-class SynthesisEnv:
+class SynthesisEnv(GraphBuildingEnv):
     """Molecules and reaction templates environment. The new (initial) state are Empty Molecular Graph.
 
     This environment specifies how to obtain new molecules from applying reaction templates to current molecules. Works by
@@ -68,9 +54,6 @@ class SynthesisEnv:
         self.precomputed_bb_masks = PRECOMPUTED_BB_MASKS
 
     def new(self) -> Graph:
-        return self.empty_graph()
-
-    def empty_graph(self) -> Graph:
         return Graph()
 
     def step(self, mol: Chem.Mol, action: ReactionAction) -> Chem.Mol:

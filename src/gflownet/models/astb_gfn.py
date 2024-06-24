@@ -1,12 +1,13 @@
 from itertools import chain
-from typing import List, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
 
 from gflownet.config import Config
-from gflownet.models.graph_transformer import GraphTransformer_Block, GraphTransformer, mlp
+from gflownet.models.graph_transformer import GraphTransformer, mlp
+
 from gflownet.envs.synthesis import ReactionActionType, SynthesisEnvContext, ReactionActionCategorical
 
 

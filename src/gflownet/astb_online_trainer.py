@@ -7,10 +7,7 @@ import torch
 from omegaconf import OmegaConf
 from torch import Tensor
 
-from gflownet.algo.action_sampling_synthesis import ActionSamplingTrajectoryBalance
 from gflownet.data.replay_buffer import ReplayBuffer
-
-from gflownet.models.gfn import ASTB_GFN
 
 from .astb_trainer import GFNTrainer
 
@@ -24,19 +21,6 @@ def model_grad_norm(model):
 
 
 class StandardOnlineTrainer(GFNTrainer):
-    def setup_model(self):
-        self.model = ASTB_GFN(
-            self.ctx,
-            self.cfg,
-            do_bck=self.cfg.algo.tb.do_parameterize_p_b,
-            num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
-        )
-
-    def setup_algo(self):
-        assert self.cfg.algo.method == "ASTB"
-        algo = ActionSamplingTrajectoryBalance
-        self.algo = algo(self.env, self.ctx, self.rng, self.cfg)
-
     def setup_data(self):
         self.training_data = []
         self.test_data = []

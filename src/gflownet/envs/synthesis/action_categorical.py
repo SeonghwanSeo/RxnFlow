@@ -1,6 +1,5 @@
 import math
 import random
-import time
 
 from rdkit import Chem
 import torch
@@ -8,12 +7,13 @@ import torch_geometric.data as gd
 
 from typing import Dict, List, Optional, Union
 
+from gflownet.envs.graph_building_env import GraphActionCategorical
 from gflownet.envs.synthesis.action import ReactionActionIdx, ReactionActionType, get_action_idx
 from gflownet.envs.synthesis.env import Graph
 from gflownet.envs.synthesis.env_context import SynthesisEnvContext
 
 
-class ReactionActionCategorical:
+class ReactionActionCategorical(GraphActionCategorical):
     def __init__(
         self,
         graphs: gd.Batch,

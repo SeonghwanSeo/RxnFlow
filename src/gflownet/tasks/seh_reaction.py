@@ -7,14 +7,15 @@ import torch.nn as nn
 from torch import Tensor
 import torch_geometric.data as gd
 
-from rdkit.Chem.rdchem import Mol as RDMol
+from rdkit.Chem import Mol as RDMol
 
 from gflownet.config import Config, init_empty
-from gflownet.envs.synthesis import SynthesisEnvContext
-from gflownet.astb_online_trainer import StandardOnlineTrainer
-from gflownet.astb_trainer import FlatRewards, GFNTask, RewardScalar
+from gflownet.trainer import FlatRewards, GFNTask, RewardScalar
 from gflownet.utils.conditioning import TemperatureConditional
 from gflownet.utils.transforms import to_logreward
+
+from gflownet.envs.synthesis import SynthesisEnvContext
+from gflownet.astb_online_trainer import StandardOnlineTrainer
 
 from gflownet.models import bengio2021flow
 
