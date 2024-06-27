@@ -172,7 +172,7 @@ class SynthesisSampler:
                     rdmols[i] = new_rdmol
                     graphs[i] = self.ctx.mol_to_graph(new_rdmol)
 
-                if False and done[i] and len(data[i]["traj"]) <= 2:
+                if done[i] and len(data[i]["traj"]) <= 2:
                     data[i]["is_valid"] = False
             if all(done):
                 break

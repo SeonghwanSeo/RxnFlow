@@ -147,6 +147,11 @@ class ReactionActionCategorical(GraphActionCategorical):
             self.setuped = True
             return [get_action_idx(type_idx, block_idx=block_idx) for sample_idx, block_idx in argmax]
 
+        if traj_idx == 1:
+            # NOTE: Mask the Stop for the second action
+            logits = self.logits[ReactionActionType.Stop]
+            self.logits[ReactionActionType.Stop] = torch.full_like(logits, -torch.inf)
+
         # NOTE: Use the Gumbel trick to sample categoricals
         gumbel = []
         for t in self.primary_action_types:
@@ -251,9 +256,12 @@ class ReactionActionCategorical(GraphActionCategorical):
                     (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
                 )
 
-            for i, action in enumerate(actions):
+            for i, (traj_idx, action) in enumerate(zip(self.traj_indices, actions)):
                 type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action
                 t = self.types[type_idx]
+
+                if traj_idx == 1:
+                    self.logits[ReactionActionType.Stop][i] = -torch.inf
 
                 if t is ReactionActionType.AddFirstReactant:
                     logit = self.model.add_first_reactant_hook(self.graph_embedding[i], block_emb)
@@ -271,10 +279,12 @@ class ReactionActionCategorical(GraphActionCategorical):
         # NOTE: placeholder of log_action_probs and log_action_space_sizes
         log_action_probs = torch.empty(len(actions), device=self.dev)
 
-        for i, action in enumerate(actions):
+        for i, (traj_idx, action) in enumerate(zip(self.traj_indices, actions, strict=True)):
             type_idx, is_stop, rxn_idx, block_idx, block_is_first = action
             t = self.types[type_idx]
-            if is_stop:
+            if is_stop and traj_idx == 1:
+                log_prob = math.log(1e-3)
+            elif is_stop:
                 log_prob = self.logprobs[t][i]
             elif t is ReactionActionType.AddFirstReactant:
                 log_prob = self.logprobs[t][i, block_idx]

@@ -444,7 +444,7 @@ class GFNTrainer:
         for k, v in info.items():
             self._summary_writer.add_scalar(f"{key}_{k}", v, index)
         if wandb.run is not None:
-            wandb.log({f"{key}_{k}": v for k, v in info.items()}, step=index)
+            wandb.log({f"{key}/{k}": v for k, v in info.items()}, step=index)
 
     def __del__(self):
         self.terminate()
