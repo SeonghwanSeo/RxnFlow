@@ -87,7 +87,6 @@ class SynthesisSampler:
         # Let's also keep track of trajectory statistics according to the model
         fwd_logprob: List[List[float]] = [[] for _ in range(n)]
         bck_logprob: List[List[float]] = [[] for _ in range(n)]
-        fwd_log_n_action: List[List[float]] = [[] for _ in range(n)]
         bck_log_n_action: List[List[float]] = [[] for _ in range(n)]
 
         graphs = [self.env.new() for _ in range(n)]
@@ -132,16 +131,13 @@ class SynthesisSampler:
                 self.ctx.aidx_to_ReactionAction(g, a, block_indices=block_indices)
                 for g, a in zip(torch_graphs, actions)
             ]
-            fwd_action_sampling_size = len(block_indices)
             log_probs = fwd_cat.log_prob(actions, not_done(rdmols), block_indices, block_emb=block_emb)
-            log_n_actions = fwd_cat.log_n_actions(actions, fwd_action_sampling_size)
 
             # Step each trajectory, and accumulate statistics
             for i, j in zip(not_done(range(n)), range(n)):
                 i: int
                 j: int
                 fwd_logprob[i].append(log_probs[j].unsqueeze(0))
-                fwd_log_n_action[i].append(log_n_actions[j].unsqueeze(0))
                 data[i]["traj"].append((graphs[i], reaction_actions[j]))
                 fwd_a[i].append(reaction_actions[j])
                 bck_a[i].append(self.env.reverse(rdmols[i], reaction_actions[j]))
@@ -185,7 +181,7 @@ class SynthesisSampler:
             data[i]["bck_logprobs"] = torch.tensor(bck_logprob[i], device=dev).reshape(-1)
             data[i]["bck_log_n_actions"] = torch.tensor(bck_log_n_action[i], device=dev).reshape(-1)
             data[i]["bck_a"] = bck_a[i]
-            data[i]["action_indices"] = block_indices
+            data[i]["block_indices"] = block_indices
             if self.pad_with_terminal_state:
                 data[i]["traj"].append((graphs[i], ForwardAction(ReactionActionType.Stop)))
                 data[i]["is_sink"].append(1)

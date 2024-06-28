@@ -113,9 +113,9 @@ class SEHReactionTrainer(StandardOnlineTrainer):
         cfg.algo.astb.do_sample_p_b = False
 
         # NOTE: for ASTB
-        cfg.algo.astb.train_action_sampling_size = 5000
-        cfg.algo.astb.valid_action_sampling_size = 50000
-        cfg.algo.astb.final_action_sampling_size = 50000
+        cfg.algo.astb.train_action_sampling_size = 10000
+        cfg.algo.astb.valid_action_sampling_size = 20000
+        cfg.algo.astb.final_action_sampling_size = 20000
 
         cfg.cond.temperature.sample_dist = "uniform"
         cfg.cond.temperature.dist_params = [0, 64.0]
@@ -144,13 +144,13 @@ def main():
     """Example of how this trainer can be run"""
     config = init_empty(Config())
     config.print_every = 1
-    config.validate_every = 10
-    config.log_dir = "./logs/debug_run_seh_reaction_pb_5000_100000_64_4/"
-    config.env_dir = "./data/envs/subsampled_10000/"
+    config.validate_every = 100
+    config.num_training_steps = 1000
+    config.log_dir = "./logs/debug1/"
+    config.env_dir = "./data/envs/subsampled_5000/"
     # config.env_dir = "./data/envs/subsampled_100000"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
-    config.num_training_steps = 10
 
     trial = SEHReactionTrainer(config)
     trial.run()

@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 import numpy as np
+import random
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Subsample building blocks")
@@ -13,6 +14,7 @@ if __name__ == "__main__":
         action="store_true",
         help="Sampling building blocks uniformly at random, otherwise take the first n.",
     )
+    parser.add_argument("--seed", type=int, help="Random Seed", default=1)
     args = parser.parse_args()
 
     root_dir = Path(args.root_dir)
@@ -26,9 +28,12 @@ if __name__ == "__main__":
     assert mask.any(axis=(0, 2)).all()
 
     if args.random:
-        print(f"get subset with randomly selected {args.num_samples} blocks")
-        indices = np.random.choice(len(lines), args.num_samples, replace=False)
-        indices = np.sort(indices)
+        print(f"get subset with randomly selected {args.num_samples} blocks with seed {args.seed}")
+        random.seed(args.seed)
+        indices = list(range(len(lines)))
+        random.shuffle(indices)
+        indices = indices[: args.num_samples]
+        indices.sort()
     else:
         print(f"get subset with first {args.num_samples} blocks")
         indices = list(range(args.num_samples))

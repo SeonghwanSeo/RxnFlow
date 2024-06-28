@@ -99,7 +99,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         self,
         model: TrajectoryBalanceModel,
         n: int,
-        action_sampling_size: int,
+        block_sampling_size: int,
         cond_info: Tensor,
         random_action_prob: float,
     ):
@@ -111,7 +111,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
            The model being sampled
         n: int
             Number of trajectories to sample
-        action_sampling_size: int
+        block_sampling_size: int
             Number of building blocks (action) to sample
         cond_info: torch.tensor
             Conditional information, shape (N, n_info)
@@ -135,9 +135,10 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         while data is None:
             try:
                 data = self.graph_sampler.sample_from_model(
-                    model, n, action_sampling_size, cond_info, dev, random_action_prob
+                    model, n, block_sampling_size, cond_info, dev, random_action_prob
                 )
             except Exception as e:
+                raise e
                 data = None
         logZ_pred = model.logZ(cond_info)
         for i in range(n):
@@ -148,7 +149,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         self,
         graphs,
         model: Optional[TrajectoryBalanceModel],
-        action_sampling_size: int,
+        block_sampling_size: int,
         cond_info: Optional[Tensor] = None,
         random_action_prob: Optional[float] = None,
     ):
@@ -192,7 +193,6 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         batch = self.ctx.collate(torch_graphs)
         batch.traj_lens = torch.tensor([len(i["traj"]) for i in trajs])
         batch.log_p_B = torch.cat([i["bck_logprobs"] for i in trajs], 0)  # ASTB - In this work, dummy
-        batch.log_n_B = torch.cat([i["bck_log_n_actions"] for i in trajs], 0)  # ASTB - In this work, dummy
         batch.actions = torch.tensor(actions)
         if self.cfg.do_parameterize_p_b:
             batch.bck_actions = torch.tensor(
@@ -206,9 +206,11 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         batch.cond_info = cond_info
         batch.is_valid = torch.tensor([i.get("is_valid", True) for i in trajs]).float()
 
-        # NOTE: ASTB -> all trajectory with same traj idx in on batch share the block indices
+        # NOTE: ASGFN -> all trajectory with same traj idx in on batch share the block indices
         # NOTE: NON-TENSOR-DATA for BUILDING BLOCK MASKING
-        batch.action_indices = trajs[0]["action_indices"]
+        batch.block_indices = trajs[0]["block_indices"]
+        batch.block_sampling_size = len(batch.block_indices)
+        batch.block_space_size = self.ctx.num_building_blocks
         batch.graphs = [i[0] for tj in trajs for i in tj["traj"]]
 
         if self.cfg.do_correct_idempotent:
@@ -271,19 +273,15 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             raise NotImplementedError()
         else:
             # Else just naively take the logprob of the actions we took
-            fwd_action_sampling_size = len(batch.action_indices)
-            log_p_F = fwd_cat.log_prob(batch.actions, batch.graphs, batch.action_indices)
-            log_n_F = fwd_cat.log_n_actions(batch.actions, fwd_action_sampling_size)
+            log_p_F = fwd_cat.log_prob(batch.actions, batch.graphs, batch.block_indices)
+            log_p_F = fwd_cat.convert_log_p_F(log_p_F, batch.block_sampling_size, batch.block_space_size)
             if self.cfg.do_parameterize_p_b:
-                bck_action_sampling_size = self.ctx.num_building_blocks
-                log_p_B = bck_cat.log_prob(batch.bck_actions, batch.graphs, batch.action_indices)
-                log_n_B = bck_cat.log_n_actions(batch.bck_actions, bck_action_sampling_size)
+                log_p_B = bck_cat.log_prob(batch.bck_actions, batch.graphs, batch.block_indices)
 
         if self.cfg.do_parameterize_p_b:
             # If we're modeling P_B then trajectories are padded with a virtual terminal state sF,
             # zero-out the logP_F of those states
             log_p_F[final_graph_idx] = 0
-            log_n_F[final_graph_idx] = 0
             if self.cfg.variant == TBVariant.SubTB1 or self.cfg.variant == TBVariant.DB:
                 raise NotImplementedError
 
@@ -298,17 +296,13 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             # we'll use to ignore the last padding state(s) of each trajectory. This by the same
             # occasion masks out the first P_B of the "next" trajectory that we've shifted.
             log_p_B = torch.roll(log_p_B, -1, 0) * (1 - batch.is_sink)
-            log_n_B = torch.roll(log_n_B, -1, 0) * (1 - batch.is_sink)
         else:  # NOTE: NOT IMPLEMENTED YET
             log_p_B = batch.log_p_B
-            log_n_B = batch.log_n_B
-        assert log_p_F.shape == log_p_B.shape == log_n_F.shape == log_n_B.shape
+        assert log_p_F.shape == log_p_B.shape
 
         # This is the log probability of each trajectory
         traj_log_p_F = scatter(log_p_F, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")
         traj_log_p_B = scatter(log_p_B, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")
-        traj_log_n_F = scatter(log_n_F, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")
-        traj_log_n_B = scatter(log_n_B, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")
 
         if self.cfg.variant == TBVariant.SubTB1:
             raise NotImplementedError()
@@ -316,8 +310,8 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             raise NotImplementedError()
         else:
             # Compute log numerator and denominator of the ASTB objective
-            numerator = log_Z + traj_log_n_F + traj_log_p_F
-            denominator = clip_log_R + traj_log_n_B + traj_log_p_B
+            numerator = log_Z + traj_log_p_F
+            denominator = clip_log_R + traj_log_p_B
 
             if self.mask_invalid_rewards:
                 # Instead of being rude to the model and giving a

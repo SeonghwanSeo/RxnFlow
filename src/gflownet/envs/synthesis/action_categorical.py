@@ -1,3 +1,4 @@
+from functools import cached_property
 import math
 import random
 
@@ -147,15 +148,14 @@ class ReactionActionCategorical(GraphActionCategorical):
             self.setuped = True
             return [get_action_idx(type_idx, block_idx=block_idx) for sample_idx, block_idx in argmax]
 
-        if traj_idx == 1:
-            # NOTE: Mask the Stop for the second action
-            logits = self.logits[ReactionActionType.Stop]
-            self.logits[ReactionActionType.Stop] = torch.full_like(logits, -torch.inf)
-
         # NOTE: Use the Gumbel trick to sample categoricals
         gumbel = []
         for t in self.primary_action_types:
-            logit = self.logits[t]
+            if t == ReactionActionType.Stop and traj_idx == 1:
+                # NOTE: Mask the Stop for the second action
+                logit = torch.full_like(self.logits[t], -torch.inf)
+            else:
+                logit = self.logits[t]
             noise = torch.rand_like(logit)
             gumbel.append(logit - (-noise.log()).log())
         argmax = self.argmax(x=gumbel)  # tuple of action type, action idx
@@ -260,7 +260,9 @@ class ReactionActionCategorical(GraphActionCategorical):
                 type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action
                 t = self.types[type_idx]
 
-                if traj_idx == 1:
+                if False and traj_idx == 1:
+                    # NOTE: Masking Stop at t=1 for logprob calculation can make model training incorrectly
+                    #       Just for gflownet training (not sampling), use raw logit for one-step trajectory
                     self.logits[ReactionActionType.Stop][i] = -torch.inf
 
                 if t is ReactionActionType.AddFirstReactant:
@@ -269,6 +271,7 @@ class ReactionActionCategorical(GraphActionCategorical):
 
                 elif t is ReactionActionType.ReactBi:  # secondary logits were computed
                     mask = self.ctx.create_masks_for_bb_from_precomputed(graphs[i], rxn_idx, block_indices).any(axis=1)
+                    mask[block_local_idx] = True
                     mask = torch.from_numpy(mask).to(self.dev)
                     logit = self.model.add_reactant_hook(rxn_idx, self.graph_embedding[i], block_emb)
                     logit = self._mask(logit, mask)
@@ -282,9 +285,8 @@ class ReactionActionCategorical(GraphActionCategorical):
         for i, (traj_idx, action) in enumerate(zip(self.traj_indices, actions, strict=True)):
             type_idx, is_stop, rxn_idx, block_idx, block_is_first = action
             t = self.types[type_idx]
-            if is_stop and traj_idx == 1:
-                log_prob = math.log(1e-3)
-            elif is_stop:
+            if t is ReactionActionType.Stop:
+                assert is_stop
                 log_prob = self.logprobs[t][i]
             elif t is ReactionActionType.AddFirstReactant:
                 log_prob = self.logprobs[t][i, block_idx]
@@ -297,7 +299,8 @@ class ReactionActionCategorical(GraphActionCategorical):
             else:
                 raise ValueError
             log_action_probs[i] = log_prob
-        return log_action_probs
+        return log_action_probs.clamp(math.log(self._epsilon))
+        # return log_action_probs
 
     def log_prob_bck(self, actions: List[ReactionActionIdx]) -> torch.Tensor:
         """Access the log-probability of backward actions"""
@@ -323,21 +326,34 @@ class ReactionActionCategorical(GraphActionCategorical):
             else:
                 raise ValueError
             log_action_probs[i] = log_prob
-        return log_action_probs
+        return log_action_probs.clamp(math.log(self._epsilon))
 
-    def log_n_actions(self, actions, action_sampling_size: int):
-        # NOTE:
-        # AddFirstReactant, BckRemoveFirstReactant: Always at Step 0 -> math.log(1) + math.log(num_blocks)
-        log_n = {}
-        log_n[ReactionActionType.Stop] = math.log(3)
-        log_n[ReactionActionType.AddFirstReactant] = math.log(action_sampling_size)
-        log_n[ReactionActionType.ReactUni] = math.log(3)
-        log_n[ReactionActionType.ReactBi] = math.log(3) + math.log(action_sampling_size)
-        log_n[ReactionActionType.BckRemoveFirstReactant] = math.log(action_sampling_size)
-        log_n[ReactionActionType.BckReactUni] = math.log(3)
-        log_n[ReactionActionType.BckReactBi] = math.log(3) + math.log(action_sampling_size)
+    def convert_log_p_F(self, log_p_F, block_sampling_size: int, block_space_size: int):
+        if self.logprobs is None:
+            raise NotImplementedError()
+        logp_stop = self.logprobs[ReactionActionType.Stop]
+        logp_react_uni = self.logprobs[ReactionActionType.ReactUni]
+        p_stop = logp_stop.exp().squeeze(-1)
+        p_react_uni = logp_react_uni.exp().sum(-1)
+        p_react_bi = (1 - p_stop - p_react_uni).clamp(self._epsilon)
 
-        action_types = [
-            (self.types[type_idx] if not is_stop else ReactionActionType.Stop) for type_idx, is_stop, *_ in actions
-        ]
-        return torch.tensor([log_n[action_type] for action_type in action_types], device=self.dev)
+        expansion_ratio = self.expansion_ratio(block_sampling_size, block_space_size)
+        dominator = p_stop + p_react_uni + (expansion_ratio * p_react_bi)
+        log_dominator = torch.log(dominator)
+        return log_p_F - log_dominator
+
+    def expansion_ratio(self, block_sampling_size: int, block_space_size: int):
+        if True:
+            # NOTE: Same to Lower
+            expansion_ratio = block_space_size / block_sampling_size
+        else:
+            num_stop_action = 1
+            num_react_uni_action = self.ctx.num_unimolecular_rxns
+            num_react_bi_action = self.ctx.num_bimolecular_rxns
+
+            action_sampling_size = num_stop_action + num_react_uni_action + block_sampling_size * num_react_bi_action
+            action_space_size = num_stop_action + num_react_uni_action + block_space_size * num_react_bi_action
+            expansion_ratio = (action_space_size - num_stop_action - num_react_uni_action) / (
+                action_sampling_size - num_stop_action - num_react_uni_action
+            )
+        return expansion_ratio
