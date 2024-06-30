@@ -47,9 +47,6 @@ class SynthesisEnv(GraphBuildingEnv):
         self.bimolecular_reactions = [r for r in self.reactions if r.num_reactants == 2]
         self.building_blocks: List[str] = BUILDING_BLOCKS
         self.building_block_ids: List[str] = BUILDING_BLOCK_IDS
-        # NOTE: Setup Building Block Molecules
-        print("Building Block Molecule Construction...")
-        self.building_block_mols: List[Chem.Mol] = [Chem.MolFromSmiles(bb) for bb in tqdm(self.building_blocks)]
         self.building_block_set: Set[str] = set(BUILDING_BLOCKS)
         self.precomputed_bb_masks = PRECOMPUTED_BB_MASKS
 
@@ -140,26 +137,38 @@ class SynthesisEnv(GraphBuildingEnv):
         parents: List[Tuple[ReactionAction, Chem.Mol]] = []
         # Count node degrees
 
+        mol1 = Chem.MolFromSmiles(Chem.MolToSmiles(mol))
+        Chem.Kekulize(mol1, clearAromaticFlags=True)
+
         for reaction in self.unimolecular_reactions:
             if reaction.is_product(mol):
                 parent_mol = reaction.run_reverse_reactants((mol,))
-                assert isinstance(parent_mol, Chem.Mol)
-                parents.append((BackwardAction(ReactionActionType.BckReactUni, reaction=reaction), parent_mol))
+            elif reaction.is_product(mol1):
+                parent_mol = reaction.run_reverse_reactants((mol1,))
+            else:
+                continue
+            assert isinstance(parent_mol, Chem.Mol)
+            parents.append((BackwardAction(ReactionActionType.BckReactUni, reaction=reaction), parent_mol))
+
         for reaction in self.bimolecular_reactions:
             try:
                 if reaction.is_product(mol):
                     parent_mols = reaction.run_reverse_reactants((mol,))
-                    assert isinstance(parent_mols, list) and len(parent_mols) == 2
-                    reactant_mol1, reactant_mol2 = parent_mols
-                    is_block1 = Chem.MolToSmiles(reactant_mol1) in self.building_block_set
-                    is_block2 = Chem.MolToSmiles(reactant_mol2) in self.building_block_set
-                    if is_block1:
-                        action = BackwardAction(ReactionActionType.BckReactUni, reaction=reaction, block_is_first=True)
-                        parents.append((action, reactant_mol2))
-                    if is_block2:
-                        action = BackwardAction(ReactionActionType.BckReactUni, reaction=reaction, block_is_first=False)
-                        parents.append((action, reactant_mol1))
-            except:
+                elif reaction.is_product(mol1):
+                    parent_mols = reaction.run_reverse_reactants((mol1,))
+                else:
+                    continue
+                assert isinstance(parent_mols, list) and len(parent_mols) == 2
+                reactant_mol1, reactant_mol2 = parent_mols
+                is_block1 = Chem.MolToSmiles(reactant_mol1) in self.building_block_set
+                is_block2 = Chem.MolToSmiles(reactant_mol2) in self.building_block_set
+                if is_block1:
+                    action = BackwardAction(ReactionActionType.BckReactUni, reaction=reaction, block_is_first=True)
+                    parents.append((action, reactant_mol2))
+                if is_block2:
+                    action = BackwardAction(ReactionActionType.BckReactUni, reaction=reaction, block_is_first=False)
+                    parents.append((action, reactant_mol1))
+            except Exception as e:
                 continue
         smiles = Chem.MolToSmiles(mol)
         if smiles in self.building_block_set:

@@ -11,7 +11,7 @@ from gflownet.models.graph_transformer import GraphTransformer, mlp
 from gflownet.envs.synthesis import ReactionActionType, SynthesisEnvContext, ReactionActionCategorical
 
 
-class ASTB_GFN(nn.Module):
+class ASGFN_Synthesis(nn.Module):
     """GraphTransfomer class for a ASTB which outputs an ReactionActionCategorical.
 
     Outputs logits corresponding to each action (template).
@@ -107,14 +107,12 @@ class ASTB_GFN(nn.Module):
 
     def _action_type_to_logit(self, t, emb, g) -> torch.Tensor:
         logits = self.mlps[t.cname](emb[self._action_type_to_graph_part[t]])
-        mask = self._action_type_to_mask(t, g)
-        if mask is not None:
-            logits = self._mask(logits, mask)
         return logits
 
     def _make_cat(self, g, emb, action_types, fwd):
-        logits = {typ: self._action_type_to_logit(typ, emb, g) for typ in action_types}
-        return ReactionActionCategorical(g, logits, emb, model=self, fwd=fwd)
+        raw_logits = {typ: self._action_type_to_logit(typ, emb, g) for typ in action_types}
+        masks = {typ: self._action_type_to_mask(typ, g) for typ in action_types}
+        return ReactionActionCategorical(g, raw_logits, masks, emb, model=self, fwd=fwd)
 
     def add_first_reactant_hook(self, graph_embedding: torch.Tensor, block_emb: torch.Tensor):
         """

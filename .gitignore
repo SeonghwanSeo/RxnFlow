@@ -5,6 +5,7 @@ envs/
 logs/
 .github/
 wandb_run/
+wandb_debug/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -9,7 +9,7 @@ from torch import Tensor
 
 from gflownet.data.replay_buffer import ReplayBuffer
 
-from .astb_trainer import GFNTrainer
+from gflownet.astb_trainer import GFNTrainer
 
 
 def model_grad_norm(model):

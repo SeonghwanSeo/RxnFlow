@@ -3,6 +3,11 @@ from enum import Enum
 from typing import Optional
 
 
+@dataclass
+class ActionSamplingConfig:
+    num_building_block_sampling: int = 5000
+
+
 class TBVariant(int, Enum):
     """See algo.trajectory_balance.TrajectoryBalance for details."""
 
@@ -54,54 +59,6 @@ class TBConfig:
     Z_learning_rate: float = 1e-4
     Z_lr_decay: float = 50_000
     cum_subtb: bool = True
-
-
-@dataclass
-class ASTBConfig:
-    """Action Sampling Trajectory Balance config.
-
-    Attributes
-    ----------
-    bootstrap_own_reward : bool
-        Whether to bootstrap the reward with the own reward. (deprecated)
-    epsilon : Optional[float]
-        The epsilon parameter in log-flow smoothing (see paper)
-    reward_loss_multiplier : float
-        The multiplier for the reward loss when bootstrapping the reward. (deprecated)
-    variant : TBVariant
-        The loss variant. See algo.trajectory_balance.TrajectoryBalance for details.
-    do_correct_idempotent : bool
-        Whether to correct for idempotent actions
-    do_parameterize_p_b : bool
-        Whether to parameterize the P_B distribution (otherwise it is uniform)
-    do_predict_n : bool
-        Whether to predict the number of paths in the graph
-    do_length_normalize : bool
-        Whether to normalize the loss by the length of the trajectory
-    subtb_max_len : int
-        The maximum length trajectories, used to cache subTB computation indices
-    Z_learning_rate : float
-        The learning rate for the logZ parameter (only relevant when do_subtb is False)
-    Z_lr_decay : float
-        The learning rate decay for the logZ parameter (only relevant when do_subtb is False)
-    """
-
-    bootstrap_own_reward: bool = False
-    epsilon: Optional[float] = None
-    reward_loss_multiplier: float = 1.0
-    variant: TBVariant = TBVariant.TB
-    do_correct_idempotent: bool = False
-    do_parameterize_p_b: bool = True
-    do_sample_p_b: bool = False
-    do_predict_n: bool = False
-    do_length_normalize: bool = False
-    subtb_max_len: int = 128
-    Z_learning_rate: float = 1e-4
-    Z_lr_decay: float = 50_000
-    cum_subtb: bool = True
-    train_action_sampling_size: int = 10000
-    valid_action_sampling_size: int = 50000
-    final_action_sampling_size: int = 50000
 
 
 @dataclass
@@ -168,7 +125,7 @@ class AlgoConfig:
         The EMA factor for the sampling model (theta_sampler = tau * theta_sampler + (1-tau) * theta)
     """
 
-    method: str = "ASTB"
+    method: str = "TB"
     global_batch_size: int = 64
     max_len: int = 128
     max_nodes: int = 128
@@ -181,7 +138,7 @@ class AlgoConfig:
     valid_random_action_prob: float = 0.0
     sampling_tau: float = 0.0
     tb: TBConfig = TBConfig()
-    astb: ASTBConfig = ASTBConfig()
+    action_sampling: ActionSamplingConfig = ActionSamplingConfig()
     moql: MOQLConfig = MOQLConfig()
     a2c: A2CConfig = A2CConfig()
     fm: FMConfig = FMConfig()

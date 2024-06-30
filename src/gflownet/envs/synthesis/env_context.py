@@ -123,7 +123,6 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.bck_action_type_order = self.primary_bck_action_type_order + self.secondary_bck_action_type_order
 
         self.building_blocks: List[str] = env.building_blocks
-        self.building_block_mols: List[Chem.Mol] = env.building_block_mols
         self.num_building_blocks: int = len(self.building_blocks)
         self.precomputed_bb_masks = env.precomputed_bb_masks
 
@@ -134,12 +133,13 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             (self.num_building_blocks, fp_nbits_building_block), dtype=np.uint8
         )
 
-        def convert_fp(mol: Chem.Mol):
+        def convert_fp(smi: str):
+            mol = Chem.MolFromSmiles(smi)
             fp = AllChem.GetMorganFingerprintAsBitVect(mol, fp_radius_building_block, fp_nbits_building_block)
             return np.frombuffer(fp.ToBitString().encode(), "u1") - ord("0")
 
-        for i, bb in enumerate(tqdm(self.building_block_mols)):
-            self.building_block_fps[i] = convert_fp(bb)
+        for i, smi in enumerate(tqdm(self.building_blocks)):
+            self.building_block_fps[i] = convert_fp(smi)
 
     def sample_blocks(self, num_action_sampling: int) -> List[int]:
         if num_action_sampling >= self.num_building_blocks:
@@ -167,7 +167,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             elif t is ReactionActionType.AddFirstReactant:
                 assert block_local_idx >= 0 and block_indices is not None
                 block_global_idx = block_indices[block_local_idx]
-                building_block = self.building_block_mols[block_global_idx]
+                building_block = Chem.MolFromSmiles(self.building_blocks[block_global_idx])
                 return ForwardAction(t, block_local_idx=block_local_idx, block=building_block)
             elif t is ReactionActionType.ReactUni:
                 assert rxn_idx >= 0
@@ -177,7 +177,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                 assert rxn_idx >= 0 and block_local_idx >= 0 and block_is_first >= 0 and block_indices is not None
                 reaction = self.bimolecular_reactions[rxn_idx]
                 block_global_idx = block_indices[block_local_idx]
-                building_block = self.building_block_mols[block_global_idx]
+                building_block = Chem.MolFromSmiles(self.building_blocks[block_global_idx])
                 return ForwardAction(
                     t,
                     reaction=reaction,
@@ -248,13 +248,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         is_stop = action.action is ReactionActionType.Stop
         return (type_idx, is_stop, rxn_idx, block_local_idx, block_is_first)
 
-    def graph_to_Data(
-        self,
-        g: Graph,
-        traj_idx: int,
-        do_bck: bool = True,
-        prev_action: Optional[ForwardAction] = None,
-    ) -> gd.Data:
+    def graph_to_Data(self, g: Graph, traj_idx: int) -> gd.Data:
         """Convert a networkx Graph to a torch geometric Data instance"""
         x = np.zeros((max(1, len(g.nodes)), self.num_node_dim), dtype=np.float32)
         x[0, -1] = len(g.nodes) == 0  # If there are no nodes, set the last dimension to 1
@@ -285,27 +279,10 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
 
         # NOTE: add attribute for masks
         data["react_uni_mask"] = self.create_masks(g, fwd=True, unimolecular=True)
-        data["react_bi_mask"] = self.create_masks(g, fwd=True, unimolecular=False)
-
-        # NOTE: mask construction is bottleneck -> add flag `do_bck`
-        if do_bck:
-            bck_react_uni_mask = self.create_masks(g, fwd=False, unimolecular=True)
-            bck_react_bi_mask = self.create_masks(g, fwd=False, unimolecular=False)
-
-            # NOTE: prevent the rdkit bck-reaction error
-            # if (R1, ...) -> P with rxn R,
-            # There are cases where the reverse reaction R is not possible to P although P was performed with R.
-            if prev_action is not None:
-                if prev_action.action is ReactionActionType.ReactUni:
-                    assert prev_action.reaction is not None
-                    rxn_idx = self.unimolecular_reaction_to_idx[prev_action.reaction]
-                    bck_react_uni_mask[0, rxn_idx] = True
-                elif prev_action.action is ReactionActionType.ReactBi:
-                    assert prev_action.reaction is not None
-                    rxn_idx = self.bimolecular_reaction_to_idx[prev_action.reaction]
-                    bck_react_bi_mask[0, rxn_idx] = True
-            data["bck_react_uni_mask"] = bck_react_uni_mask
-            data["bck_react_bi_mask"] = bck_react_bi_mask
+        data["react_bi_mask_detail"] = self.create_masks(g, fwd=True, unimolecular=False)
+        data["react_bi_mask"] = data["react_bi_mask_detail"].any(axis=-1)
+        data["bck_react_uni_mask"] = self.create_masks(g, fwd=False, unimolecular=True)
+        data["bck_react_bi_mask"] = self.create_masks(g, fwd=False, unimolecular=False)
 
         data = gd.Data(**{k: torch.from_numpy(v) for k, v in data.items()})
         return data
@@ -410,12 +387,8 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
 
     def traj_to_log_repr(self, traj: List[Tuple[Graph]]):
         """Convert a tuple of graph, action idx to a string representation, action idx"""
-        smi_traj = []
-        for i in traj:
-            mol = self.graph_to_mol(i[0])
-            assert mol is not None
-            smi_traj.append((Chem.MolToSmiles(mol), i[1]))
-        return str(smi_traj)
+        # TODO: implement!
+        raise NotImplementedError
 
     def create_masks(self, smi: Union[str, Chem.Mol, Graph], fwd: bool = True, unimolecular: bool = True) -> np.ndarray:
         """Creates masks for reaction templates for a given molecule.
@@ -426,7 +399,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             unimolecular (bool): Whether it is a unimolecular or a bimolecular reaction.
 
         Returns:
-            (torch.Tensor): Masks for invalid actions.
+            (np.ndarry): Masks for invalid actions.
         """
         mol = self.get_mol(smi)
         if unimolecular:
@@ -435,62 +408,29 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         else:
             masks = np.ones(self.num_bimolecular_rxns, dtype=np.bool_)
             reactions = self.bimolecular_reactions
-        for idx, r in enumerate(reactions):
-            if fwd:
-                if not r.is_reactant(mol):
-                    masks[idx] = False
+
+        if fwd:
+            if unimolecular:
+                masks = np.zeros((self.num_unimolecular_rxns,), dtype=np.bool_)
+                for idx, r in enumerate(reactions):
+                    if r.is_reactant(mol):
+                        masks[idx] = True
             else:
-                if r.is_product(mol):
-                    continue
-                mol_copy = Chem.MolFromSmiles(Chem.MolToSmiles(mol))
-                Chem.Kekulize(mol_copy, clearAromaticFlags=True)
-                if r.is_product(mol_copy):
-                    continue
-                masks[idx] = False
-        return masks.reshape(1, -1)
-
-    def create_masks_for_bb(self, smi: Union[str, Chem.Mol, Graph], bimolecular_rxn_idx: int) -> np.ndarray:
-        """Create masks for building blocks for a given molecule."""
-        raise NotImplementedError()
-        mol = self.get_mol(smi)
-        reaction = self.bimolecular_reactions[bimolecular_rxn_idx]
-        reactants = reaction.rxn.GetReactants()
-        mol_match_0 = mol.HasSubstructMatch(reactants[0])
-        mol_match_1 = mol.HasSubstructMatch(reactants[1])
-        assert (
-            mol_match_0 or mol_match_1
-        ), "Molecule does not match reaction template -- this should be verified at the reaction-selection step."
-
-        masks = np.zeros((self.num_building_blocks, 2), dtype=np.bool_)
-        for idx, bb in enumerate(self.building_block_mols):
-            if mol_match_1 and bb.HasSubstructMatch(reactants[0]):
-                masks[idx, 0] = True
-            elif mol_match_0 and bb.HasSubstructMatch(reactants[1]):
-                masks[idx, 1] = True
-        return masks
-
-    def create_masks_for_bb_from_precomputed(
-        self,
-        smi: Union[str, Chem.Mol, Graph],
-        bimolecular_rxn_idx: int,
-        block_indices: Optional[List[int]],
-    ) -> np.ndarray:
-        """Creates masks for building blocks (for the 2nd reactant) for a given molecule and bimolecular reaction.
-        Uses masks precomputed with data/building_blocks/precompute_bb_masks.py.
-
-        Args:
-            smi (Union[str, Chem.Mol, Graph]): Molecule as a rdKit Mol object.
-            bimolecular_rxn_idx (int): Index of the bimolecular reaction.
-        """
-        mol = self.get_mol(smi)
-        reaction = self.bimolecular_reactions[bimolecular_rxn_idx]
-        reactants = reaction.rxn.GetReactants()
-
-        precomputed_bb_masks = self.precomputed_bb_masks[bimolecular_rxn_idx, block_indices, :]
-        # we reverse the order of the reactants w.r.t BBs (i.e. reactants[1] first)
-        mol_mask = np.array(
-            [mol.HasSubstructMatch(reactants[1]), mol.HasSubstructMatch(reactants[0])],
-            dtype=np.bool_,
-        ).reshape(1, 2)
-        masks = mol_mask & precomputed_bb_masks
-        return masks
+                masks = np.empty((self.num_bimolecular_rxns, 2), dtype=np.bool_)
+                for idx, r in enumerate(reactions):
+                    masks[idx][0] = mol.HasSubstructMatch(r.reactants[1])
+                    masks[idx][1] = mol.HasSubstructMatch(r.reactants[0])
+        else:
+            mol1 = Chem.MolFromSmiles(Chem.MolToSmiles(mol))
+            Chem.Kekulize(mol1, clearAromaticFlags=True)
+            if unimolecular:
+                masks = np.zeros((self.num_unimolecular_rxns,), dtype=np.bool_)
+                for idx, r in enumerate(reactions):
+                    if r.is_product(mol) or r.is_product(mol1):
+                        masks[idx] = True
+            else:
+                masks = np.ones((self.num_bimolecular_rxns,), dtype=np.bool_)
+                for idx, r in enumerate(reactions):
+                    if r.is_product(mol) or r.is_product(mol1):
+                        masks[idx] = True
+        return np.expand_dims(masks, 0)

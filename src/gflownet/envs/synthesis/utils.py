@@ -1,3 +1,4 @@
+from functools import cached_property
 import warnings
 from typing import List, Tuple, Union
 
@@ -17,6 +18,10 @@ class Reaction:
         else:
             self.reactant_template = list(reactants.split("."))
         self.product_template = products
+
+    @cached_property
+    def reactants(self):
+        return self.rxn.GetReactants()
 
     def __init_reaction(self) -> Chem.rdChemReactions.ChemicalReaction:
         """Initializes a reaction by converting the SMARTS-pattern to an `rdkit` object."""

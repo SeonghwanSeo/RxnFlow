@@ -1,4 +1,3 @@
-import copy
 import math
 from typing import List, Optional
 
@@ -7,6 +6,7 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 
+from gflownet.config import Config
 from gflownet.envs.synthesis import (
     Graph,
     SynthesisEnv,
@@ -20,7 +20,17 @@ from gflownet.envs.synthesis import (
 class SynthesisSampler:
     """A helper class to sample from ActionCategorical-producing models"""
 
-    def __init__(self, ctx, env, max_len, rng, sample_temp=1, correct_idempotent=False, pad_with_terminal_state=False):
+    def __init__(
+        self,
+        ctx,
+        env,
+        max_len,
+        rng,
+        cfg: Config,
+        sample_temp=1,
+        correct_idempotent=False,
+        pad_with_terminal_state=False,
+    ):
         """
         Parameters
         ----------
@@ -42,11 +52,13 @@ class SynthesisSampler:
         self.correct_idempotent = correct_idempotent
         self.pad_with_terminal_state = pad_with_terminal_state
 
+        self.cfg = cfg.algo.action_sampling
+        self.num_block_sampling = min(self.cfg.num_building_block_sampling, self.ctx.num_building_blocks)
+
     def sample_from_model(
         self,
         model: nn.Module,
         n: int,
-        action_sampling_size: int,
         cond_info: Tensor,
         dev: torch.device,
         random_action_prob: float = 0.0,
@@ -78,16 +90,14 @@ class SynthesisSampler:
         """
 
         # NOTE: Block Sampling
-        block_indices = self.ctx.sample_blocks(action_sampling_size)
-        block_fp = self.ctx.get_block_data(block_indices, dev)
-        block_emb = model.block_mlp(block_fp)
+        block_indices = self.ctx.sample_blocks(self.num_block_sampling)
+        block_emb = model.block_mlp(self.ctx.get_block_data(block_indices, dev))
 
         # This will be returned
         data = [{"traj": [], "reward_pred": None, "is_valid": True, "is_sink": []} for _ in range(n)]
         # Let's also keep track of trajectory statistics according to the model
         fwd_logprob: List[List[float]] = [[] for _ in range(n)]
         bck_logprob: List[List[float]] = [[] for _ in range(n)]
-        bck_log_n_action: List[List[float]] = [[] for _ in range(n)]
 
         graphs = [self.env.new() for _ in range(n)]
         rdmols = [Chem.Mol() for _ in range(n)]
@@ -99,39 +109,21 @@ class SynthesisSampler:
             return [e for i, e in enumerate(lst) if not done[i]]
 
         for traj_idx in range(self.max_len):
-            torch_graphs = [self.ctx.graph_to_Data(graphs[i], traj_idx, do_bck=False) for i in not_done(range(n))]
+            torch_graphs = [self.ctx.graph_to_Data(graphs[i], traj_idx) for i in not_done(range(n))]
             not_done_mask = [not v for v in done]
 
             fwd_cat, *_, log_reward_preds = model(self.ctx.collate(torch_graphs).to(dev), cond_info[not_done_mask])
             if random_action_prob > 0:
                 raise NotImplementedError()
-                masks = [1] * len(fwd_cat.logits) if fwd_cat.masks is None else fwd_cat.masks
-                # Device which graphs in the minibatch will get their action randomized
-                is_random_action = torch.tensor(
-                    self.rng.uniform(size=len(torch_graphs)) < random_action_prob, device=dev
-                ).float()
-                # Set the logits to some large value if they're not masked, this way the masked
-                # actions have no probability of getting sampled, and there is a uniform
-                # distribution over the rest
-                fwd_cat.logits = [
-                    # We don't multiply m by i on the right because we're assume the model forward()
-                    # method already does that
-                    is_random_action[b][:, None] * torch.ones_like(i) * m * 100 + i * (1 - is_random_action[b][:, None])
-                    for i, m, b in zip(fwd_cat.logits, masks, fwd_cat.batch)
-                ]
-
             if self.sample_temp != 1:
                 raise NotImplementedError()
-                sample_cat = copy.copy(fwd_cat)
-                sample_cat.logits = [i / self.sample_temp for i in fwd_cat.logits]
-                actions = sample_cat.sample()
             else:
-                actions = fwd_cat.sample(not_done(rdmols), block_indices, block_emb=block_emb)
+                actions = fwd_cat.sample(block_indices, block_emb)
             reaction_actions: List[ForwardAction] = [
                 self.ctx.aidx_to_ReactionAction(g, a, block_indices=block_indices)
                 for g, a in zip(torch_graphs, actions)
             ]
-            log_probs = fwd_cat.log_prob(actions, not_done(rdmols), block_indices, block_emb=block_emb)
+            log_probs = fwd_cat.log_prob(actions, block_indices, block_emb)
 
             # Step each trajectory, and accumulate statistics
             for i, j in zip(not_done(range(n)), range(n)):
@@ -145,28 +137,26 @@ class SynthesisSampler:
                 if reaction_actions[j].action == ReactionActionType.Stop:  # 0 is ReactionActionType.Stop
                     done[i] = True
                     bck_logprob[i].append(0.0)
-                    bck_log_n_action[i].append(math.log(3))
                     data[i]["is_sink"].append(1)
 
                 else:  # If not done, step the self.environment
                     try:
-                        new_rdmol = self.env.step(rdmols[i], reaction_actions[j])
-                    except:
-                        new_rdmol = None
-                    if new_rdmol is None:
+                        rdmol = self.env.step(rdmols[i], reaction_actions[j])
+                    except Exception as e:
+                        rdmol = None
+                    if rdmol is None:
                         done[i] = True
                         data[i]["is_valid"] = False
-                        new_rdmol = Chem.Mol()
+                        rdmol = Chem.Mol()
 
                     if traj_idx == self.max_len - 1:
                         done[i] = True
 
-                    n_back = max(1, self.env.count_backward_transitions(new_rdmol))
+                    n_back = max(1, self.env.count_backward_transitions(rdmol))
                     bck_logprob[i].append(math.log(1 / n_back))
-                    bck_log_n_action[i].append(math.log(n_back))
                     data[i]["is_sink"].append(0)
-                    rdmols[i] = new_rdmol
-                    graphs[i] = self.ctx.mol_to_graph(new_rdmol)
+                    rdmols[i] = rdmol
+                    graphs[i] = self.ctx.mol_to_graph(rdmol)
 
                 if done[i] and len(data[i]["traj"]) <= 2:
                     data[i]["is_valid"] = False
@@ -179,12 +169,12 @@ class SynthesisSampler:
             data[i]["fwd_logprob"] = sum(fwd_logprob[i])
             data[i]["bck_logprob"] = sum(bck_logprob[i])
             data[i]["bck_logprobs"] = torch.tensor(bck_logprob[i], device=dev).reshape(-1)
-            data[i]["bck_log_n_actions"] = torch.tensor(bck_log_n_action[i], device=dev).reshape(-1)
             data[i]["bck_a"] = bck_a[i]
             data[i]["block_indices"] = block_indices
             if self.pad_with_terminal_state:
                 data[i]["traj"].append((graphs[i], ForwardAction(ReactionActionType.Stop)))
                 data[i]["is_sink"].append(1)
+
         return data
 
     def sample_backward_from_graphs(

@@ -20,7 +20,7 @@ from gflownet.astb_online_trainer import StandardOnlineTrainer
 from gflownet.models import bengio2021flow
 
 
-class SEHReactionTask(GFNTask):
+class SEHSynthesisTask(GFNTask):
     """Sets up a task where the reward is computed using a proxy for the binding energy of a molecule to
     Soluble Epoxide Hydrolases.
 
@@ -75,8 +75,8 @@ class SEHReactionTask(GFNTask):
         return FlatRewards(preds), is_valid
 
 
-class SEHReactionTrainer(StandardOnlineTrainer):
-    task: SEHReactionTask
+class SEHSynthesisTrainer(StandardOnlineTrainer):
+    task: SEHSynthesisTask
 
     def set_default_hps(self, cfg: Config):
         cfg.hostname = socket.gethostname()
@@ -89,33 +89,31 @@ class SEHReactionTrainer(StandardOnlineTrainer):
         cfg.opt.lr_decay = 20_000
         cfg.opt.clip_grad_type = "norm"
         cfg.opt.clip_grad_param = 10
+        cfg.algo.global_batch_size = 64
+        cfg.algo.offline_ratio = 0
 
         cfg.model.num_emb = 128
         cfg.model.num_layers = 4
         cfg.model.fp_nbits_building_block = 1024
-        cfg.model.num_emb_building_block = 128
+        cfg.model.num_emb_building_block = 64
         cfg.model.num_layers_building_block = 0
 
-        cfg.algo.method = "ASTB"
+        cfg.algo.method = "TB"
         cfg.algo.max_len = 4
-        cfg.algo.global_batch_size = 64
         cfg.algo.sampling_tau = 0.99
         cfg.algo.illegal_action_logreward = -75
-        cfg.algo.offline_ratio = 0.0
         cfg.algo.train_random_action_prob = 0.0
         cfg.algo.valid_random_action_prob = 0.0
         cfg.algo.valid_offline_ratio = 0
-        cfg.algo.astb.epsilon = None
-        cfg.algo.astb.bootstrap_own_reward = False
-        cfg.algo.astb.Z_learning_rate = 1e-3
-        cfg.algo.astb.Z_lr_decay = 50_000
-        cfg.algo.astb.do_parameterize_p_b = True
-        cfg.algo.astb.do_sample_p_b = False
+        cfg.algo.tb.epsilon = None
+        cfg.algo.tb.bootstrap_own_reward = False
+        cfg.algo.tb.Z_learning_rate = 1e-3
+        cfg.algo.tb.Z_lr_decay = 50_000
+        cfg.algo.tb.do_parameterize_p_b = False
+        cfg.algo.tb.do_sample_p_b = False
 
-        # NOTE: for ASTB
-        cfg.algo.astb.train_action_sampling_size = 10000
-        cfg.algo.astb.valid_action_sampling_size = 20000
-        cfg.algo.astb.final_action_sampling_size = 20000
+        # NOTE: for Action Sampling
+        cfg.algo.action_sampling.num_building_block_sampling = 10000
 
         cfg.cond.temperature.sample_dist = "uniform"
         cfg.cond.temperature.dist_params = [0, 64.0]
@@ -125,7 +123,7 @@ class SEHReactionTrainer(StandardOnlineTrainer):
         cfg.replay.warmup = 1_000
 
     def setup_task(self):
-        self.task = SEHReactionTask(
+        self.task = SEHSynthesisTask(
             cfg=self.cfg,
             rng=self.rng,
             wrap_model=self._wrap_for_mp,
@@ -144,15 +142,15 @@ def main():
     """Example of how this trainer can be run"""
     config = init_empty(Config())
     config.print_every = 1
-    config.validate_every = 100
+    config.validate_every = 10
     config.num_training_steps = 1000
     config.log_dir = "./logs/debug1/"
-    config.env_dir = "./data/envs/subsampled_5000/"
+    config.env_dir = "/home/shwan/Project/astb/data/envs/subsampled_20000/"
     # config.env_dir = "./data/envs/subsampled_100000"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
 
-    trial = SEHReactionTrainer(config)
+    trial = SEHSynthesisTrainer(config)
     trial.run()
 
 

@@ -320,6 +320,7 @@ class GFNTrainer:
         info["train_time"] = time.time() - tick
         return {k: v.item() if hasattr(v, "item") else v for k, v in info.items()}
 
+    @torch.no_grad()
     def evaluate_batch(self, batch: gd.Batch, epoch_idx: int = 0, batch_idx: int = 0) -> Dict[str, Any]:
         tick = time.time()
         self.model.eval()

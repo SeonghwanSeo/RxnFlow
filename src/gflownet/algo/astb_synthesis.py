@@ -69,7 +69,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         self.cfg = cfg.algo.tb
         self.max_len = cfg.algo.max_len
         self.max_nodes = cfg.algo.max_nodes
-        self.length_normalize_losses = cfg.algo.astb.do_length_normalize
+        self.length_normalize_losses = cfg.algo.tb.do_length_normalize
         # Experimental flags
         self.reward_loss_is_mae = True
         self.tb_loss_is_mae = False
@@ -88,6 +88,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             env,
             cfg.algo.max_len,
             rng,
+            self.global_cfg,
             self.sample_temp,
             correct_idempotent=self.cfg.do_correct_idempotent,
             pad_with_terminal_state=self.cfg.do_parameterize_p_b,
@@ -99,7 +100,6 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         self,
         model: TrajectoryBalanceModel,
         n: int,
-        block_sampling_size: int,
         cond_info: Tensor,
         random_action_prob: float,
     ):
@@ -111,8 +111,6 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
            The model being sampled
         n: int
             Number of trajectories to sample
-        block_sampling_size: int
-            Number of building blocks (action) to sample
         cond_info: torch.tensor
             Conditional information, shape (N, n_info)
         random_action_prob: float
@@ -134,9 +132,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         data = None
         while data is None:
             try:
-                data = self.graph_sampler.sample_from_model(
-                    model, n, block_sampling_size, cond_info, dev, random_action_prob
-                )
+                data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob)
             except Exception as e:
                 raise e
                 data = None
@@ -149,11 +145,11 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         self,
         graphs,
         model: Optional[TrajectoryBalanceModel],
-        block_sampling_size: int,
         cond_info: Optional[Tensor] = None,
         random_action_prob: Optional[float] = None,
     ):
-        raise NotImplementedError()
+        # raise NotImplementedError()
+        return []
 
     def get_idempotent_actions(
         self, g: Graph, gd: gd.Data, gp: Graph, action: ReactionAction, return_aidx: bool = True
@@ -177,15 +173,12 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
              A (CPU) Batch object with relevant attributes added
         """
 
-        def traj_to_Data(traj, tj_idx):
-            g = traj[tj_idx][0]
-            prev_action = None if tj_idx == 0 else traj[tj_idx - 1][1]
-            return self.ctx.graph_to_Data(g, tj_idx, do_bck=True, prev_action=prev_action)
-
         if self.model_is_autoregressive:
             raise NotImplementedError
         else:
-            torch_graphs = [traj_to_Data(tj["traj"], tj_idx) for tj in trajs for tj_idx in range(len(tj["traj"]))]
+            torch_graphs = [
+                self.ctx.graph_to_Data(traj[0], tj_idx) for tj in trajs for tj_idx, traj in enumerate(tj["traj"])
+            ]
             actions = [
                 self.ctx.ReactionAction_to_aidx(g, a)
                 for g, a in zip(torch_graphs, [i[1] for tj in trajs for i in tj["traj"]])
@@ -211,7 +204,6 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
         batch.block_indices = trajs[0]["block_indices"]
         batch.block_sampling_size = len(batch.block_indices)
         batch.block_space_size = self.ctx.num_building_blocks
-        batch.graphs = [i[0] for tj in trajs for i in tj["traj"]]
 
         if self.cfg.do_correct_idempotent:
             raise NotImplementedError()
@@ -273,10 +265,12 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             raise NotImplementedError()
         else:
             # Else just naively take the logprob of the actions we took
-            log_p_F = fwd_cat.log_prob(batch.actions, batch.graphs, batch.block_indices)
-            log_p_F = fwd_cat.convert_log_p_F(log_p_F, batch.block_sampling_size, batch.block_space_size)
+            log_p_F = fwd_cat.log_prob_fwd(batch.actions, batch.block_indices)
+            log_p_F = fwd_cat.convert_log_p_F(
+                batch.actions, log_p_F, batch.block_sampling_size, batch.block_space_size, self.max_len
+            )
             if self.cfg.do_parameterize_p_b:
-                log_p_B = bck_cat.log_prob(batch.bck_actions, batch.graphs, batch.block_indices)
+                log_p_B = bck_cat.log_prob_bck(batch.bck_actions)
 
         if self.cfg.do_parameterize_p_b:
             # If we're modeling P_B then trajectories are padded with a virtual terminal state sF,

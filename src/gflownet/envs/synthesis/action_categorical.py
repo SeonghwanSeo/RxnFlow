@@ -1,16 +1,13 @@
-from functools import cached_property
 import math
 import random
 
-from rdkit import Chem
 import torch
 import torch_geometric.data as gd
 
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 from gflownet.envs.graph_building_env import GraphActionCategorical
 from gflownet.envs.synthesis.action import ReactionActionIdx, ReactionActionType, get_action_idx
-from gflownet.envs.synthesis.env import Graph
 from gflownet.envs.synthesis.env_context import SynthesisEnvContext
 
 
@@ -18,12 +15,14 @@ class ReactionActionCategorical(GraphActionCategorical):
     def __init__(
         self,
         graphs: gd.Batch,
-        logits: Dict[ReactionActionType, torch.Tensor],
+        raw_logits: Dict[ReactionActionType, torch.Tensor],
+        masks: Dict[ReactionActionType, Optional[torch.Tensor]],
         emb: Dict[str, torch.Tensor],
         model: torch.nn.Module,
         fwd: bool,
     ):
         self.model = model
+        self.graphs = graphs
         self.num_graphs = graphs.num_graphs
         self.traj_indices = graphs.traj_idx
         self.graph_embedding: torch.Tensor = emb["graph"]
@@ -41,7 +40,8 @@ class ReactionActionCategorical(GraphActionCategorical):
             self.primary_action_types: List[ReactionActionType] = self.ctx.primary_bck_action_type_order
             self.secondary_action_types: List[ReactionActionType] = self.ctx.secondary_bck_action_type_order
 
-        self.logits = logits
+        self.logits: Dict[ReactionActionType, torch.Tensor] = raw_logits
+        self.masks: Dict[ReactionActionType, Optional[torch.Tensor]] = masks
 
         self.batch = torch.arange(self.num_graphs, device=dev)
 
@@ -110,17 +110,19 @@ class ReactionActionCategorical(GraphActionCategorical):
 
     def sample(
         self,
-        graphs: List[Union[Chem.Mol, Graph]],
         block_indices: List[int],
         block_emb: Optional[torch.Tensor],
     ) -> List[ReactionActionIdx]:
         """Samples from the categorical distribution"""
-        # NOTE: The first action in a trajectory is always AddFirstReactant (select a building block)
 
-        assert len(graphs) == self.num_graphs
         if block_emb is None:
             block_fp = self.ctx.get_block_data(block_indices, self.dev)
             block_emb = self.model.block_mlp(block_fp)
+
+        # NOTE: Masking
+        for t in self.primary_action_types:
+            mask = self.masks.get(t)
+            self.logits[t] = self._mask(self.logits[t], mask)
 
         if not self.setuped:
             # NOTE: PlaceHolder
@@ -136,6 +138,7 @@ class ReactionActionCategorical(GraphActionCategorical):
         traj_idx = self.traj_indices[0]
         assert (self.traj_indices == traj_idx).all()  # For sampling, we use the same traj index
 
+        # NOTE: The first action in a trajectory is always AddFirstReactant (select a building block)
         if traj_idx == 0:
             type_idx = self.types.index(ReactionActionType.AddFirstReactant)
             logits = self.logits[ReactionActionType.AddFirstReactant]
@@ -146,16 +149,15 @@ class ReactionActionCategorical(GraphActionCategorical):
             gumbel = logits - (-noise.log()).log()
             argmax = self.argmax(x=[gumbel])
             self.setuped = True
-            return [get_action_idx(type_idx, block_idx=block_idx) for sample_idx, block_idx in argmax]
+            return [get_action_idx(type_idx, block_idx=block_idx) for _, block_idx in argmax]
 
         # NOTE: Use the Gumbel trick to sample categoricals
         gumbel = []
         for t in self.primary_action_types:
+            logit = self.logits[t]
+            # NOTE: Mask the Stop for the second action
             if t == ReactionActionType.Stop and traj_idx == 1:
-                # NOTE: Mask the Stop for the second action
-                logit = torch.full_like(self.logits[t], -torch.inf)
-            else:
-                logit = self.logits[t]
+                logit = torch.full_like(logit, -torch.inf)
             noise = torch.rand_like(logit)
             gumbel.append(logit - (-noise.log()).log())
         argmax = self.argmax(x=gumbel)  # tuple of action type, action idx
@@ -168,9 +170,10 @@ class ReactionActionCategorical(GraphActionCategorical):
             elif t == ReactionActionType.ReactUni:
                 actions.append(get_action_idx(type_idx, rxn_idx=rxn_idx))
             elif t == ReactionActionType.ReactBi:  # sample reactant
-                mask = self.ctx.create_masks_for_bb_from_precomputed(graphs[i], rxn_idx, block_indices)
-                mask = torch.from_numpy(mask).to(self.dev)
-                reactant_mask = torch.any(mask, dim=1)
+                mol_mask = self.graphs.react_bi_mask_detail[i, rxn_idx, :].reshape(1, 2)
+                precomputed_bb_mask = torch.from_numpy(self.ctx.precomputed_bb_masks[rxn_idx, block_indices, :])
+                reactant_mask_detail = mol_mask & precomputed_bb_mask.to(self.dev)
+                reactant_mask = torch.any(reactant_mask_detail, dim=1)
 
                 if not torch.any(reactant_mask):
                     stop_idx = self.types.index(ReactionActionType.Stop)
@@ -190,7 +193,7 @@ class ReactionActionCategorical(GraphActionCategorical):
 
                 # NOTE: Check what is block: (mol, block) | (block, mol)
                 assert reactant_mask[max_idx], "This index should not be masked"
-                block_is_first, block_is_second = mask[max_idx]
+                block_is_first, block_is_second = reactant_mask_detail[max_idx]
                 if block_is_first and block_is_second:
                     block_is_first = random.random() < 0.5
                 actions.append(
@@ -211,72 +214,34 @@ class ReactionActionCategorical(GraphActionCategorical):
         argmax_pairs = list(zip(type_indices.tolist(), action_indices.tolist(), strict=True))  # action type, action idx
         return argmax_pairs
 
-    def _mask(self, x: torch.Tensor, m: torch.Tensor) -> torch.Tensor:
+    def _mask(self, x: torch.Tensor, m: Optional[torch.Tensor]) -> torch.Tensor:
+        if m is None:
+            return x
         assert m.dtype == torch.bool
         return x.masked_fill(torch.logical_not(m), -torch.inf)
 
     def log_prob(
         self,
         actions: List[ReactionActionIdx],
-        graphs: List[Union[Chem.Mol, Graph]],
         block_indices: List[int],
         block_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Access the log-probability of actions"""
-
-        assert (
-            len(graphs) == len(actions) == self.num_graphs
-        ), f"num_graphs: {len(graphs)}, num_actions: {len(actions)}, num_graphs: {self.num_graphs}"
-
+        assert len(actions) == self.num_graphs, f"num_graphs: {self.num_graphs}, num_actions: {len(actions)}"
         if self.fwd:
-            return self.log_prob_fwd(actions, graphs, block_indices, block_emb)
+            return self.log_prob_fwd(actions, block_indices, block_emb)
         else:
             return self.log_prob_bck(actions)
 
     def log_prob_fwd(
         self,
         actions: List[ReactionActionIdx],
-        graphs: List[Union[Chem.Mol, Graph]],
         block_indices: List[int],
         block_emb: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Access the log-probability of forward actions"""
         if not self.setuped:
-            if block_emb is None:
-                block_fp = self.ctx.get_block_data(block_indices, self.dev)
-                block_emb = self.model.block_mlp(block_fp)
-
-            # NOTE: PlaceHolder
-            if ReactionActionType.AddFirstReactant in self.secondary_action_types:
-                self.logits[ReactionActionType.AddFirstReactant] = torch.full(
-                    (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
-                )
-            if ReactionActionType.AddReactant in self.secondary_action_types:
-                self.logits[ReactionActionType.AddReactant] = torch.full(
-                    (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
-                )
-
-            for i, (traj_idx, action) in enumerate(zip(self.traj_indices, actions)):
-                type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action
-                t = self.types[type_idx]
-
-                if False and traj_idx == 1:
-                    # NOTE: Masking Stop at t=1 for logprob calculation can make model training incorrectly
-                    #       Just for gflownet training (not sampling), use raw logit for one-step trajectory
-                    self.logits[ReactionActionType.Stop][i] = -torch.inf
-
-                if t is ReactionActionType.AddFirstReactant:
-                    logit = self.model.add_first_reactant_hook(self.graph_embedding[i], block_emb)
-                    self.logits[ReactionActionType.AddFirstReactant][i] = logit
-
-                elif t is ReactionActionType.ReactBi:  # secondary logits were computed
-                    mask = self.ctx.create_masks_for_bb_from_precomputed(graphs[i], rxn_idx, block_indices).any(axis=1)
-                    mask[block_local_idx] = True
-                    mask = torch.from_numpy(mask).to(self.dev)
-                    logit = self.model.add_reactant_hook(rxn_idx, self.graph_embedding[i], block_emb)
-                    logit = self._mask(logit, mask)
-                    self.logits[ReactionActionType.AddReactant][i] = logit
-
+            self.setup_mask_fwd(actions, block_indices, block_emb)
         self.logprobs = self.logsoftmax()
 
         # NOTE: placeholder of log_action_probs and log_action_space_sizes
@@ -304,7 +269,8 @@ class ReactionActionCategorical(GraphActionCategorical):
 
     def log_prob_bck(self, actions: List[ReactionActionIdx]) -> torch.Tensor:
         """Access the log-probability of backward actions"""
-
+        if not self.setuped:
+            self.setup_mask_bck(actions)
         self.logprobs = self.logsoftmax()
 
         # NOTE: placeholder of log_action_probs and log_action_space_sizes
@@ -328,7 +294,77 @@ class ReactionActionCategorical(GraphActionCategorical):
             log_action_probs[i] = log_prob
         return log_action_probs.clamp(math.log(self._epsilon))
 
-    def convert_log_p_F(self, log_p_F, block_sampling_size: int, block_space_size: int):
+    def setup_mask_fwd(
+        self,
+        actions: List[ReactionActionIdx],
+        block_indices: List[int],
+        block_emb: Optional[torch.Tensor] = None,
+    ):
+        if block_emb is None:
+            block_fp = self.ctx.get_block_data(block_indices, self.dev)
+            block_emb = self.model.block_mlp(block_fp)
+
+        # NOTE: PlaceHolder
+        if ReactionActionType.AddFirstReactant in self.secondary_action_types:
+            self.logits[ReactionActionType.AddFirstReactant] = torch.full(
+                (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
+            )
+        if ReactionActionType.AddReactant in self.secondary_action_types:
+            self.logits[ReactionActionType.AddReactant] = torch.full(
+                (self.num_graphs, len(block_indices)), -torch.inf, device=self.dev
+            )
+
+        for i, (traj_idx, action) in enumerate(zip(self.traj_indices, actions)):
+            type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action
+            t = self.types[type_idx]
+
+            if t is ReactionActionType.AddFirstReactant:
+                logit = self.model.add_first_reactant_hook(self.graph_embedding[i], block_emb)
+                self.logits[ReactionActionType.AddFirstReactant][i] = logit
+
+            elif t is ReactionActionType.ReactUni:
+                mask = self.masks.get(t)
+                if mask is not None:
+                    mask[i, rxn_idx] = True
+
+            elif t is ReactionActionType.ReactBi:  # secondary logits were computed
+                mask = self.masks.get(t)
+                if mask is not None:
+                    mask[i, rxn_idx] = True
+
+                mol_mask = self.graphs.react_bi_mask_detail[i, rxn_idx, :].reshape(1, 2)
+                precomputed_bb_mask = torch.from_numpy(self.ctx.precomputed_bb_masks[rxn_idx, block_indices, :])
+                reactant_mask_detail = mol_mask & precomputed_bb_mask.to(self.dev)
+                reactant_mask = reactant_mask_detail.any(dim=1)
+                reactant_mask[block_local_idx] = True
+
+                logit = self.model.add_reactant_hook(rxn_idx, self.graph_embedding[i], block_emb)
+                logit = self._mask(logit, reactant_mask)
+                self.logits[ReactionActionType.AddReactant][i] = logit
+        for t in self.primary_action_types:  # NOTE: Masking
+            mask = self.masks.get(t)
+            self.logits[t] = self._mask(self.logits[t], mask)
+
+    def setup_mask_bck(self, actions: List[ReactionActionIdx]):
+        for i, action in enumerate(actions):
+            type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action
+            t = self.types[type_idx]
+            if t in [ReactionActionType.BckReactUni, ReactionActionType.BckReactBi]:
+                mask = self.masks.get(t)
+                if mask is not None:
+                    mask[i, rxn_idx] = True
+        for t in self.primary_action_types:  # NOTE: Masking
+            mask = self.masks.get(t)
+            self.logits[t] = self._mask(self.logits[t], mask)
+
+    def convert_log_p_F(
+        self,
+        actions,
+        log_p_F,
+        block_sampling_size: int,
+        block_space_size: int,
+        max_traj_len: int,
+    ):
         if self.logprobs is None:
             raise NotImplementedError()
         logp_stop = self.logprobs[ReactionActionType.Stop]
@@ -337,23 +373,35 @@ class ReactionActionCategorical(GraphActionCategorical):
         p_react_uni = logp_react_uni.exp().sum(-1)
         p_react_bi = (1 - p_stop - p_react_uni).clamp(self._epsilon)
 
-        expansion_ratio = self.expansion_ratio(block_sampling_size, block_space_size)
-        dominator = p_stop + p_react_uni + (expansion_ratio * p_react_bi)
-        log_dominator = torch.log(dominator)
-        return log_p_F - log_dominator
+        r_action = (1 + self.ctx.num_unimolecular_rxns + self.ctx.num_bimolecular_rxns * block_sampling_size) / (
+            1 + self.ctx.num_unimolecular_rxns + self.ctx.num_bimolecular_rxns * block_space_size
+        )
+        r_react_addfirstreactant = block_sampling_size / block_space_size
+        r_react_uni = 1
+        r_react_bi = block_sampling_size / block_space_size
 
-    def expansion_ratio(self, block_sampling_size: int, block_space_size: int):
-        if True:
-            # NOTE: Same to Lower
-            expansion_ratio = block_space_size / block_sampling_size
-        else:
-            num_stop_action = 1
-            num_react_uni_action = self.ctx.num_unimolecular_rxns
-            num_react_bi_action = self.ctx.num_bimolecular_rxns
-
-            action_sampling_size = num_stop_action + num_react_uni_action + block_sampling_size * num_react_bi_action
-            action_space_size = num_stop_action + num_react_uni_action + block_space_size * num_react_bi_action
-            expansion_ratio = (action_space_size - num_stop_action - num_react_uni_action) / (
-                action_sampling_size - num_stop_action - num_react_uni_action
-            )
-        return expansion_ratio
+        converted_log_p_F = torch.empty_like(log_p_F)
+        assert log_p_F.size(0) == len(actions)
+        for i, (traj_idx, action) in enumerate(zip(self.traj_indices, actions)):
+            type_idx, is_stop, _, _, _ = action
+            if traj_idx == 0:
+                assert self.types[type_idx] is ReactionActionType.AddFirstReactant
+                converted_log_p_F[i] = log_p_F[i] + math.log(r_react_bi)
+            else:
+                state_space_ratio = (1 / r_action) ** (max_traj_len - traj_idx - 1)
+                log_state_space_ratio = -math.log(r_action) * (max_traj_len - traj_idx - 1)
+                if is_stop:
+                    log_numerator = log_p_F[i]
+                else:
+                    log_numerator = log_p_F[i] + log_state_space_ratio
+                if True:
+                    log_denominator = torch.log(
+                        p_stop[i] + state_space_ratio * (p_react_uni[i] / r_react_uni + p_react_bi[i] / r_react_bi)
+                    )
+                else:
+                    # NOTE: Skip p_stop[i] but numerically stable
+                    log_denominator = log_state_space_ratio + torch.log(
+                        p_react_uni[i] / r_react_uni + p_react_bi[i] / r_react_bi
+                    )
+                converted_log_p_F[i] = log_numerator - log_denominator
+        return converted_log_p_F
