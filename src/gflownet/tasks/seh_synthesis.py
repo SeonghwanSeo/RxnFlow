@@ -113,7 +113,7 @@ class SEHSynthesisTrainer(StandardOnlineTrainer):
         cfg.algo.tb.do_sample_p_b = False
 
         # NOTE: for Action Sampling
-        cfg.algo.action_sampling.num_building_block_sampling = 10000
+        cfg.algo.action_sampling.num_building_block_sampling = 5_000
 
         cfg.cond.temperature.sample_dist = "uniform"
         cfg.cond.temperature.dist_params = [0, 64.0]
@@ -145,7 +145,7 @@ def main():
     config.validate_every = 10
     config.num_training_steps = 1000
     config.log_dir = "./logs/debug1/"
-    config.env_dir = "/home/shwan/Project/astb/data/envs/subsampled_20000/"
+    config.env_dir = "/home/shwan/GFLOWNET_PROJECT/astb/data/envs/subsampled_100000/"
     # config.env_dir = "./data/envs/subsampled_100000"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True

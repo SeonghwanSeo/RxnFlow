@@ -31,6 +31,8 @@ ATOMS: List[str] = ["C", "N", "O", "F", "P", "S", "Cl", "Br", "I", "B"]
 class SynthesisEnvContext(GraphBuildingEnvContext):
     """This context specifies how to create molecules by applying reaction templates."""
 
+    action_type_order: List[ReactionActionType]
+
     def __init__(
         self,
         env: SynthesisEnv,
@@ -124,6 +126,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
 
         self.building_blocks: List[str] = env.building_blocks
         self.num_building_blocks: int = len(self.building_blocks)
+        # TODO: computed bb mask change shape!
         self.precomputed_bb_masks = env.precomputed_bb_masks
 
         # NOTE: Setup Building Block Datas
@@ -157,54 +160,46 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         return out.to(device=device, dtype=torch.float)
 
     def aidx_to_ReactionAction(
-        self, g: gd.Data, action_idx: ReactionActionIdx, fwd: bool = True, block_indices: Optional[List[int]] = None
+        self, action_idx: ReactionActionIdx, fwd: bool = True, block_indices: Optional[List[int]] = None
     ) -> ReactionAction:
         type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action_idx
         if fwd:
             t = self.action_type_order[type_idx]
-            if is_stop:
-                return ForwardAction(ReactionActionType.Stop)
-            elif t is ReactionActionType.AddFirstReactant:
-                assert block_local_idx >= 0 and block_indices is not None
-                block_global_idx = block_indices[block_local_idx]
-                building_block = Chem.MolFromSmiles(self.building_blocks[block_global_idx])
-                return ForwardAction(t, block_local_idx=block_local_idx, block=building_block)
-            elif t is ReactionActionType.ReactUni:
-                assert rxn_idx >= 0
-                reaction = self.unimolecular_reactions[rxn_idx]
-                return ForwardAction(t, reaction=reaction)
-            elif t is ReactionActionType.ReactBi:
-                assert rxn_idx >= 0 and block_local_idx >= 0 and block_is_first >= 0 and block_indices is not None
-                reaction = self.bimolecular_reactions[rxn_idx]
-                block_global_idx = block_indices[block_local_idx]
-                building_block = Chem.MolFromSmiles(self.building_blocks[block_global_idx])
-                return ForwardAction(
-                    t,
-                    reaction=reaction,
-                    block_local_idx=block_local_idx,
-                    block=building_block,
-                    block_is_first=(block_is_first == 1),
-                )
-            else:
-                raise ValueError(t)
+            obj_cls = ForwardAction
         else:
             t = self.bck_action_type_order[type_idx]
-            if is_stop:
-                return BackwardAction(ReactionActionType.Stop)
-            elif t is ReactionActionType.BckRemoveFirstReactant:
-                return BackwardAction(t)
-            elif t is ReactionActionType.BckReactUni:
-                assert rxn_idx >= 0
-                reaction = self.unimolecular_reactions[rxn_idx]
-                return BackwardAction(t, reaction=reaction)
-            elif t is ReactionActionType.BckReactBi:
-                assert rxn_idx >= 0 and block_is_first >= 0
-                reaction = self.bimolecular_reactions[rxn_idx]
-                return BackwardAction(t, reaction=reaction, block_is_first=(block_is_first == 1))
-            else:
-                raise ValueError(t)
+            obj_cls = BackwardAction
 
-    def ReactionAction_to_aidx(self, g: gd.Data, action: ReactionAction) -> ReactionActionIdx:
+        if is_stop:
+            return obj_cls(ReactionActionType.Stop)
+
+        elif t in (ReactionActionType.AddFirstReactant, ReactionActionType.BckRemoveFirstReactant):
+            assert block_local_idx >= 0 and block_indices is not None
+            block_global_idx = block_indices[block_local_idx]
+            building_block = self.building_blocks[block_global_idx]
+            return obj_cls(t, block_local_idx=block_local_idx, block=building_block)
+
+        elif t in (ReactionActionType.ReactUni, ReactionActionType.BckReactUni):
+            assert rxn_idx >= 0
+            reaction = self.unimolecular_reactions[rxn_idx]
+            return obj_cls(t, reaction=reaction)
+
+        elif t in (ReactionActionType.ReactBi, ReactionActionType.BckReactBi):
+            assert rxn_idx >= 0 and block_local_idx >= 0 and block_is_first >= 0 and block_indices is not None
+            reaction = self.bimolecular_reactions[rxn_idx]
+            block_global_idx = block_indices[block_local_idx]
+            building_block = self.building_blocks[block_global_idx]
+            return obj_cls(
+                t,
+                reaction=reaction,
+                block_local_idx=block_local_idx,
+                block=building_block,
+                block_is_first=(block_is_first == 1),
+            )
+        else:
+            raise ValueError(t)
+
+    def ReactionAction_to_aidx(self, action: ReactionAction) -> ReactionActionIdx:
         type_idx = rxn_idx = block_is_first = block_local_idx = -1
         for u in [self.action_type_order, self.bck_action_type_order]:
             if action.action in u:

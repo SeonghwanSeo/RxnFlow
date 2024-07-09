@@ -1,5 +1,5 @@
 import math
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from rdkit import Chem
 import torch
@@ -14,6 +14,7 @@ from gflownet.envs.synthesis import (
     ReactionActionType,
     BackwardAction,
     ForwardAction,
+    RetroSynthesisTree,
 )
 
 
@@ -91,13 +92,20 @@ class SynthesisSampler:
 
         # NOTE: Block Sampling
         block_indices = self.ctx.sample_blocks(self.num_block_sampling)
+        if len(block_indices) == self.env.num_building_blocks:
+            block_set = None
+        else:
+            block_set = set(self.env.building_blocks[i] for i in block_indices)
         block_emb = model.block_mlp(self.ctx.get_block_data(block_indices, dev))
 
         # This will be returned
-        data = [{"traj": [], "reward_pred": None, "is_valid": True, "is_sink": []} for _ in range(n)]
+        data = [{"traj": [], "retro_tree": [], "reward_pred": None, "is_valid": True, "is_sink": []} for _ in range(n)]
         # Let's also keep track of trajectory statistics according to the model
         fwd_logprob: List[List[float]] = [[] for _ in range(n)]
         bck_logprob: List[List[float]] = [[] for _ in range(n)]
+
+        retro_tree: List[RetroSynthesisTree] = [RetroSynthesisTree()] * n
+        retro_tree_partial: List[RetroSynthesisTree] = [RetroSynthesisTree()] * n
 
         graphs = [self.env.new() for _ in range(n)]
         rdmols = [Chem.Mol() for _ in range(n)]
@@ -120,8 +128,7 @@ class SynthesisSampler:
             else:
                 actions = fwd_cat.sample(block_indices, block_emb)
             reaction_actions: List[ForwardAction] = [
-                self.ctx.aidx_to_ReactionAction(g, a, block_indices=block_indices)
-                for g, a in zip(torch_graphs, actions)
+                self.ctx.aidx_to_ReactionAction(a, block_indices=block_indices) for a in actions
             ]
             log_probs = fwd_cat.log_prob(actions, block_indices, block_emb)
 
@@ -131,6 +138,7 @@ class SynthesisSampler:
                 j: int
                 fwd_logprob[i].append(log_probs[j].unsqueeze(0))
                 data[i]["traj"].append((graphs[i], reaction_actions[j]))
+                data[i]["retro_tree"].append((retro_tree[i], retro_tree_partial[i]))
                 fwd_a[i].append(reaction_actions[j])
                 bck_a[i].append(self.env.reverse(rdmols[i], reaction_actions[j]))
                 # Check if we're done
@@ -141,22 +149,57 @@ class SynthesisSampler:
 
                 else:  # If not done, step the self.environment
                     try:
-                        rdmol = self.env.step(rdmols[i], reaction_actions[j])
+                        next_rdmol = self.env.step(rdmols[i], reaction_actions[j])
                     except Exception as e:
-                        rdmol = None
-                    if rdmol is None:
                         done[i] = True
+                        bck_logprob[i].append(0.0)
                         data[i]["is_valid"] = False
-                        rdmol = Chem.Mol()
+                        next_rdmol = Chem.Mol()
+                        next_rt = next_rt_partial = RetroSynthesisTree()
+                    else:
+                        max_depth = self.max_len
+                        expansion_rate = self.env.num_average_possible_actions
+                        bck_action = bck_a[i][-1]
+                        assert isinstance(bck_action, BackwardAction)
+
+                        curr_rt = retro_tree[i]
+                        curr_rt_partial = retro_tree_partial[i]
+
+                        known_branches = [(bck_action, curr_rt)]
+                        known_branches_partial = [(bck_action, curr_rt_partial)]
+
+                        next_rt = self.env.retrosynthesis(next_rdmol, max_depth, known_branches=known_branches)
+                        next_rt_partial = self.env.retrosynthesis(
+                            next_rdmol, max_depth, block_set, known_branches_partial
+                        )
+
+                        curr_rt_lens = curr_rt.length_distribution(self.max_len)
+                        next_rt_lens = next_rt.length_distribution(self.max_len)
+
+                        numerator = sum(
+                            curr_rt_lens[_t] * sum(expansion_rate**_i for _i in range(self.max_len - _t))
+                            for _t in range(0, self.max_len)  # T(s->s'), t=0~N-1, i=0~N-t-1
+                        )
+                        denominator = sum(
+                            next_rt_lens[_t] * sum(expansion_rate**_i for _i in range(self.max_len - _t + 1))
+                            for _t in range(1, self.max_len + 1)  # T(s'), t=1~N, i=0~N-t
+                        )
+                        if False:
+                            # NOTE: UNIFORM-PB
+                            n_back = max(1, self.env.count_backward_transitions(next_rdmol))
+                            bck_logprob[i].append(math.log(1 / n_back))
+                        else:
+                            # NOTE: RETROSYNTHESIS-PB
+                            bck_logprob[i].append(math.log(numerator) - math.log(denominator))
 
                     if traj_idx == self.max_len - 1:
                         done[i] = True
 
-                    n_back = max(1, self.env.count_backward_transitions(rdmol))
-                    bck_logprob[i].append(math.log(1 / n_back))
                     data[i]["is_sink"].append(0)
-                    rdmols[i] = rdmol
-                    graphs[i] = self.ctx.mol_to_graph(rdmol)
+                    rdmols[i] = next_rdmol
+                    graphs[i] = self.ctx.mol_to_graph(next_rdmol)
+                    retro_tree[i] = next_rt
+                    retro_tree_partial[i] = next_rt_partial
 
                 if done[i] and len(data[i]["traj"]) <= 2:
                     data[i]["is_valid"] = False
@@ -173,6 +216,7 @@ class SynthesisSampler:
             data[i]["block_indices"] = block_indices
             if self.pad_with_terminal_state:
                 data[i]["traj"].append((graphs[i], ForwardAction(ReactionActionType.Stop)))
+                data[i]["retro_tree"].append((retro_tree[i], retro_tree_partial[i]))
                 data[i]["is_sink"].append(1)
 
         return data

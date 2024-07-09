@@ -1,7 +1,7 @@
 import enum
 import re
 from functools import cached_property
-from typing import Tuple, Optional
+from typing import Iterable, List, Tuple, Optional
 from rdkit.Chem import Mol
 
 from gflownet.envs.synthesis.utils import Reaction
@@ -55,16 +55,8 @@ class ReactionAction:
     def __init__(
         self,
         action: ReactionActionType,
-    ):
-        self.action = action
-
-
-class ForwardAction(ReactionAction):
-    def __init__(
-        self,
-        action: ReactionActionType,
         reaction: Optional[Reaction] = None,
-        block: Optional[Mol] = None,
+        block: Optional[str] = None,
         block_local_idx: Optional[int] = None,
         block_is_first: Optional[bool] = None,
     ):
@@ -75,8 +67,8 @@ class ForwardAction(ReactionAction):
         action: GraphActionType
             the action type
         reaction: Reaction, optional
-        block: Chem.Mol, optional
-            the block mol object
+        block: str, optional
+            the block smi object
         block_local_idx: int, optional
             the block idx
         block_is_first: bool, optional
@@ -91,21 +83,67 @@ class ForwardAction(ReactionAction):
         return str(self.action)
 
 
+class ForwardAction(ReactionAction):
+    def __init__(
+        self,
+        action: ReactionActionType,
+        reaction: Optional[Reaction] = None,
+        block: Optional[str] = None,
+        block_local_idx: Optional[int] = None,
+        block_is_first: Optional[bool] = None,
+    ):
+        assert action in (
+            ReactionActionType.Stop,
+            ReactionActionType.AddFirstReactant,
+            ReactionActionType.ReactUni,
+            ReactionActionType.ReactBi,
+        )
+        super().__init__(action, reaction, block, block_local_idx, block_is_first)
+
+
 class BackwardAction(ReactionAction):
     def __init__(
         self,
         action: ReactionActionType,
         reaction: Optional[Reaction] = None,
+        block: Optional[str] = None,
+        block_local_idx: Optional[int] = None,
         block_is_first: Optional[bool] = None,
     ):
-        """A single graph-building action
+        assert action in (
+            ReactionActionType.Stop,
+            ReactionActionType.BckRemoveFirstReactant,
+            ReactionActionType.BckReactUni,
+            ReactionActionType.BckReactBi,
+        )
+        super().__init__(action, reaction, block, block_local_idx, block_is_first)
 
-        Parameters
-        ----------
-        action: GraphActionType
-            the action type
-        reaction: Reaction, optional
-        """
-        self.action = action
-        self.reaction = reaction
-        self.block_is_first: Optional[bool] = block_is_first
+    pass
+
+
+class RetroSynthesisTree:
+    def __init__(self, branches: List = []):
+        self.branches: List[tuple[BackwardAction, RetroSynthesisTree]] = branches
+
+    def iteration(self, prev_traj: List[BackwardAction] = []) -> Iterable[List[BackwardAction]]:
+        if len(self.branches) > 0:
+            for bck_action, subtree in self.branches:
+                if bck_action.action is ReactionActionType.BckRemoveFirstReactant:
+                    yield prev_traj + [bck_action]
+                else:
+                    for traj in subtree.iteration(prev_traj + [bck_action]):
+                        yield traj
+
+    def __len__(self):
+        return len(self.branches)
+
+    def length_distribution(self, max_len: int) -> List[int]:
+        lengths = list(self.iteration_length())
+        return [sum(length == _t for length in lengths) for _t in range(0, max_len + 1)]
+
+    def iteration_length(self, prev_len: int = 0) -> Iterable[int]:
+        if len(self.branches) > 0:
+            for _, subtree in self.branches:
+                yield from subtree.iteration_length(prev_len + 1)
+        else:
+            yield prev_len

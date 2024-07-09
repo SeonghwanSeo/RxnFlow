@@ -134,7 +134,8 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             try:
                 data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob)
             except Exception as e:
-                raise e
+                print(f"ERROR - create_training_data_from_own_samples - {e}")
+                # raise e
                 data = None
         logZ_pred = model.logZ(cond_info)
         for i in range(n):
@@ -179,31 +180,27 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             torch_graphs = [
                 self.ctx.graph_to_Data(traj[0], tj_idx) for tj in trajs for tj_idx, traj in enumerate(tj["traj"])
             ]
-            actions = [
-                self.ctx.ReactionAction_to_aidx(g, a)
-                for g, a in zip(torch_graphs, [i[1] for tj in trajs for i in tj["traj"]])
-            ]
+            actions = [self.ctx.ReactionAction_to_aidx(traj[1]) for tj in trajs for traj in tj["traj"]]
+            retro_tree = [tree1 for tj in trajs for tree1, tree2 in tj["retro_tree"]]
+            retro_tree_partial = [tree2 for tj in trajs for tree1, tree2 in tj["retro_tree"]]
         batch = self.ctx.collate(torch_graphs)
         batch.traj_lens = torch.tensor([len(i["traj"]) for i in trajs])
-        batch.log_p_B = torch.cat([i["bck_logprobs"] for i in trajs], 0)  # ASTB - In this work, dummy
+        batch.log_p_B = torch.cat([i["bck_logprobs"] for i in trajs], 0)
         batch.actions = torch.tensor(actions)
         if self.cfg.do_parameterize_p_b:
             batch.bck_actions = torch.tensor(
-                [
-                    self.ctx.ReactionAction_to_aidx(g, a)
-                    for g, a in zip(torch_graphs, [i for tj in trajs for i in tj["bck_a"]])
-                ]
+                [self.ctx.ReactionAction_to_aidx(traj[1]) for tj in trajs for traj in tj["bck_a"]]
             )
             batch.is_sink = torch.tensor(sum([i["is_sink"] for i in trajs], []))
         batch.log_rewards = log_rewards
         batch.cond_info = cond_info
         batch.is_valid = torch.tensor([i.get("is_valid", True) for i in trajs]).float()
 
-        # NOTE: ASGFN -> all trajectory with same traj idx in on batch share the block indices
-        # NOTE: NON-TENSOR-DATA for BUILDING BLOCK MASKING
+        # NOTE: ASGFN
+        # NOTE: NON-TENSOR-DATAS
+        batch.rev_traj_lens = [tree.length_distribution(self.max_len) for tree in retro_tree]
+        batch.rev_traj_lens_partial = [tree.length_distribution(self.max_len) for tree in retro_tree_partial]
         batch.block_indices = trajs[0]["block_indices"]
-        batch.block_sampling_size = len(batch.block_indices)
-        batch.block_space_size = self.ctx.num_building_blocks
 
         if self.cfg.do_correct_idempotent:
             raise NotImplementedError()
@@ -265,14 +262,15 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             raise NotImplementedError()
         else:
             # Else just naively take the logprob of the actions we took
-            log_p_F = fwd_cat.log_prob_fwd(batch.actions, batch.block_indices)
-            log_p_F = fwd_cat.convert_log_p_F(
-                batch.actions, log_p_F, batch.block_sampling_size, batch.block_space_size, self.max_len
+            _log_p_F = fwd_cat.log_prob_fwd(batch.actions, batch.block_indices)
+            log_p_F = fwd_cat.reweight_logp(
+                _log_p_F, batch.actions, batch.rev_traj_lens, batch.rev_traj_lens_partial, batch.block_indices
             )
             if self.cfg.do_parameterize_p_b:
                 log_p_B = bck_cat.log_prob_bck(batch.bck_actions)
 
         if self.cfg.do_parameterize_p_b:
+            raise NotImplementedError
             # If we're modeling P_B then trajectories are padded with a virtual terminal state sF,
             # zero-out the logP_F of those states
             log_p_F[final_graph_idx] = 0
@@ -290,7 +288,7 @@ class ActionSamplingTrajectoryBalance(GFNAlgorithm):
             # we'll use to ignore the last padding state(s) of each trajectory. This by the same
             # occasion masks out the first P_B of the "next" trajectory that we've shifted.
             log_p_B = torch.roll(log_p_B, -1, 0) * (1 - batch.is_sink)
-        else:  # NOTE: NOT IMPLEMENTED YET
+        else:
             log_p_B = batch.log_p_B
         assert log_p_F.shape == log_p_B.shape
 
