@@ -97,6 +97,7 @@ class Config:
     num_final_gen_steps: Optional[int] = None
     num_training_steps: int = 10_000
     num_workers: int = 0
+    num_workers_retrosynthesis: int = 4  # For our work
     hostname: Optional[str] = None
     pickle_mp_messages: bool = False
     git_hash: Optional[str] = None

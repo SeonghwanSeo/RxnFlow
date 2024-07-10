@@ -7,7 +7,7 @@ from tqdm import tqdm
 
 from rdkit import Chem
 from rdkit.Chem import BondType
-from gflownet.envs.synthesis.utils import Reaction
+from gflownet.envs.synthesis.reaction import Reaction
 
 ATOMS: list[str] = ["C", "N", "O", "F", "P", "S", "Cl", "Br", "I", "B"]
 BONDS = [BondType.SINGLE, BondType.DOUBLE, BondType.TRIPLE, BondType.AROMATIC]
@@ -79,10 +79,9 @@ def main(
             # NOTE: Filtering Molecules which could not react with any reactions.
             mask = np.zeros((len(bimolecular_reactions), 2), dtype=np.bool_)
             for rxn_i, reaction in enumerate(bimolecular_reactions):
-                reactants = reaction.rxn.GetReactants()
-                if mol.HasSubstructMatch(reactants[0]):
+                if reaction.is_reactant_first(mol):
                     mask[rxn_i, 0] = 1
-                if mol.HasSubstructMatch(reactants[1]):
+                if reaction.is_reactant_second(mol):
                     mask[rxn_i, 1] = 1
             if mask.sum() == 0:
                 continue
@@ -91,7 +90,7 @@ def main(
             w.write(f"{smi}\t{id}\n")
             t += 1
 
-    all_mask = all_mask[:t].transpose((1, 0, 2))
+    all_mask = all_mask[:t].transpose((1, 2, 0))
     print(f"Saving precomputed masks to of shape={all_mask.shape} to {save_mask_path}")
     np.save(save_mask_path, all_mask)
 

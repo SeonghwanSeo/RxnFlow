@@ -5,7 +5,11 @@ from typing import Optional
 
 @dataclass
 class ActionSamplingConfig:
-    num_building_block_sampling: int = 5000
+    num_mc_sampling: int = 1
+    num_sampling_add_first_reactant: int = 1000
+    ratio_sampling_reactbi: float = 0.1
+    max_sampling_reactbi: int = 1000
+    min_sampling_reactbi: int = 10
 
 
 class TBVariant(int, Enum):

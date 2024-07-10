@@ -7,9 +7,6 @@ import torch
 from omegaconf import OmegaConf
 from torch import Tensor
 
-from gflownet.algo.advantage_actor_critic import A2C
-from gflownet.algo.flow_matching import FlowMatching
-from gflownet.algo.soft_q_learning import SoftQLearning
 from gflownet.algo.trajectory_balance import TrajectoryBalance
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.models.graph_transformer import GraphTransformerGFN
@@ -35,17 +32,8 @@ class StandardOnlineTrainer(GFNTrainer):
         )
 
     def setup_algo(self):
-        algo = self.cfg.algo.method
-        if algo == "TB":
-            algo = TrajectoryBalance
-        elif algo == "FM":
-            algo = FlowMatching
-        elif algo == "A2C":
-            algo = A2C
-        elif algo == "SQL":
-            algo = SoftQLearning
-        else:
-            raise ValueError(algo)
+        assert self.cfg.algo.method == "TB"
+        algo = TrajectoryBalance
         self.algo = algo(self.env, self.ctx, self.rng, self.cfg)
 
     def setup_data(self):

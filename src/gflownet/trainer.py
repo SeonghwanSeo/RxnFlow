@@ -20,7 +20,6 @@ from torch.utils.data import DataLoader, Dataset
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.data.sampling_iterator import SamplingIterator
 from gflownet.envs.graph_building_env import GraphActionCategorical, GraphBuildingEnv, GraphBuildingEnvContext
-from gflownet.envs.seq_building_env import SeqBatch
 from gflownet.utils.misc import create_logger
 from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
 
@@ -153,8 +152,11 @@ class GFNTrainer:
 
         self.setup()
 
-    def set_default_hps(self, base: Config):
+    def set_default_hps(self, cfg: Config):
         raise NotImplementedError()
+
+    def setup_env(self):
+        self.env = GraphBuildingEnv()
 
     def setup_env_context(self):
         raise NotImplementedError()
@@ -186,7 +188,7 @@ class GFNTrainer:
 
         RDLogger.DisableLog("rdApp.*")
         self.rng = np.random.default_rng(142857)
-        self.env = GraphBuildingEnv()
+        self.setup_env()
         self.setup_data()
         self.setup_task()
         self.setup_env_context()

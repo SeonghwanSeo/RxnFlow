@@ -3,6 +3,23 @@ from typing import List
 
 
 @dataclass
+class UniDockTaskConfig:
+    env_dir: str = "./data/experiments/unidock-crossdocked2020"
+    code: str = "14gs_A"
+
+
+@dataclass
+class UniDockMOOTaskConfig:
+    objectives: List[str] = field(default_factory=lambda: ["vina", "qed", "sa"])
+    vina_threshold: float = -16.0
+    qed_threshold: float = 0.6
+    sa_score_threshold: float = 0.8  # We don't have to do this in UniDockMOOSynthesisTask!
+    vina_weight: float = 1.5
+    qed_weight: float = 1.0
+    sa_score_weight: float = 1.0
+
+
+@dataclass
 class SEHTaskConfig:
     reduced_frag: bool = False
 
@@ -66,3 +83,5 @@ class TasksConfig:
     qm9_moo: QM9MOOTaskConfig = QM9MOOTaskConfig()
     seh: SEHTaskConfig = SEHTaskConfig()
     seh_moo: SEHMOOTaskConfig = SEHMOOTaskConfig()
+    unidock: UniDockTaskConfig = UniDockTaskConfig()
+    unidock_moo: UniDockMOOTaskConfig = UniDockMOOTaskConfig()
