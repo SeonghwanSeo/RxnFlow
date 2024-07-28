@@ -88,3 +88,9 @@ class ActionSamplingPolicy:
         else:
             assert rxn_type is not None
             return self._reactbi_reactant_space[rxn_type]
+
+    def get_space_addfirstreactant(self) -> BlockSpace:
+        return self._first_reactant_space
+
+    def get_space_reactbi(self, rxn_idx: int, block_is_first: bool) -> BlockSpace:
+        return self._reactbi_reactant_space[(rxn_idx, block_is_first)]

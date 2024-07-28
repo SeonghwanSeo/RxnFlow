@@ -1,4 +1,5 @@
 import requests
+import math
 import os
 import pathlib
 import numpy as np
@@ -6,13 +7,15 @@ import torch
 import torch.nn as nn
 from torch import Tensor
 from rdkit import Chem, DataStructs
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import QED
 from torch.utils.data import DataLoader
 
 from rdkit.Chem import Mol as RDMol
 from typing import Callable, Dict, List, Tuple
 
 from gflownet.config import Config, init_empty
-from gflownet.trainer import FlatRewards
+from gflownet.trainer import FlatRewards, RewardScalar
 
 from gflownet.tasks.synthesis_trainer import SynthesisTrainer
 from gflownet.tasks.base_task import BaseTask
@@ -31,7 +34,7 @@ class ProjectionSynthesisTask(BaseTask):
     ):
         super().__init__(cfg, rng, wrap_model)
 
-        self.num_cond_dim = self.temperature_conditional.encoding_size() + 2048
+        self.num_cond_dim = self.temperature_conditional.encoding_size() + 2048 + 4
         with open("/home/shwan/GFLOWNET_PROJECT/astb/data/experiments/projection/train_data_05.csv") as f:
             self.train_data: List[str] = [ln.split(",")[1] for ln in f.readlines()]
 
@@ -44,40 +47,70 @@ class ProjectionSynthesisTask(BaseTask):
 
     def sample_conditional_information(self, n: int, train_it: int, final: bool = False) -> Dict[str, Tensor]:
         cond_info = super().sample_conditional_information(n, train_it, final)
-
-        self.cond_fps = []
-        while len(self.cond_fps) < n:
+        self.cond = []
+        cond_features = []
+        while len(self.cond) < n:
             smiles = self.train_data[np.random.choice(len(self.train_data))]
             mol = Chem.MolFromSmiles(smiles)
             if mol is None:
                 continue
             try:
-                self.cond_fps.append(Chem.RDKFingerprint(mol))
-            except Exception:
+                prop, prop_t = self.get_property(mol)
+                self.cond.append(prop)
+                cond_features.append(prop_t)
+            except Exception as e:
+                raise e
                 pass
-        fp_tensor = torch.tensor(self.cond_fps)
-        cond_info["encoding"] = torch.cat([cond_info["encoding"], fp_tensor], dim=-1)
+        cond_features_t = torch.stack(cond_features)
+        cond_info["encoding"] = torch.cat([cond_info["encoding"], cond_features_t], dim=-1)
         return cond_info
 
+    def get_property(self, mol: RDMol):
+        mw = rdMolDescriptors.CalcExactMolWt(mol)
+        natoms = mol.GetNumHeavyAtoms()
+        nrings = rdMolDescriptors.CalcNumRings(mol)
+        qed = QED.qed(mol)
+        fp = Chem.RDKFingerprint(mol)
+        prop_t = torch.tensor([mw / 600, natoms / 10, nrings, qed])
+        fp_t = torch.tensor(fp, dtype=torch.float)
+        return {"mw": mw, "natoms": natoms, "nrings": nrings, "qed": qed, "fp": fp}, torch.cat([prop_t, fp_t])
+
     def compute_flat_rewards(self, mols: List[RDMol], indices: List[int]) -> Tuple[FlatRewards, Tensor]:
-        sim_list = []
+        rewards = []
         valid = []
         for mol, idx in zip(mols, indices, strict=True):
-            cond_fp = self.cond_fps[idx]
+            cond = self.cond[idx]
             try:
+                mw = rdMolDescriptors.CalcExactMolWt(mol)
+                natoms = mol.GetNumHeavyAtoms()
+                nrings = rdMolDescriptors.CalcNumRings(mol)
+                qed = QED.qed(mol)
                 fp = Chem.RDKFingerprint(mol)
-                sim = DataStructs.TanimotoSimilarity(fp, cond_fp)
-            except Exception:
+
+                r_mw = math.exp(-abs(mw - cond["mw"]) / cond["mw"])
+                r_natoms = math.exp(-abs(natoms - cond["natoms"]) / cond["natoms"])
+                r_nrings = math.exp(-abs(nrings - cond["nrings"]))
+                r_qed = math.exp(-abs(qed - cond["qed"]))
+                r_fp = DataStructs.TanimotoSimilarity(fp, cond["fp"])
+            except Exception as e:
                 valid.append(False)
             else:
-                sim_list.append(sim)
+                rewards.append((r_mw, r_natoms, r_nrings, r_qed, r_fp))
                 valid.append(True)
         is_valid = torch.tensor(valid)
-        rewards = self.flat_reward_transform(torch.tensor(sim_list)).clip(1e-4, 1).reshape((-1, 1))
-        return FlatRewards(rewards), is_valid
+        flat_r = torch.tensor(rewards).reshape((-1, 5))
+        self.avg_reward_info = [(obj, v) for obj, v in zip(["mw", "natoms", "nrings", "qed", "sim"], flat_r.mean(0))]
+        return FlatRewards(flat_r), is_valid
+
+    def cond_info_to_logreward(self, cond_info: Dict[str, Tensor], flat_reward: FlatRewards) -> RewardScalar:
+        """TacoGFN Reward Function: R = Prod(Rs)"""
+        flat_reward = FlatRewards(torch.prod(flat_reward, -1, keepdim=True).clip(1e-4, 1.0))
+        return super()._to_reward_scalar(cond_info, flat_reward)
 
 
 class ProjectionSynthesisTrainer(SynthesisTrainer):
+    task: ProjectionSynthesisTask
+
     def set_default_hps(self, cfg: Config):
         super().set_default_hps(cfg)
         cfg.cond.temperature.sample_dist = "constant"
@@ -89,6 +122,12 @@ class ProjectionSynthesisTrainer(SynthesisTrainer):
 
     def setup_data(self):
         self.training_data = [None] * int(np.ceil(self.cfg.algo.global_batch_size * self.cfg.algo.offline_ratio))
+        self.test_data = []
+
+    def log(self, info, index, key):
+        for obj, v in self.task.avg_reward_info:
+            info[f"sampled_{obj}_avg"] = v
+        super().log(info, index, key)
 
     def build_training_data_loader(self) -> DataLoader:
         model, dev = self._wrap_for_mp(self.sampling_model, send_to_device=True)
@@ -152,17 +191,17 @@ def main():
     """Example of how this trainer can be run"""
     config = init_empty(Config())
     config.print_every = 1
-    config.validate_every = 10
+    config.validate_every = 0
     config.num_training_steps = 1000
     config.log_dir = "./logs/debug/"
-    config.env_dir = "/home/shwan/GFLOWNET_PROJECT/astb/data/envs/subsampled_20000/"
+    config.env_dir = "/home/shwan/GFLOWNET_PROJECT/astb/data/envs/subsampled_10000/"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
 
     config.algo.action_sampling.num_mc_sampling = 1
-    config.algo.action_sampling.num_sampling_add_first_reactant = 5000
-    config.algo.action_sampling.ratio_sampling_reactbi = 1.0
-    config.algo.action_sampling.max_sampling_reactbi = 5000
+    config.algo.action_sampling.num_sampling_add_first_reactant = 10000
+    config.algo.action_sampling.ratio_sampling_reactbi = 0.1
+    config.algo.action_sampling.max_sampling_reactbi = 1000
     config.algo.action_sampling.min_sampling_reactbi = 1
 
     trial = ProjectionSynthesisTrainer(config)

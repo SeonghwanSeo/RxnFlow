@@ -73,13 +73,6 @@ class SynthesisTrainer(StandardOnlineTrainer):
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
 
-    def setup_task(self):
-        self.task = SynthesisTask(
-            cfg=self.cfg,
-            rng=self.rng,
-            wrap_model=self._wrap_for_mp,
-        )
-
     def setup_env_context(self):
         self.ctx = SynthesisEnvContext(
             self.env,

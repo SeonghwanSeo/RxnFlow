@@ -47,17 +47,9 @@ class ProjectionSamplingIterator(SamplingIterator):
                 trajs = self.algo.create_training_data_from_random_samples(num_offline)
                 rewards = []
                 for i in range(num_offline):
-                    fp = Chem.RDKFingerprint(trajs[i]["result_rdmol"])
-                    fp_array = np.array(fp, dtype=np.float32)
-                    if np.random.rand() < 0.0:
-                        noise = int(np.random.rand() * 0.2 * 2048)
-                        flip_indices = np.random.choice(2048, noise, replace=False)
-                        org_fp_array = fp_array.copy()
-                        fp_array[flip_indices] = 1.0 - org_fp_array[flip_indices]
-                        rewards.append([tanimoto_similarity(fp_array, org_fp_array)])
-                    else:
-                        rewards.append([1.0])
-                    cond_info["encoding"][i, -2048:] = torch.from_numpy(fp_array)
+                    prop, prop_t = self.task.get_property(trajs[i]["result_rdmol"])
+                    rewards.append([1.0] * 5)
+                    cond_info["encoding"][i, -(2048 + 4) :] = prop_t
                 flat_rewards = list(self.task.flat_reward_transform(rewards)) if num_offline > 0 else []
 
             else:  # If we're not sampling the conditionals, then the idcs refer to listed preferences

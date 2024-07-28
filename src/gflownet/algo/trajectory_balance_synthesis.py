@@ -115,7 +115,7 @@ class SynthesisTrajectoryBalance(TrajectoryBalance):
             try:
                 data = self.graph_sampler.sample_from_model(model, n, cond_info, dev, random_action_prob)
             except Exception as e:
-                # raise e
+                raise e
                 print(f"ERROR - create_training_data_from_own_samples - {e}")
                 data = None
         return data

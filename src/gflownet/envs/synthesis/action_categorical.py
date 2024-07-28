@@ -164,40 +164,40 @@ class ReactionActionCategorical(GraphActionCategorical):
         logits = torch.cat(self.logits, dim=-1)
         max_logits = logits.detach().max(dim=-1, keepdim=True).values
         logZ = torch.logsumexp(logits - max_logits, dim=-1) + max_logits.squeeze(-1)
-        log_action_probs = self.cal_log_action_probs(actions)
-        return log_action_probs - logZ
+        action_logits = self.cal_action_logits(actions)
+        return action_logits - logZ
 
-    def cal_log_action_probs(self, actions: List[ReactionActionIdx]):
-        # NOTE: placeholder of log_action_probs
-        log_action_probs = torch.empty(len(actions), device=self.dev)
+    def cal_action_logits(self, actions: List[ReactionActionIdx]):
+        # NOTE: placeholder of action_logits
+        action_logits = torch.empty(len(actions), device=self.dev)
         for i, action in enumerate(actions):
             type_idx, rxn_idx, block_idx, block_is_first = action
             t = self.types[type_idx]
             if t is ReactionActionType.AddFirstReactant:
                 block_emb = self.model.block_mlp(self.ctx.get_block_data([int(block_idx)], self.dev).view(-1))
-                log_prob = self.model.single_hook_add_first_reactant(self.emb[i], block_emb)
+                logit = self.model.single_hook_add_first_reactant(self.emb[i], block_emb)
             elif t is ReactionActionType.Stop:
-                log_prob = self.model.single_hook_stop(self.emb[i])
+                logit = self.model.single_hook_stop(self.emb[i])
             elif t is ReactionActionType.ReactUni:
                 self.masks[t][i, rxn_idx] = True
-                log_prob = self.model.single_hook_reactuni(self.emb[i], rxn_idx)
+                logit = self.model.single_hook_reactuni(self.emb[i], rxn_idx)
             elif t is ReactionActionType.ReactBi:
                 self.masks[t][i, rxn_idx, int(block_is_first)] = True
                 block_emb = self.model.block_mlp(self.ctx.get_block_data([int(block_idx)], self.dev).view(-1))
-                log_prob = self.model.single_hook_reactbi(self.emb[i], rxn_idx, block_is_first, block_emb)
+                logit = self.model.single_hook_reactbi(self.emb[i], rxn_idx, block_is_first, block_emb)
             else:
                 raise ValueError
-            log_action_probs[i] = log_prob
-        return log_action_probs
+            action_logits[i] = logit
+        return action_logits
 
     def log_prob(self, actions: List[ReactionActionIdx], action_sampler: ActionSamplingPolicy) -> torch.Tensor:
         """Access the log-probability of actions"""
         assert len(actions) == self.num_graphs, f"num_graphs: {self.num_graphs}, num_actions: {len(actions)}"
         if self.fwd:
             logZ = self.cal_logZ(action_sampler)
-            log_action_probs = self.cal_log_action_probs(actions)
-            log_action_probs = log_action_probs - logZ
-            return log_action_probs.clamp(math.log(self._epsilon))
+            action_logits = self.cal_action_logits(actions)
+            action_logits = action_logits - logZ
+            return action_logits.clamp(math.log(self._epsilon))
         else:
             raise NotImplementedError
 

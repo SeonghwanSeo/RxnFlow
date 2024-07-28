@@ -21,7 +21,7 @@ class GFN_Synthesis(nn.Module):
         env_ctx: SynthesisEnvContext,
         cfg: Config,
         num_graph_out=1,
-        do_bck=True,
+        do_bck=False,
     ) -> None:
         super().__init__()
         self.env_ctx: SynthesisEnvContext = env_ctx
@@ -69,7 +69,6 @@ class GFN_Synthesis(nn.Module):
 
     def forward(self, g: gd.Batch, cond: torch.Tensor):
         """
-        Forward pass of the ASTB.
 
         Parameters
         ----------
