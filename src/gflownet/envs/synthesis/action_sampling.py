@@ -68,7 +68,7 @@ class ActionSamplingPolicy:
         self._first_reactant_space = BlockSpace.create1(indices, nsamp)
 
         # NOTE: ReactBi
-        sr = self.cfg.ratio_sampling_reactbi
+        sr = self.cfg.sampling_ratio_reactbi
         nmin = self.cfg.min_sampling_reactbi
         nmax = self.cfg.max_sampling_reactbi
         self._reactbi_reactant_space = {}

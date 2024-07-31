@@ -7,9 +7,10 @@ from typing import Optional
 class ActionSamplingConfig:
     num_mc_sampling: int = 1
     num_sampling_add_first_reactant: int = 1000
-    ratio_sampling_reactbi: float = 0.1
+    sampling_ratio_reactbi: float = 1.0
     max_sampling_reactbi: int = 1000
     min_sampling_reactbi: int = 10
+    onpolicy_temp: float = 1.0
 
 
 class TBVariant(int, Enum):
@@ -131,7 +132,8 @@ class AlgoConfig:
 
     method: str = "TB"
     global_batch_size: int = 64
-    max_len: int = 128
+    min_len: int = 2
+    max_len: int = 4
     max_nodes: int = 128
     max_edges: int = 128
     illegal_action_logreward: float = -100

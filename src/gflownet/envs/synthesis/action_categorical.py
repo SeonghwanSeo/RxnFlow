@@ -1,9 +1,8 @@
 import math
-import numpy as np
 import torch
 import torch_geometric.data as gd
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from gflownet.envs.graph_building_env import GraphActionCategorical
 from gflownet.envs.synthesis.action import (
@@ -44,28 +43,30 @@ class ReactionActionCategorical(GraphActionCategorical):
             ReactionActionType.ReactBi: graphs[ReactionActionType.ReactBi.mask_name],
         }
         self.batch = torch.arange(self.num_graphs, device=dev)
+        self.random_action_mask: Optional[torch.Tensor] = None
 
     def sample(
         self,
         action_sampler: ActionSamplingPolicy,
         onpolicy_temp: float = 0.0,
         sample_temp: float = 1.0,
+        min_len: int = 2,
     ) -> List[ReactionActionIdx]:
         """
         Samples from the categorical distribution
         sample_temp:
             Softmax temperature used when sampling
         onpolicy_temp:
-            0.0: importance sampling
-            1.0: on-policy sampling
+            t<1.0: more ReactUni/Stop
+            t=1.0: on-policy sampling
+            t>1.0: more ReactBi
         """
-        # TODO: Reweighting for Online Policy?
         traj_idx = self.traj_indices[0]
         assert (self.traj_indices == traj_idx).all()  # For sampling, we use the same traj index
         if traj_idx == 0:
             return self.sample_initial_state(action_sampler, sample_temp)
         else:
-            return self.sample_later_state(action_sampler, onpolicy_temp, sample_temp)
+            return self.sample_later_state(action_sampler, onpolicy_temp, sample_temp, min_len)
 
     def sample_initial_state(
         self,
@@ -83,6 +84,9 @@ class ReactionActionCategorical(GraphActionCategorical):
         logits = self.model.hook_add_first_reactant(self.emb, block_emb)
         self.logits.append(logits)
 
+        if self.random_action_mask is not None:
+            self.logits[0][self.random_action_mask, None] = 0.0
+
         # NOTE: Softmax temperature used when sampling
         if sample_temp != 1:
             self.logits = [logit / sample_temp for logit in self.logits]
@@ -98,6 +102,7 @@ class ReactionActionCategorical(GraphActionCategorical):
         action_sampler: ActionSamplingPolicy,
         onpolicy_temp: float = 0.0,
         sample_temp: float = 1.0,
+        min_len: int = 2,
     ):
         self.logits.append(self.model.hook_stop(self.emb))
         self.logits.append(self.model.hook_reactuni(self.emb, self.masks[ReactionActionType.ReactUni]))
@@ -117,9 +122,23 @@ class ReactionActionCategorical(GraphActionCategorical):
                     block_emb = self.model.block_mlp(self.ctx.get_block_data(block_indices, self.dev))
                     mask = self.masks[ReactionActionType.ReactBi][:, rxn_idx, int(block_is_first)]
                     logits = self.model.hook_reactbi(self.emb, rxn_idx, block_is_first, block_emb, mask)
-                    if onpolicy_temp != 0.0:
+                    if onpolicy_temp != 0.0 and reactant_space.sampling_ratio != 1.0:
                         logits = logits - onpolicy_temp * math.log(reactant_space.sampling_ratio)
                     self.logits.append(logits)
+
+        if self.random_action_mask is not None:
+            mask = self.random_action_mask
+            random_action_idx = torch.where(mask)[0]
+            for i in random_action_idx:
+                self.logits[0][i, None] = 0
+                self.logits[1][i, self.masks[ReactionActionType.ReactUni][i]] = 0
+                offset = 2
+                for rxn_idx in range(self.ctx.num_bimolecular_rxns):
+                    for block_is_first in (True, False):
+                        if self.masks[ReactionActionType.ReactBi][i, rxn_idx, int(block_is_first)]:
+                            num_blocks = self.logits[offset].shape[1]
+                            self.logits[offset][i, None] = -math.log(num_blocks)
+                            offset += 1
 
         # NOTE: Softmax temperature used when sampling
         if sample_temp != 1:
@@ -127,9 +146,12 @@ class ReactionActionCategorical(GraphActionCategorical):
 
         # NOTE: Use the Gumbel trick to sample categoricals
         gumbel = []
-        for logit in self.logits:
-            noise = torch.rand_like(logit)
-            gumbel.append(logit - (-noise.log()).log())
+        for i, logit in enumerate(self.logits):
+            if (i == 0) and (self.traj_indices[0] < min_len):
+                gumbel.append(torch.full_like(logit, -torch.inf))
+            else:
+                noise = torch.rand_like(logit)
+                gumbel.append(logit - (-noise.log()).log())
         argmax = self.argmax(x=gumbel)  # tuple of action type, action idx
 
         actions: List[ReactionActionIdx] = []

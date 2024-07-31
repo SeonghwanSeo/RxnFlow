@@ -108,9 +108,13 @@ class HierarchicalReactionActionCategorical(GraphActionCategorical):
 
         # NOTE: Use the Gumbel trick to sample categoricals
         gumbel = []
-        for logit in self.logits:
-            noise = torch.rand_like(logit)
-            gumbel.append(logit - (-noise.log()).log())
+        for i, logit in enumerate(self.logits):
+            if i == 0 and self.traj_indices[0] == 1:
+                # SynFlowNet, Mask that the generated molecule is building block.
+                gumbel.append(torch.full_like(logit, -torch.inf))
+            else:
+                noise = torch.rand_like(logit)
+                gumbel.append(logit - (-noise.log()).log())
         argmax = self.argmax(x=gumbel)  # tuple of action type, action idx
 
         actions: List[ReactionActionIdx] = []

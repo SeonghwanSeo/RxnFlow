@@ -1,12 +1,14 @@
 import numpy as np
 import torch
 import torch_geometric.data as gd
+from tqdm import tqdm
 from rdkit import Chem, RDLogger
 from rdkit.Chem import AllChem
 from rdkit.Chem import BondType, ChiralType
-from tqdm import tqdm
+from rdkit.Chem import rdMolDescriptors
+from rdkit.Chem import Descriptors
 
-from typing import List, Tuple, Union
+from typing import List, Tuple, Union, Optional
 from numpy.typing import NDArray
 
 from gflownet.envs.graph_building_env import GraphBuildingEnvContext, Graph
@@ -103,26 +105,40 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.precomputed_bb_masks: NDArray[np.bool_] = env.precomputed_bb_masks
         self.allowable_birxn_mask: NDArray[np.bool_] = env.precomputed_bb_masks.any(-1)
 
-        # NOTE: Setup Building Block Datas
-        def convert_fp(smi: str):
-            mol = Chem.MolFromSmiles(smi)
-            fp = AllChem.GetMorganFingerprintAsBitVect(mol, fp_radius_building_block, fp_nbits_building_block)
-            return np.frombuffer(fp.ToBitString().encode(), "u1") - ord("0")
-
-        print("Fingerprint Construction...")
-        self.building_block_fps: np.ndarray = np.empty(
-            (self.num_building_blocks, fp_nbits_building_block), dtype=np.uint8
+        # # NOTE: Setup Building Block Datas
+        print("Fragment Data Construction...")
+        self.num_block_features = fp_nbits_building_block + 8
+        self.building_block_features: np.ndarray = np.empty(
+            (self.num_building_blocks, self.num_block_features), dtype=np.uint8
         )
         for i, smi in enumerate(tqdm(self.building_blocks)):
-            self.building_block_fps[i] = convert_fp(smi)
+            self.get_block_info(smi, fp_radius_building_block, fp_nbits_building_block, self.building_block_features[i])
+
+    def get_block_info(self, smi: str, fp_radius: int, fp_nbits: int, out: Optional[NDArray] = None) -> NDArray:
+        # NOTE: Setup Building Block Datas
+        if out is None:
+            out = np.empty(self.num_block_features)
+            assert out is not None
+        mol = Chem.MolFromSmiles(smi)
+        fp = AllChem.GetMorganFingerprintAsBitVect(mol, fp_radius, fp_nbits)
+        out[0] = rdMolDescriptors.CalcExactMolWt(mol) / 100
+        out[1] = rdMolDescriptors.CalcNumHeavyAtoms(mol) / 10
+        out[2] = rdMolDescriptors.CalcNumHBA(mol) / 10
+        out[3] = rdMolDescriptors.CalcNumHBD(mol) / 10
+        out[4] = rdMolDescriptors.CalcNumAromaticRings(mol) / 10
+        out[5] = rdMolDescriptors.CalcNumAliphaticRings(mol) / 10
+        out[6] = Descriptors.MolLogP(mol) / 10
+        out[7] = Descriptors.TPSA(mol) / 100
+        out[8:] = np.frombuffer(fp.ToBitString().encode(), "u1") - ord("0")
+        return out
 
     def get_block_data(
         self, block_indices: Union[torch.Tensor, List[int], np.ndarray], device: torch.device
     ) -> torch.Tensor:
         if len(block_indices) >= self.num_building_blocks:
-            out = torch.from_numpy(self.building_block_fps)
+            out = torch.from_numpy(self.building_block_features)
         else:
-            out = torch.from_numpy(self.building_block_fps[block_indices])
+            out = torch.from_numpy(self.building_block_features[block_indices])
         return out.to(device=device, dtype=torch.float)
 
     def aidx_to_ReactionAction(self, action_idx: ReactionActionIdx, fwd: bool = True) -> ReactionAction:

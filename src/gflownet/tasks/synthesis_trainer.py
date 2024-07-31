@@ -13,7 +13,7 @@ class SynthesisTrainer(StandardOnlineTrainer):
     ctx: SynthesisEnvContext
 
     def set_default_hps(self, cfg: Config):
-        # NOTE: Same to SEHFrag
+        # NOTE: Same to SEHFrag-MOO
         cfg.hostname = socket.gethostname()
         cfg.pickle_mp_messages = False
         cfg.num_workers = 0
@@ -34,7 +34,7 @@ class SynthesisTrainer(StandardOnlineTrainer):
         cfg.cond.temperature.dist_params = [0, 64.0]
 
         cfg.algo.method = "TB"
-        cfg.algo.sampling_tau = 0.99
+        cfg.algo.sampling_tau = 0.95  # 0.99 in SEHFrag, 0.95 in SEHFrag-MOO
         cfg.algo.illegal_action_logreward = -75
         cfg.algo.train_random_action_prob = 0.0
         cfg.algo.valid_random_action_prob = 0.0
@@ -54,6 +54,7 @@ class SynthesisTrainer(StandardOnlineTrainer):
         cfg.model.fp_nbits_building_block = 1024
         cfg.model.num_emb_building_block = 64
         cfg.model.num_layers_building_block = 0
+        cfg.algo.min_len = 2
         cfg.algo.max_len = 4
         cfg.validate_every = 0
 

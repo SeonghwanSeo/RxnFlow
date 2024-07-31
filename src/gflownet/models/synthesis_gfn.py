@@ -37,7 +37,7 @@ class GFN_Synthesis(nn.Module):
         )
 
         self.block_mlp = mlp(
-            cfg.model.fp_nbits_building_block,
+            env_ctx.num_block_features,
             cfg.model.num_emb_building_block,
             cfg.model.num_emb_building_block,
             cfg.model.num_layers_building_block,

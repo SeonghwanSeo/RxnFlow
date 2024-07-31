@@ -66,9 +66,11 @@ class SynthesisTrajectoryBalance(TrajectoryBalance):
         self.graph_sampler = SynthesisSampler(
             ctx,
             env,
+            cfg.algo.min_len,
             cfg.algo.max_len,
             rng,
             self.action_sampler,
+            cfg.algo.action_sampling.onpolicy_temp,
             self.sample_temp,
             correct_idempotent=self.cfg.do_correct_idempotent,
             pad_with_terminal_state=self.cfg.do_parameterize_p_b,

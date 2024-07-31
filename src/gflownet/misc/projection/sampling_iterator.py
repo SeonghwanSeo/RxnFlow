@@ -48,8 +48,8 @@ class ProjectionSamplingIterator(SamplingIterator):
                 rewards = []
                 for i in range(num_offline):
                     prop, prop_t = self.task.get_property(trajs[i]["result_rdmol"])
-                    rewards.append([1.0] * 5)
-                    cond_info["encoding"][i, -(2048 + 4) :] = prop_t
+                    rewards.append([1.0] * 6)
+                    cond_info["encoding"][i, -(2048 + 5) :] = prop_t
                 flat_rewards = list(self.task.flat_reward_transform(rewards)) if num_offline > 0 else []
 
             else:  # If we're not sampling the conditionals, then the idcs refer to listed preferences

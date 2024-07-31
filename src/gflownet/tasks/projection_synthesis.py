@@ -8,7 +8,7 @@ import torch.nn as nn
 from torch import Tensor
 from rdkit import Chem, DataStructs
 from rdkit.Chem import rdMolDescriptors
-from rdkit.Chem import QED
+from rdkit.Chem import Descriptors
 from torch.utils.data import DataLoader
 
 from rdkit.Chem import Mol as RDMol
@@ -34,9 +34,10 @@ class ProjectionSynthesisTask(BaseTask):
     ):
         super().__init__(cfg, rng, wrap_model)
 
-        self.num_cond_dim = self.temperature_conditional.encoding_size() + 2048 + 4
+        self.num_cond_dim = self.temperature_conditional.encoding_size() + 2048 + 5
         with open("/home/shwan/GFLOWNET_PROJECT/astb/data/experiments/projection/train_data_05.csv") as f:
             self.train_data: List[str] = [ln.split(",")[1] for ln in f.readlines()]
+        self.objectives = ["sim", "mw", "natoms", "nrings", "logp", "tpsa"]
 
     # def request_test_set(self):
     #     return requests.get(
@@ -67,13 +68,18 @@ class ProjectionSynthesisTask(BaseTask):
 
     def get_property(self, mol: RDMol):
         mw = rdMolDescriptors.CalcExactMolWt(mol)
-        natoms = mol.GetNumHeavyAtoms()
+        natoms = rdMolDescriptors.CalcNumHeavyAtoms(mol)
         nrings = rdMolDescriptors.CalcNumRings(mol)
-        qed = QED.qed(mol)
+        logp = Descriptors.MolLogP(mol)
+        tpsa = Descriptors.TPSA(mol)
         fp = Chem.RDKFingerprint(mol)
-        prop_t = torch.tensor([mw / 600, natoms / 10, nrings, qed])
+
+        prop_t = torch.tensor([mw / 600, natoms / 10, nrings, logp, tpsa])
         fp_t = torch.tensor(fp, dtype=torch.float)
-        return {"mw": mw, "natoms": natoms, "nrings": nrings, "qed": qed, "fp": fp}, torch.cat([prop_t, fp_t])
+        return (
+            {"mw": mw, "natoms": natoms, "nrings": nrings, "logp": logp, "tpsa": tpsa, "fp": fp},
+            torch.cat([prop_t, fp_t]),
+        )
 
     def compute_flat_rewards(self, mols: List[RDMol], indices: List[int]) -> Tuple[FlatRewards, Tensor]:
         rewards = []
@@ -82,29 +88,31 @@ class ProjectionSynthesisTask(BaseTask):
             cond = self.cond[idx]
             try:
                 mw = rdMolDescriptors.CalcExactMolWt(mol)
-                natoms = mol.GetNumHeavyAtoms()
+                natoms = rdMolDescriptors.CalcNumHeavyAtoms(mol)
                 nrings = rdMolDescriptors.CalcNumRings(mol)
-                qed = QED.qed(mol)
+                logp = Descriptors.MolLogP(mol)
+                tpsa = Descriptors.TPSA(mol)
                 fp = Chem.RDKFingerprint(mol)
 
+                r_sim = DataStructs.TanimotoSimilarity(fp, cond["fp"])
                 r_mw = math.exp(-abs(mw - cond["mw"]) / cond["mw"])
                 r_natoms = math.exp(-abs(natoms - cond["natoms"]) / cond["natoms"])
                 r_nrings = math.exp(-abs(nrings - cond["nrings"]))
-                r_qed = math.exp(-abs(qed - cond["qed"]))
-                r_fp = DataStructs.TanimotoSimilarity(fp, cond["fp"])
+                r_logp = math.exp(-abs(logp - cond["logp"]) / 5)
+                r_tpsa = math.exp(-abs(tpsa - cond["tpsa"]) / 100)
             except Exception as e:
                 valid.append(False)
             else:
-                rewards.append((r_mw, r_natoms, r_nrings, r_qed, r_fp))
+                rewards.append((r_sim, r_mw, r_natoms, r_nrings, r_logp, r_tpsa))
                 valid.append(True)
         is_valid = torch.tensor(valid)
-        flat_r = torch.tensor(rewards).reshape((-1, 5))
-        self.avg_reward_info = [(obj, v) for obj, v in zip(["mw", "natoms", "nrings", "qed", "sim"], flat_r.mean(0))]
+        flat_r = torch.tensor(rewards)
+        self.avg_reward_info = [(obj, v) for obj, v in zip(self.objectives, flat_r.mean(0))]
         return FlatRewards(flat_r), is_valid
 
     def cond_info_to_logreward(self, cond_info: Dict[str, Tensor], flat_reward: FlatRewards) -> RewardScalar:
         """TacoGFN Reward Function: R = Prod(Rs)"""
-        flat_reward = FlatRewards(torch.prod(flat_reward, -1, keepdim=True).clip(1e-4, 1.0))
+        flat_reward = FlatRewards(torch.prod(flat_reward.clip(1e-4, 1.0), -1, keepdim=True))
         return super()._to_reward_scalar(cond_info, flat_reward)
 
 
@@ -113,8 +121,8 @@ class ProjectionSynthesisTrainer(SynthesisTrainer):
 
     def set_default_hps(self, cfg: Config):
         super().set_default_hps(cfg)
-        cfg.cond.temperature.sample_dist = "constant"
-        cfg.cond.temperature.dist_params = [10.0]
+        # cfg.cond.temperature.sample_dist = "constant"
+        # cfg.cond.temperature.dist_params = [10.0]
         cfg.algo.offline_ratio = 0.25
 
     def setup_task(self):
@@ -192,7 +200,7 @@ def main():
     config = init_empty(Config())
     config.print_every = 1
     config.validate_every = 0
-    config.num_training_steps = 1000
+    config.num_training_steps = 20_000
     config.log_dir = "./logs/debug/"
     config.env_dir = "/home/shwan/GFLOWNET_PROJECT/astb/data/envs/subsampled_10000/"
     config.device = "cuda" if torch.cuda.is_available() else "cpu"

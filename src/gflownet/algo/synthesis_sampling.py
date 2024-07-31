@@ -25,10 +25,12 @@ class SynthesisSampler:
         self,
         ctx: SynthesisEnvContext,
         env: SynthesisEnv,
+        min_len: int,
         max_len: int,
         rng,
         action_sampler: ActionSamplingPolicy,
-        sample_temp: float = 1,
+        onpolicy_temp: float = 0.0,
+        sample_temp: float = 1.0,
         correct_idempotent: bool = False,
         pad_with_terminal_state: bool = False,
         num_workers: int = 4,
@@ -45,9 +47,11 @@ class SynthesisSampler:
         """
         self.ctx: SynthesisEnvContext = ctx
         self.env: SynthesisEnv = env
+        self.min_len = min_len if min_len is not None else 2
         self.max_len = max_len if max_len is not None else 4
         self.rng = rng
         # Experimental flags
+        self.onpolicy_temp = onpolicy_temp
         self.sample_temp = sample_temp
         self.sanitize_samples = True
         self.correct_idempotent = correct_idempotent
@@ -111,10 +115,11 @@ class SynthesisSampler:
             not_done_mask = [not v for v in done]
 
             fwd_cat, *_, log_reward_preds = model(self.ctx.collate(torch_graphs).to(dev), cond_info[not_done_mask])
-            if np.random.rand() < random_action_prob:
-                actions = fwd_cat.random_sample(self.action_sampler)
-            else:
-                actions = fwd_cat.sample(self.action_sampler, sample_temp=self.sample_temp)
+            fwd_cat.random_action_mask = torch.tensor(
+                self.rng.uniform(size=len(torch_graphs)) < random_action_prob, device=dev
+            ).bool()
+
+            actions = fwd_cat.sample(self.action_sampler, self.onpolicy_temp, self.sample_temp, self.min_len)
             reaction_actions: List[ReactionAction] = [self.ctx.aidx_to_ReactionAction(a) for a in actions]
             log_probs = fwd_cat.log_prob_after_sampling(actions)
             for i, next_rt in self.retro_analyzer.result():
@@ -322,7 +327,7 @@ class SynthesisSampler:
                     action = ReactionAction(ReactionActionType.AddFirstReactant, block=block, block_idx=block_idx)
                 else:
                     v = np.random.rand()
-                    if v < 0.1:
+                    if v < 0.2:
                         action = ReactionAction(ReactionActionType.Stop)
                     else:
                         rdmol = rdmols[i]
@@ -331,7 +336,7 @@ class SynthesisSampler:
                         uni_is_allow = bool(react_uni_mask.any())
                         bi_is_allow = bool(react_bi_mask.any())
                         if uni_is_allow and bi_is_allow:
-                            t = ReactionActionType.ReactUni if v < 0.2 else ReactionActionType.ReactBi
+                            t = ReactionActionType.ReactUni if v < 0.4 else ReactionActionType.ReactBi
                         if uni_is_allow:
                             t = ReactionActionType.ReactUni
                         elif bi_is_allow:

@@ -2,6 +2,7 @@
 src/gflownet/models/cache/
 data/building_blocks/Enamine*
 data/envs/
+data/experiments/
 logs/
 .github/
 wandb_*/

@@ -250,7 +250,9 @@ class SamplingIterator(IterableDataset):
             if num_online > 0:
                 H = sum(i["fwd_logprob"] for i in trajs[num_offline:])
                 extra_info["entropy"] = -H / num_online
-                extra_info["length"] = np.mean([len(i["traj"]) for i in trajs[num_offline:]])
+                # NOTE: Do not count Stop
+                extra_info["length"] = np.mean([len(i["traj"]) - sum(i["is_sink"]) for i in trajs[num_offline:]])
+                # extra_info["length"] = np.mean([len(i["traj"]) for i in trajs[num_offline:]])
             if not self.sample_cond_info:
                 # If we're using a dataset of preferences, the user may want to know the id of the preference
                 for i, j in zip(trajs, idcs):
