@@ -125,20 +125,22 @@ class TrajectoryBalance(GFNAlgorithm):
         # instead give "ABC...Z" as a single input, but grab the logits at every timestep. Only works if using something
         # like a transformer with causal self-attention.
         self.model_is_autoregressive = False
+        self.setup_graph_sampler()
+        if self.cfg.variant == TBVariant.SubTB1:
+            self._subtb_max_len = self.global_cfg.algo.max_len + 2
+            self._init_subtb(torch.device("cuda"))  # TODO: where are we getting device info?
 
+    def setup_graph_sampler(self):
         self.graph_sampler = GraphSampler(
-            ctx,
-            env,
-            cfg.algo.max_len,
-            cfg.algo.max_nodes,
-            rng,
+            self.ctx,
+            self.env,
+            self.global_cfg.algo.max_len,
+            self.global_cfg.algo.max_nodes,
+            self.rng,
             self.sample_temp,
             correct_idempotent=self.cfg.do_correct_idempotent,
             pad_with_terminal_state=self.cfg.do_parameterize_p_b,
         )
-        if self.cfg.variant == TBVariant.SubTB1:
-            self._subtb_max_len = self.global_cfg.algo.max_len + 2
-            self._init_subtb(torch.device("cuda"))  # TODO: where are we getting device info?
 
     def create_training_data_from_own_samples(
         self, model: TrajectoryBalanceModel, n: int, cond_info: Tensor, random_action_prob: float
@@ -337,7 +339,10 @@ class TrajectoryBalance(GFNAlgorithm):
         return batch
 
     def compute_batch_losses(
-        self, model: TrajectoryBalanceModel, batch: gd.Batch, num_bootstrap: int = 0  # type: ignore[override]
+        self,
+        model: TrajectoryBalanceModel,
+        batch: gd.Batch,
+        num_bootstrap: int = 0,  # type: ignore[override]
     ):
         """Compute the losses over trajectories contained in the batch
 

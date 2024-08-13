@@ -4,7 +4,6 @@ import tempfile
 
 import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional, Union
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import Mol as RDMol
@@ -15,7 +14,7 @@ DEBUG = False
 
 def unidock_scores(
     rdmol_list: list[RDMol],
-    pocket_file: Union[str, Path],
+    pocket_file: str | Path,
     center: tuple[float, float, float],
     seed: int = 1,
     search_mode: str = "balance",
@@ -43,10 +42,10 @@ def unidock_scores(
 
 
 def run_unidock(
-    pocket_file: Union[str, Path],
+    pocket_file: str | Path,
     center: tuple[float, float, float],
-    index_path: Union[str, Path],
-    save_dir: Union[str, Path],
+    index_path: str | Path,
+    save_dir: str | Path,
     seed: int = 1,
     search_mode: str = "balance",
 ):
@@ -54,11 +53,11 @@ def run_unidock(
     with tempfile.TemporaryDirectory() as tempdir:
         docking_cmd = f"unidocktools unidock_pipeline -r {pocket_file} -i {index_path} -sd {save_dir} -cx {cx:.2f} -cy {cy:.2f} -cz {cz:.2f} --seed {seed} -nm 1 --search_mode {search_mode} -wd {tempdir}"
         if not DEBUG:
-            docking_cmd += ">/dev/null"
+            docking_cmd += ">/dev/null 2>/dev/null"
         os.system(docking_cmd)
 
 
-def save_to_sdf(mol: RDMol, index: int, folder: Union[Path, str], seed: int = 1) -> Optional[str]:
+def save_to_sdf(mol: RDMol, index: int, folder: Path | str, seed: int = 1) -> str | None:
     sdf_path = f"{folder}/{index}.sdf"
     mol = Chem.Mol(mol)
     mol = Chem.AddHs(mol)

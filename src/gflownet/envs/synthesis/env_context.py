@@ -1,27 +1,24 @@
+from tqdm import tqdm
 import numpy as np
+from numpy.typing import NDArray
 import torch
 import torch_geometric.data as gd
-from tqdm import tqdm
 from rdkit import Chem, RDLogger
-from rdkit.Chem import AllChem
 from rdkit.Chem import BondType, ChiralType
-from rdkit.Chem import rdMolDescriptors
-from rdkit.Chem import Descriptors
-
-from typing import List, Tuple, Union, Optional
-from numpy.typing import NDArray
 
 from gflownet.envs.graph_building_env import GraphBuildingEnvContext, Graph
 from gflownet.envs.synthesis.reaction import Reaction
 from gflownet.envs.synthesis.env import SynthesisEnv
 from gflownet.envs.synthesis.action import ReactionAction, ReactionActionType, ReactionActionIdx
+from gflownet.envs.synthesis.building_block import get_block_features
 
 logger = RDLogger.logger()
 RDLogger.DisableLog("rdApp.*")
 
+DEFAULT_ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 DEFAULT_CHIRAL_TYPES = [ChiralType.CHI_UNSPECIFIED, ChiralType.CHI_TETRAHEDRAL_CW, ChiralType.CHI_TETRAHEDRAL_CCW]
-
-ATOMS: List[str] = ["C", "N", "O", "F", "P", "S", "Cl", "Br", "I", "B"]
+DEFAULT_CHARGES = [-3, -2, -1, 0, 1, 2, 3]
+DEFAULT_EXPL_H_RANGE = [0, 1, 2, 3, 4]  # for N
 
 
 class SynthesisEnvContext(GraphBuildingEnvContext):
@@ -34,25 +31,25 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         fp_radius_building_block: int = 2,
         fp_nbits_building_block: int = 1024,
         *args,
-        atoms: List[str] = ATOMS,
-        chiral_types: List = DEFAULT_CHIRAL_TYPES,
-        charges: List[int] = [-3, -2, -1, 0, 1, 2, 3],
-        expl_H_range: List[int] = [0, 1, 2, 3, 4],  # for N
+        atoms: list[str] = DEFAULT_ATOMS,
+        chiral_types: list = DEFAULT_CHIRAL_TYPES,
+        charges: list[int] = DEFAULT_CHARGES,
+        expl_H_range: list[int] = DEFAULT_EXPL_H_RANGE,  # for N
         allow_explicitly_aromatic: bool = False,
     ):
         """An env context for generating molecules by sequentially applying reaction templates.
         Contains functionalities to build molecular graphs, create masks for actions, and convert molecules to other representations.
 
         Args:
-            atoms (list): List of atom symbols.
-            chiral_types (list): List of chiral types.
-            charges (list): List of charges.
-            expl_H_range (list): List of explicit H counts.
+            atoms (list): list of atom symbols.
+            chiral_types (list): list of chiral types.
+            charges (list): list of charges.
+            expl_H_range (list): list of explicit H counts.
             allow_explicitly_aromatic (bool): Whether to allow explicitly aromatic molecules.
             allow_5_valence_nitrogen (bool): Whether to allow N with valence of 5.
             num_cond_dim (int): The dimensionality of the observations' conditional information vector (if >0)
-            reaction_templates (list): List of SMIRKS.
-            building_blocks (list): List of SMILES strings of building blocks.
+            reaction_templates (list): list of SMIRKS.
+            building_blocks (list): list of SMILES strings of building blocks.
         """
         # NOTE: For Molecular Graph
         self.atom_attr_values = {
@@ -77,14 +74,14 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.num_cond_dim = num_cond_dim
 
         # NOTE: Action Type Order
-        self.action_type_order: List[ReactionActionType] = [
+        self.action_type_order: list[ReactionActionType] = [
             ReactionActionType.Stop,
             ReactionActionType.ReactUni,
             ReactionActionType.ReactBi,
             ReactionActionType.AddFirstReactant,
         ]
 
-        self.bck_action_type_order: List[ReactionActionType] = [
+        self.bck_action_type_order: list[ReactionActionType] = [
             ReactionActionType.BckReactUni,
             ReactionActionType.BckReactBi,
             ReactionActionType.BckRemoveFirstReactant,
@@ -92,7 +89,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
 
         # NOTE: For Molecular Reaction - Environment
         self.env: SynthesisEnv = env
-        self.reactions: List[Reaction] = env.reactions
+        self.reactions: list[Reaction] = env.reactions
         self.unimolecular_reactions = env.unimolecular_reactions
         self.bimolecular_reactions = env.bimolecular_reactions
         self.num_unimolecular_rxns = env.num_unimolecular_rxns
@@ -100,45 +97,43 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.unimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.unimolecular_reactions)}
         self.bimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.bimolecular_reactions)}
 
-        self.building_blocks: List[str] = env.building_blocks
+        self.building_blocks: list[str] = env.building_blocks
         self.num_building_blocks: int = len(self.building_blocks)
-        self.precomputed_bb_masks: NDArray[np.bool_] = env.precomputed_bb_masks
-        self.allowable_birxn_mask: NDArray[np.bool_] = env.precomputed_bb_masks.any(-1)
+
+        self.building_block_mask: NDArray[np.bool_] = env.building_block_mask
+        self.allowable_birxn_mask: NDArray[np.bool_] = env.building_block_mask.any(-1)
 
         # # NOTE: Setup Building Block Datas
-        print("Fragment Data Construction...")
-        self.num_block_features = fp_nbits_building_block + 8
-        self.building_block_features: np.ndarray = np.empty(
-            (self.num_building_blocks, self.num_block_features), dtype=np.uint8
-        )
-        for i, smi in enumerate(tqdm(self.building_blocks)):
-            self.get_block_info(smi, fp_radius_building_block, fp_nbits_building_block, self.building_block_features[i])
-
-    def get_block_info(self, smi: str, fp_radius: int, fp_nbits: int, out: Optional[NDArray] = None) -> NDArray:
-        # NOTE: Setup Building Block Datas
-        if out is None:
-            out = np.empty(self.num_block_features)
-            assert out is not None
-        mol = Chem.MolFromSmiles(smi)
-        fp = AllChem.GetMorganFingerprintAsBitVect(mol, fp_radius, fp_nbits)
-        out[0] = rdMolDescriptors.CalcExactMolWt(mol) / 100
-        out[1] = rdMolDescriptors.CalcNumHeavyAtoms(mol) / 10
-        out[2] = rdMolDescriptors.CalcNumHBA(mol) / 10
-        out[3] = rdMolDescriptors.CalcNumHBD(mol) / 10
-        out[4] = rdMolDescriptors.CalcNumAromaticRings(mol) / 10
-        out[5] = rdMolDescriptors.CalcNumAliphaticRings(mol) / 10
-        out[6] = Descriptors.MolLogP(mol) / 10
-        out[7] = Descriptors.TPSA(mol) / 100
-        out[8:] = np.frombuffer(fp.ToBitString().encode(), "u1") - ord("0")
-        return out
+        self.building_block_features: tuple[NDArray[np.bool_], NDArray[np.float32]]
+        if fp_nbits_building_block == 1024 and fp_radius_building_block == 2:
+            self.building_block_features = env.building_block_features
+        else:
+            raise NotImplementedError("I do not check following code block is working")
+            print("Fragment Data Construction...")
+            self.building_block_features = (
+                np.empty((self.num_building_blocks, 166 + 1024), dtype=np.bool_),
+                np.empty((self.num_building_blocks, 8), dtype=np.float32),
+            )
+            for i, smi in enumerate(tqdm(self.building_blocks)):
+                get_block_features(
+                    smi,
+                    fp_radius_building_block,
+                    fp_nbits_building_block,
+                    self.building_block_features[0][i],
+                    self.building_block_features[1][i],
+                )
+        self.num_block_features = self.building_block_features[0].shape[-1] + self.building_block_features[1].shape[-1]
 
     def get_block_data(
-        self, block_indices: Union[torch.Tensor, List[int], np.ndarray], device: torch.device
+        self, block_indices: torch.Tensor | list[int] | np.ndarray, device: torch.device
     ) -> torch.Tensor:
         if len(block_indices) >= self.num_building_blocks:
-            out = torch.from_numpy(self.building_block_features)
+            fp = self.building_block_features[0]
+            feat = self.building_block_features[1]
         else:
-            out = torch.from_numpy(self.building_block_features[block_indices])
+            fp = self.building_block_features[0][block_indices]
+            feat = self.building_block_features[1][block_indices]
+        out = torch.cat([torch.as_tensor(fp, dtype=torch.float32), torch.from_numpy(feat)], dim=-1)
         return out.to(device=device, dtype=torch.float)
 
     def aidx_to_ReactionAction(self, action_idx: ReactionActionIdx, fwd: bool = True) -> ReactionAction:
@@ -249,7 +244,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         data = gd.Data(**{k: torch.from_numpy(v) for k, v in data.items()})
         return data
 
-    def get_mol(self, smi: Union[str, Chem.Mol, Graph]) -> Chem.Mol:
+    def get_mol(self, smi: str | Chem.Mol | Graph) -> Chem.Mol:
         """
         A function that returns an `RDKit.Chem.Mol` object.
 
@@ -333,12 +328,12 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         except Exception:
             return ""
 
-    def traj_to_log_repr(self, traj: List[Tuple[Graph]]):
+    def traj_to_log_repr(self, traj: list[tuple[Graph]]):
         """Convert a tuple of graph, action idx to a string representation, action idx"""
         # TODO: implement!
         raise NotImplementedError
 
-    def create_masks(self, smi: Union[str, Chem.Mol, Graph], fwd: bool = True, unimolecular: bool = True) -> np.ndarray:
+    def create_masks(self, smi: str | Chem.Mol | Graph, fwd: bool = True, unimolecular: bool = True) -> np.ndarray:
         """Creates masks for reaction templates for a given molecule.
 
         Args:

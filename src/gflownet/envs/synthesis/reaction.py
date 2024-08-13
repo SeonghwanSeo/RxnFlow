@@ -1,5 +1,3 @@
-from typing import List, Tuple, Union, Optional
-
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.rdChemReactions import ChemicalReaction
@@ -57,7 +55,7 @@ class Reaction:
         pattern = Chem.MolFromSmarts(self.reactant_template[1])
         return mol.HasSubstructMatch(pattern)
 
-    def run_reactants(self, reactants: Tuple[Chem.Mol, ...], safe=True) -> Union[Chem.Mol, None]:
+    def run_reactants(self, reactants: tuple[Chem.Mol, ...], safe=True) -> Chem.Mol | None:
         """Runs the reaction on a set of reactants and returns the product.
 
         Args:
@@ -96,7 +94,7 @@ class Reaction:
         except (Chem.rdchem.KekulizeException, Chem.rdchem.AtomValenceException) as e:
             return None
 
-    def run_reverse_reactants(self, product: Chem.Mol) -> Optional[List[Chem.Mol]]:
+    def run_reverse_reactants(self, product: Chem.Mol) -> list[Chem.Mol] | None:
         """Runs the reverse reaction on a product, to return the reactants.
 
         Args:
@@ -127,7 +125,7 @@ class Reaction:
         return None
 
 
-def _refine_molecule(mol: Chem.Mol) -> Optional[Chem.Mol]:
+def _refine_molecule(mol: Chem.Mol) -> Chem.Mol | None:
     atoms_to_remove = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetSymbol() == "*"]
     if len(atoms_to_remove) > 0:
         rw_mol = Chem.RWMol(mol)

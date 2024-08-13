@@ -1,10 +1,7 @@
 from pathlib import Path
-
 import numpy as np
-from rdkit import Chem, RDLogger
-
-from typing import List, Tuple, Union
 from numpy.typing import NDArray
+from rdkit import Chem, RDLogger
 
 from gflownet.envs.graph_building_env import Graph, GraphBuildingEnv
 from gflownet.envs.synthesis.reaction import Reaction
@@ -22,12 +19,14 @@ class SynthesisEnv(GraphBuildingEnv):
     having the agent select a reaction template. Masks ensure that only valid templates are selected.
     """
 
-    def __init__(self, env_dir: Union[str, Path]):
+    def __init__(self, env_dir: str | Path):
         """A reaction template and building block environment instance"""
         self.env_dir = env_dir = Path(env_dir)
         reaction_template_path = env_dir / "template.txt"
         building_block_path = env_dir / "building_block.smi"
-        pre_computed_building_block_mask_path = env_dir / "precompute_bb_mask.npy"
+        pre_computed_building_block_mask_path = env_dir / "bb_mask.npy"
+        pre_computed_building_block_fp_path = env_dir / "bb_fp_2_1024.npy"
+        pre_computed_building_block_desc_path = env_dir / "bb_desc.npy"
 
         with reaction_template_path.open() as file:
             REACTION_TEMPLATES = file.readlines()
@@ -35,7 +34,6 @@ class SynthesisEnv(GraphBuildingEnv):
             lines = file.readlines()
             BUILDING_BLOCKS = [ln.split()[0] for ln in lines]
             BUILDING_BLOCK_IDS = [ln.strip().split()[1] for ln in lines]
-        PRECOMPUTED_BB_MASKS = np.load(pre_computed_building_block_mask_path)
 
         self.reactions = [Reaction(template=t.strip()) for t in REACTION_TEMPLATES]  # Reaction objects
         self.unimolecular_reactions = [r for r in self.reactions if r.num_reactants == 1]  # rdKit reaction objects
@@ -43,12 +41,17 @@ class SynthesisEnv(GraphBuildingEnv):
         self.num_unimolecular_rxns = len(self.unimolecular_reactions)
         self.num_bimolecular_rxns = len(self.bimolecular_reactions)
 
-        self.building_blocks: List[str] = BUILDING_BLOCKS
-        self.building_block_ids: List[str] = BUILDING_BLOCK_IDS
+        self.building_blocks: list[str] = BUILDING_BLOCKS
+        self.building_block_ids: list[str] = BUILDING_BLOCK_IDS
         self.num_building_blocks: int = len(BUILDING_BLOCKS)
-        self.precomputed_bb_masks: NDArray[np.bool_] = PRECOMPUTED_BB_MASKS
 
-        self.num_total_actions = 1 + self.num_unimolecular_rxns + int(self.precomputed_bb_masks.sum())
+        self.building_block_mask: NDArray[np.bool_] = np.load(pre_computed_building_block_mask_path)
+        self.building_block_features: tuple[NDArray[np.bool_], NDArray[np.float32]] = (
+            np.load(pre_computed_building_block_fp_path),
+            np.load(pre_computed_building_block_desc_path),
+        )
+
+        self.num_total_actions = 1 + self.num_unimolecular_rxns + int(self.building_block_mask.sum())
         self.retrosynthetic_analyzer: RetroSyntheticAnalyzer = RetroSyntheticAnalyzer(self)
 
     def new(self) -> Graph:
@@ -59,7 +62,7 @@ class SynthesisEnv(GraphBuildingEnv):
 
         Args:
             mol (Chem.Mol): Current state as an RDKit mol.
-            action Tuple[int, Optional[int], Optional[int]]: Action indices to apply to the current state.
+            action tuple[int, Optional[int], Optional[int]]: Action indices to apply to the current state.
             (ActionType, reaction_template_idx, reactant_idx)
 
         Returns:
@@ -103,8 +106,8 @@ class SynthesisEnv(GraphBuildingEnv):
         else:
             raise ValueError(action.action)
 
-    def parents(self, mol: Chem.Mol, max_depth: int = 4) -> List[Tuple[ReactionAction, Chem.Mol]]:
-        """List possible parents of molecule `mol`
+    def parents(self, mol: Chem.Mol, max_depth: int = 4) -> list[tuple[ReactionAction, Chem.Mol]]:
+        """list possible parents of molecule `mol`
 
         Parameters
         ----------
@@ -113,7 +116,7 @@ class SynthesisEnv(GraphBuildingEnv):
 
         Returns
         -------
-        parents: List[Pair(ReactionAction, Chem.Mol)]
+        parents: list[Pair(ReactionAction, Chem.Mol)]
             The list of parent-action pairs
         """
         retro_tree = self.retrosynthetic_analyzer.run(mol, max_depth)
@@ -125,7 +128,7 @@ class SynthesisEnv(GraphBuildingEnv):
         # the same parent. To do so, we need to enumerate (unique) parents and count how many there are:
         return len(self.parents(mol))
 
-    def reverse(self, ga: Union[str, Chem.Mol, Graph, None], ra: ReactionAction) -> ReactionAction:
+    def reverse(self, ga: str | Chem.Mol | Graph | None, ra: ReactionAction) -> ReactionAction:
         if ra.action == ReactionActionType.Stop:
             return ra
         if ra.action == ReactionActionType.AddFirstReactant:

@@ -6,10 +6,10 @@ from typing import Optional
 @dataclass
 class ActionSamplingConfig:
     num_mc_sampling: int = 1
-    num_sampling_add_first_reactant: int = 1000
+    num_sampling_add_first_reactant: int = 10_000
     sampling_ratio_reactbi: float = 1.0
-    max_sampling_reactbi: int = 1000
-    min_sampling_reactbi: int = 10
+    max_sampling_reactbi: int = 10_000
+    min_sampling_reactbi: int = 100
     onpolicy_temp: float = 1.0
 
 
@@ -133,7 +133,7 @@ class AlgoConfig:
     method: str = "TB"
     global_batch_size: int = 64
     min_len: int = 2
-    max_len: int = 4
+    max_len: int = 128
     max_nodes: int = 128
     max_edges: int = 128
     illegal_action_logreward: float = -100

@@ -220,8 +220,10 @@ class GraphTransformerGFN(nn.Module):
             self.bck_action_type_order = env_ctx.bck_action_type_order
 
         self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, cfg.model.graph_transformer.num_mlp_layers)
-        # TODO: flag for this
-        self.logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
+        self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
+
+    def logZ(self, cond: torch.Tensor) -> torch.Tensor:
+        return self._logZ(cond)
 
     def _action_type_to_mask(self, t, g):
         return getattr(g, t.mask_name) if hasattr(g, t.mask_name) else torch.ones((1, 1), device=g.x.device)

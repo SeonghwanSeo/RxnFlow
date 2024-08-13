@@ -4,112 +4,49 @@ import torch_geometric.data as gd
 from torch import Tensor
 from torch_scatter import scatter
 
-from typing import Optional
-
-from gflownet.algo.config import TBVariant
 from gflownet.config import Config
-from gflownet.algo.trajectory_balance import TrajectoryBalanceModel, TrajectoryBalance
+from gflownet.algo.config import TBVariant
+from gflownet.algo.trajectory_balance import TrajectoryBalance
 from gflownet.algo.synthesis_sampling import SynthesisSampler
 
+from gflownet.models.synthesis_gfn import SynthesisGFN
 from gflownet.envs.graph_building_env import Graph
 from gflownet.envs.synthesis.action_sampling import ActionSamplingPolicy
-from gflownet.envs.synthesis import (
-    SynthesisEnv,
-    SynthesisEnvContext,
-    ReactionAction,
-)
+from gflownet.envs.synthesis import SynthesisEnv, SynthesisEnvContext, ReactionAction
 
 
 class SynthesisTrajectoryBalance(TrajectoryBalance):
-    def __init__(
-        self,
-        env: SynthesisEnv,
-        ctx: SynthesisEnvContext,
-        rng: np.random.RandomState,
-        cfg: Config,
-    ):
-        """Instanciate a TB algorithm.
+    env: SynthesisEnv
+    ctx: SynthesisEnvContext
 
-        Parameters
-        ----------
-        env: GraphBuildingEnv
-            A graph environment.
-        ctx: GraphBuildingEnvContext
-            A context.
-        rng: np.random.RandomState
-            rng used to take random actions
-        cfg: Config
-            Hyperparameters
-        """
-        self.ctx = ctx
-        self.env = env
-        self.rng = rng
-        self.global_cfg = cfg
-        self.cfg = cfg.algo.tb
-        self.max_len = cfg.algo.max_len
-        self.max_nodes = cfg.algo.max_nodes
-        self.length_normalize_losses = cfg.algo.tb.do_length_normalize
-        # Experimental flags
-        self.reward_loss_is_mae = True
-        self.tb_loss_is_mae = False
-        self.tb_loss_is_huber = False
-        self.mask_invalid_rewards = False
-        self.reward_normalize_losses = False
-        self.sample_temp = 1
-        self.bootstrap_own_reward = self.cfg.bootstrap_own_reward
-        # When the model is autoregressive, we can avoid giving it ["A", "AB", "ABC", ...] as a sequence of inputs, and
-        # instead give "ABC...Z" as a single input, but grab the logits at every timestep. Only works if using something
-        # like a transformer with causal self-attention.
-        self.model_is_autoregressive = False
-        self.action_sampler: ActionSamplingPolicy = ActionSamplingPolicy(self.env, cfg)
+    def __init__(self, env: SynthesisEnv, ctx: SynthesisEnvContext, rng: np.random.RandomState, cfg: Config):
+        self.action_sampler: ActionSamplingPolicy = ActionSamplingPolicy(env, cfg)
+        super().__init__(env, ctx, rng, cfg)
+        if self.cfg.variant == TBVariant.SubTB1:
+            raise NotImplementedError
 
+    def setup_graph_sampler(self):
         self.graph_sampler = SynthesisSampler(
-            ctx,
-            env,
-            cfg.algo.min_len,
-            cfg.algo.max_len,
-            rng,
+            self.ctx,
+            self.env,
+            self.global_cfg.algo.min_len,
+            self.global_cfg.algo.max_len,
+            self.rng,
             self.action_sampler,
-            cfg.algo.action_sampling.onpolicy_temp,
+            self.global_cfg.algo.action_sampling.onpolicy_temp,
             self.sample_temp,
             correct_idempotent=self.cfg.do_correct_idempotent,
             pad_with_terminal_state=self.cfg.do_parameterize_p_b,
             num_workers=self.global_cfg.num_workers_retrosynthesis,
         )
-        if self.cfg.variant == TBVariant.SubTB1:
-            raise NotImplementedError
 
     def create_training_data_from_own_samples(
         self,
-        model: TrajectoryBalanceModel,
+        model: SynthesisGFN,
         n: int,
         cond_info: Tensor,
         random_action_prob: float,
     ):
-        """Generate trajectories by sampling a model
-
-        Parameters
-        ----------
-        model: TrajectoryBalanceModel
-           The model being sampled
-        n: int
-            Number of trajectories to sample
-        cond_info: torch.tensor
-            Conditional information, shape (N, n_info)
-        random_action_prob: float
-            Probability of taking a random action
-        Returns
-        -------
-        data: List[Dict]
-           A list of trajectories. Each trajectory is a dict with keys
-           - trajs: List[Tuple[Graph, GraphAction]]
-           - reward_pred: float, -100 if an illegal action is taken, predicted R(x) if bootstrapping, None otherwise
-           - fwd_logprob: log Z + sum logprobs P_F -> NO USE
-           - bck_logprob: sum logprobs P_B
-           - logZ: predicted log Z
-           - loss: predicted loss (if bootstrapping)
-           - is_valid: is the generated graph valid according to the env & ctx
-        """
         dev = self.ctx.device
         cond_info = cond_info.to(dev)
         data = None
@@ -122,23 +59,12 @@ class SynthesisTrajectoryBalance(TrajectoryBalance):
                 data = None
         return data
 
-    def create_training_data_from_random_samples(self, n: int):
-        data = None
-        while data is None:
-            try:
-                data = self.graph_sampler.random_sample(n)
-            except Exception as e:
-                # raise e
-                print(f"ERROR - create_trianing_data_from_random_samples - {e}")
-                data = None
-        return data
-
     def create_training_data_from_graphs(
         self,
         graphs,
-        model: Optional[TrajectoryBalanceModel],
-        cond_info: Optional[Tensor] = None,
-        random_action_prob: Optional[float] = None,
+        model: SynthesisGFN | None,
+        cond_info: Tensor | None = None,
+        random_action_prob: float | None = None,
     ):
         return []
 
@@ -191,7 +117,7 @@ class SynthesisTrajectoryBalance(TrajectoryBalance):
 
     def compute_batch_losses(
         self,
-        model: TrajectoryBalanceModel,
+        model: SynthesisGFN,
         batch: gd.Batch,
         num_bootstrap: int = 0,  # type: ignore[override]
     ):
@@ -199,7 +125,7 @@ class SynthesisTrajectoryBalance(TrajectoryBalance):
 
         Parameters
         ----------
-        model: TrajectoryBalanceModel
+        model: SynthesisGFN
            A GNN taking in a batch of graphs as input as per constructed by `self.construct_batch`.
            Must have a `logZ` attribute, itself a model, which predicts log of Z(cond_info)
         batch: gd.Batch
@@ -261,12 +187,6 @@ class SynthesisTrajectoryBalance(TrajectoryBalance):
         # This is the log probability of each trajectory
         traj_log_p_F = scatter(log_p_F, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")
         traj_log_p_B = scatter(log_p_B, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")
-
-        # for traj_idx, aidx, lpf, lpb in zip(batch.traj_idx, batch.actions, log_p_F, log_p_B):
-        #     print(f"{traj_idx}\t{fwd_cat.types[aidx[0]].name:<20}\t{lpf:.2f}\t{lpb}")
-
-        # for lp, lb, r, z in zip(traj_log_p_F, traj_log_p_B, clip_log_R, log_Z):
-        #     print(f"{lp}\t{lb}\t{r:.2f}\t{r.exp():.2f}\t{z:.2f}")
 
         if self.cfg.variant == TBVariant.SubTB1:
             raise NotImplementedError()

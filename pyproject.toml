@@ -2,52 +2,6 @@
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.distutils.bdist_wheel]
-universal = "true"
-
-[tool.bandit]
-# B101 tests the use of assert
-# B301 and B403 test the use of pickle
-skips = ["B101", "B301", "B403"]
-exclude_dirs = ["tests", ".tox", ".venv"]
-
-[tool.pytest.ini_options]
-addopts = [
-    "-v",
-    "-x",
-    "--color=yes",
-    "--cov-report=term-missing",
-    "--cov=gflownet",
-    "--typeguard-packages=ml_kit,tests"
-]
-testpaths = ["tests"]
-pythonpath = "src/"
-
-[tool.mypy]
-ignore_missing_imports = true
-show_error_codes = true
-show_error_context = true
-show_traceback = true
-strict = false
-strict_optional = false
-implicit_reexport = true
-allow_redefinition = true
-files = "src"
-
-[[tool.mypy.overrides]]
-module = "tests.*"
-allow_untyped_defs = true
-allow_incomplete_defs = true
-
-[tool.isort]
-profile = "black"
-py_version = "auto"
-line_length = 120
-
-[tool.black]
-line-length = 120
-target-version = ["py310"]
-
 [project]
 name = "gflownet"
 readme = "README.md"
@@ -57,48 +11,52 @@ requires-python = ">=3.10,<3.11"
 dynamic = ["version"]
 dependencies = [
     "numpy==1.26.4",
-    "torch==2.1.2",
+    "torch==2.3.1",
     "torch-geometric==2.4.0",
     "torch-scatter==2.1.2",
     "torch-sparse==0.6.18",
     "torch-cluster==1.6.3",
-    "rdkit",
-    "tables",
-    "scipy",
-    "networkx",
-    "tensorboard",
-    "cvxopt",
-    "pyarrow",
-    "gitpython",
-    "botorch",
-    "pyro-ppl",
-    "gpytorch",
+    "rdkit==2023.9.6",
     "omegaconf>=2.3",
     "wandb",
-    "pandas", # needed for QM9 and HDF5 support.
+    "tensorboard",
+    "gitpython",
+    "botorch",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "bandit[toml]",
-    "black",
-    "isort",
-    "mypy",
-    "pip-compile-cross-platform",
-    "pre-commit",
-    "pytest",
-    "pytest-cov",
-    "ruff",
-    "tox",
-    "typeguard",
-    "types-pkg_resources",
-    # Security pin
-    "gitpython>=3.1.30",
+release = [
+    "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
 ]
 
 [[project.authors]]
-name = "Recursion Pharmaceuticals"
-email = "devs@recursionpharma.com"
+name = "Seonghwan Seo"
+email = "shwan0106@kaist.ac.kr"
+
+[tool.black]
+line-length = 120
+target-version = ["py310"]
 
 [tool.ruff]
+target-version = "py310"
 line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "UP", "T203",]
+ignore = ["E501"]
+
+[tool.ruff.per-file-ignores]
+"__init__.py" = [
+    "F401", # imported but unused
+    "E402", # Module level import not at top of file
+]
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "standard"
+diagnosticMode = "openFilesOnly"
+reportImplicitStringConcatenation = false
+reportGeneralTypeIssues = "warning"
+reportDeprecated = "warning"
+reportUnusedVariable = false
+reportUnusedImport = false
+

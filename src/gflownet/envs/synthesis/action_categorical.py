@@ -2,7 +2,6 @@ import math
 import torch
 import torch_geometric.data as gd
 
-from typing import Dict, List, Optional
 
 from gflownet.envs.graph_building_env import GraphActionCategorical
 from gflownet.envs.synthesis.action import (
@@ -12,6 +11,7 @@ from gflownet.envs.synthesis.action import (
 )
 from gflownet.envs.synthesis.action_sampling import ActionSamplingPolicy
 from gflownet.envs.synthesis.env_context import SynthesisEnvContext
+from gflownet.utils.misc import get_worker_env
 
 
 class ReactionActionCategorical(GraphActionCategorical):
@@ -28,22 +28,22 @@ class ReactionActionCategorical(GraphActionCategorical):
         self.traj_indices = graphs.traj_idx
         self.emb: torch.Tensor = emb
         self.dev = dev = self.emb.device
-        self.ctx: SynthesisEnvContext = model.env_ctx
+        self.ctx: SynthesisEnvContext = get_worker_env("ctx")
         self.fwd = fwd
         self._epsilon = 1e-38
 
         if fwd:
-            self.types: List[ReactionActionType] = self.ctx.action_type_order
+            self.types: list[ReactionActionType] = self.ctx.action_type_order
         else:
-            self.types: List[ReactionActionType] = self.ctx.bck_action_type_order
+            self.types: list[ReactionActionType] = self.ctx.bck_action_type_order
 
-        self.logits: List[torch.Tensor] = []
-        self.masks: Dict[ReactionActionType, torch.Tensor] = {
+        self.logits: list[torch.Tensor] = []
+        self.masks: dict[ReactionActionType, torch.Tensor] = {
             ReactionActionType.ReactUni: graphs[ReactionActionType.ReactUni.mask_name],
             ReactionActionType.ReactBi: graphs[ReactionActionType.ReactBi.mask_name],
         }
         self.batch = torch.arange(self.num_graphs, device=dev)
-        self.random_action_mask: Optional[torch.Tensor] = None
+        self.random_action_mask: torch.Tensor | None = None
 
     def sample(
         self,
@@ -51,7 +51,7 @@ class ReactionActionCategorical(GraphActionCategorical):
         onpolicy_temp: float = 0.0,
         sample_temp: float = 1.0,
         min_len: int = 2,
-    ) -> List[ReactionActionIdx]:
+    ) -> list[ReactionActionIdx]:
         """
         Samples from the categorical distribution
         sample_temp:
@@ -85,7 +85,7 @@ class ReactionActionCategorical(GraphActionCategorical):
         self.logits.append(logits)
 
         if self.random_action_mask is not None:
-            self.logits[0][self.random_action_mask, None] = 0.0
+            self.logits[0][self.random_action_mask, :] = 0.0
 
         # NOTE: Softmax temperature used when sampling
         if sample_temp != 1:
@@ -130,14 +130,21 @@ class ReactionActionCategorical(GraphActionCategorical):
             mask = self.random_action_mask
             random_action_idx = torch.where(mask)[0]
             for i in random_action_idx:
-                self.logits[0][i, None] = 0
-                self.logits[1][i, self.masks[ReactionActionType.ReactUni][i]] = 0
-                offset = 2
-                for rxn_idx in range(self.ctx.num_bimolecular_rxns):
-                    for block_is_first in (True, False):
-                        if self.masks[ReactionActionType.ReactBi][i, rxn_idx, int(block_is_first)]:
-                            num_blocks = self.logits[offset].shape[1]
-                            self.logits[offset][i, None] = -math.log(num_blocks)
+                reactuni_mask = self.masks[ReactionActionType.ReactUni][i]
+                reactbi_mask = self.masks[ReactionActionType.ReactBi][i]
+                num_reactuni = reactuni_mask.sum().item()
+                num_reactbi = reactbi_mask.sum().item()
+
+                self.logits[0][i] = 0
+                if num_reactuni > 0:
+                    self.logits[1][i, reactuni_mask] = -math.log(num_reactuni)
+                if num_reactbi > 0:
+                    offset = 2
+                    for rxn_idx in range(self.ctx.num_bimolecular_rxns):
+                        for block_is_first in (True, False):
+                            if reactbi_mask[rxn_idx, int(block_is_first)]:
+                                num_blocks = self.logits[offset].shape[1]
+                                self.logits[offset][i, None] = -(math.log(num_reactbi) + math.log(num_blocks))
                             offset += 1
 
         # NOTE: Softmax temperature used when sampling
@@ -148,13 +155,13 @@ class ReactionActionCategorical(GraphActionCategorical):
         gumbel = []
         for i, logit in enumerate(self.logits):
             if (i == 0) and (self.traj_indices[0] < min_len):
-                gumbel.append(torch.full_like(logit, -torch.inf))
+                gumbel.append(torch.full_like(logit, -1e6))
             else:
                 noise = torch.rand_like(logit)
                 gumbel.append(logit - (-noise.log()).log())
         argmax = self.argmax(x=gumbel)  # tuple of action type, action idx
 
-        actions: List[ReactionActionIdx] = []
+        actions: list[ReactionActionIdx] = []
         for idx1, idx2 in argmax:
             rxn_idx = block_idx = block_is_first = None
             if idx1 == 0:
@@ -171,7 +178,7 @@ class ReactionActionCategorical(GraphActionCategorical):
             actions.append(get_action_idx(type_idx, rxn_idx, block_idx, block_is_first))
         return actions
 
-    def argmax(self, x: List[torch.Tensor]) -> List[tuple[int, int]]:
+    def argmax(self, x: list[torch.Tensor]) -> list[tuple[int, int]]:
         # for each graph in batch and for each action type, get max value and index
         max_per_type = [torch.max(tensor, dim=1) for tensor in x]
         max_values_per_type = [pair[0] for pair in max_per_type]
@@ -181,7 +188,7 @@ class ReactionActionCategorical(GraphActionCategorical):
         argmax_pairs = list(zip(type_indices.tolist(), action_indices.tolist(), strict=True))  # action type, action idx
         return argmax_pairs
 
-    def log_prob_after_sampling(self, actions: List[ReactionActionIdx]) -> torch.Tensor:
+    def log_prob_after_sampling(self, actions: list[ReactionActionIdx]) -> torch.Tensor:
         """Access the log-probability of actions after sampling for entropy estimation"""
         logits = torch.cat(self.logits, dim=-1)
         max_logits = logits.detach().max(dim=-1, keepdim=True).values
@@ -189,7 +196,7 @@ class ReactionActionCategorical(GraphActionCategorical):
         action_logits = self.cal_action_logits(actions)
         return action_logits - logZ
 
-    def cal_action_logits(self, actions: List[ReactionActionIdx]):
+    def cal_action_logits(self, actions: list[ReactionActionIdx]):
         # NOTE: placeholder of action_logits
         action_logits = torch.empty(len(actions), device=self.dev)
         for i, action in enumerate(actions):
@@ -212,7 +219,7 @@ class ReactionActionCategorical(GraphActionCategorical):
             action_logits[i] = logit
         return action_logits
 
-    def log_prob(self, actions: List[ReactionActionIdx], action_sampler: ActionSamplingPolicy) -> torch.Tensor:
+    def log_prob(self, actions: list[ReactionActionIdx], action_sampler: ActionSamplingPolicy) -> torch.Tensor:
         """Access the log-probability of actions"""
         assert len(actions) == self.num_graphs, f"num_graphs: {self.num_graphs}, num_actions: {len(actions)}"
         if self.fwd:
@@ -268,13 +275,9 @@ class ReactionActionCategorical(GraphActionCategorical):
                 mask = self.masks[ReactionActionType.ReactBi][state_indices, rxn_idx, int(block_is_first)]
                 sampling_ratio = reactant_space.sampling_ratio
                 if sampling_ratio < 1:
-                    # NOTE: MC Sampling
-                    for _ in range(num_mc_sampling):
+                    for _ in range(num_mc_sampling):  # NOTE: MC Sampling
                         block_indices = reactant_space.sampling()
                         block_emb = self.model.block_mlp(self.ctx.get_block_data(block_indices, self.dev))
-                        logits = torch.full(
-                            (len(state_indices), reactant_space.num_sampling), -torch.inf, device=self.dev
-                        )
                         logits = self.model.hook_reactbi(emb, rxn_idx, block_is_first, block_emb, mask)
                         logit_list.append(logits - math.log(sampling_ratio * num_mc_sampling))
                 else:

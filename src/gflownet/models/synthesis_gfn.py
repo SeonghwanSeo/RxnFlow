@@ -10,11 +10,8 @@ from gflownet.models.graph_transformer import GraphTransformer, mlp
 from gflownet.envs.synthesis import ReactionActionType, SynthesisEnvContext, ReactionActionCategorical
 
 
-class GFN_Synthesis(nn.Module):
-    """GraphTransfomer class for a ASTB which outputs an ReactionActionCategorical.
-
-    Outputs logits corresponding to each action (template).
-    """
+class SynthesisGFN(nn.Module):
+    """GraphTransfomer class which outputs an ReactionActionCategorical."""
 
     def __init__(
         self,
@@ -24,7 +21,7 @@ class GFN_Synthesis(nn.Module):
         do_bck=False,
     ) -> None:
         super().__init__()
-        self.env_ctx: SynthesisEnvContext = env_ctx
+        self.num_bimolecular_rxns: int = env_ctx.num_bimolecular_rxns
 
         self.transf = GraphTransformer(
             x_dim=env_ctx.num_node_dim,
@@ -54,6 +51,7 @@ class GFN_Synthesis(nn.Module):
             ReactionActionType.ReactBi: (num_glob_final + env_ctx.num_bimolecular_rxns * 2 + num_emb_block, 1),
         }
 
+        assert do_bck is False
         self.do_bck = do_bck
         mlps = {}
         for atype in chain(env_ctx.action_type_order, env_ctx.bck_action_type_order if do_bck else []):
@@ -62,7 +60,10 @@ class GFN_Synthesis(nn.Module):
         self.mlps = nn.ModuleDict(mlps)
 
         self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, cfg.model.graph_transformer.num_mlp_layers)
-        self.logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
+        self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
+
+    def logZ(self, cond: torch.Tensor) -> torch.Tensor:
+        return self._logZ(cond)
 
     def _make_cat(self, g, emb, fwd):
         return ReactionActionCategorical(g, emb, model=self, fwd=fwd)
@@ -143,7 +144,7 @@ class GFN_Synthesis(nn.Module):
         mlp = self.mlps[ReactionActionType.ReactBi.cname]
 
         # Convert `rxn_id` to a one-hot vector
-        rxn_features = torch.zeros(N_block, self.env_ctx.num_bimolecular_rxns * 2, device=emb.device)
+        rxn_features = torch.zeros(N_block, self.num_bimolecular_rxns * 2, device=emb.device)
         rxn_features[:, rxn_id * 2 + int(block_is_first)] = 1
 
         logits = torch.full((N_graph, N_block), -torch.inf, device=emb.device)
@@ -237,7 +238,7 @@ class GFN_Synthesis(nn.Module):
         torch.Tensor
             The logit for (rxn_id, block_is_first, block).
         """
-        rxn_features = torch.zeros(self.env_ctx.num_bimolecular_rxns * 2, device=emb.device)
+        rxn_features = torch.zeros(self.num_bimolecular_rxns * 2, device=emb.device)
         rxn_features[rxn_id * 2 + int(block_is_first)] = 1
 
         expanded_input = torch.cat((emb, block_emb, rxn_features), dim=-1)

@@ -1,10 +1,9 @@
-from typing import Optional, Tuple
 import numpy as np
+from numpy.typing import NDArray
 
 from gflownet.config import Config
 from gflownet.envs.synthesis.action import ReactionActionType
 from gflownet.envs.synthesis.env import SynthesisEnv
-from numpy.typing import NDArray
 
 
 def clip(x, minx, maxx):
@@ -73,7 +72,7 @@ class ActionSamplingPolicy:
         nmax = self.cfg.max_sampling_reactbi
         self._reactbi_reactant_space = {}
         for i in range(env.num_bimolecular_rxns):
-            block_mask = env.precomputed_bb_masks[i]
+            block_mask = env.building_block_mask[i]
             for block_is_first in (True, False):
                 idx = 0 if block_is_first else 1
                 indices = np.where(block_mask[idx])[0]
@@ -81,7 +80,7 @@ class ActionSamplingPolicy:
                     indices, sr, int(nmin), int(nmax)
                 )
 
-    def get_space(self, t: ReactionActionType, rxn_type: Optional[Tuple[int, bool]] = None) -> BlockSpace:
+    def get_space(self, t: ReactionActionType, rxn_type: tuple[int, bool] | None = None) -> BlockSpace:
         if t is ReactionActionType.AddFirstReactant:
             assert rxn_type is None
             return self._first_reactant_space

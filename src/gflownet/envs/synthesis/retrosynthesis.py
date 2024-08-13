@@ -1,24 +1,24 @@
 import copy
 from concurrent.futures import ProcessPoolExecutor
 from rdkit import Chem
-from typing import List, Dict, Set, Optional, Iterable, Tuple
+from collections.abc import Iterable
 
 from gflownet.envs.synthesis.reaction import Reaction
 from gflownet.envs.synthesis.action import ReactionActionType, ReactionAction
 
 
 class RetroSynthesisTree:
-    def __init__(self, smi: str, branches: List = []):
+    def __init__(self, smi: str, branches: list = []):
         self.smi: str = smi
-        self.branches: List[tuple[ReactionAction, RetroSynthesisTree]] = branches
+        self.branches: list[tuple[ReactionAction, RetroSynthesisTree]] = branches
 
     @property
     def is_leaf(self) -> bool:
         return len(self.branches) == 0
 
     def iteration(
-        self, prev_traj: List[ReactionAction] = [], max_len: Optional[int] = None
-    ) -> Iterable[List[ReactionAction]]:
+        self, prev_traj: list[ReactionAction] = [], max_len: int | None = None
+    ) -> Iterable[list[ReactionAction]]:
         max_len = max_len if max_len else 100
         prev_len = len(prev_traj)
         if self.is_leaf and prev_len <= max_len:
@@ -33,7 +33,7 @@ class RetroSynthesisTree:
     def depth(self, max_len: int) -> int:
         return min(self.iteration_length(0, max_len))
 
-    def length_distribution(self, max_len: int) -> List[int]:
+    def length_distribution(self, max_len: int) -> list[int]:
         lengths = list(self.iteration_length(0, max_len))
         return [sum(length == _t for length in lengths) for _t in range(0, max_len + 1)]
 
@@ -44,7 +44,7 @@ class RetroSynthesisTree:
             for _, subtree in self.branches:
                 yield from subtree.iteration_length(prev_len + 1, max_len)
 
-    def filtering(self, block_set: Optional[Set[str]]):
+    def filtering(self, block_set: set[str] | None):
         if block_set is None:
             return self
         filtered_branches = []
@@ -63,7 +63,7 @@ class RetroSynthesisTree:
         return RetroSynthesisTree(self.smi, filtered_branches)
 
 
-RetroSynthesisBranch = List[tuple[ReactionAction, RetroSynthesisTree]]
+RetroSynthesisBranch = list[tuple[ReactionAction, RetroSynthesisTree]]
 
 
 class MultiRetroSyntheticAnalyzer:
@@ -80,7 +80,7 @@ class MultiRetroSyntheticAnalyzer:
         return result
 
     def submit(
-        self, key: int, mol: Chem.Mol, max_depth: int, known_branches: List[tuple[ReactionAction, RetroSynthesisTree]]
+        self, key: int, mol: Chem.Mol, max_depth: int, known_branches: list[tuple[ReactionAction, RetroSynthesisTree]]
     ):
         self.futures.append(self.pool.submit(self._worker, key, mol, max_depth, known_branches))
 
@@ -90,22 +90,22 @@ class MultiRetroSyntheticAnalyzer:
 
     @staticmethod
     def _worker(
-        key: int, mol: Chem.Mol, max_depth: int, known_branches: List[tuple[ReactionAction, RetroSynthesisTree]]
-    ) -> Tuple[int, RetroSynthesisTree]:
+        key: int, mol: Chem.Mol, max_depth: int, known_branches: list[tuple[ReactionAction, RetroSynthesisTree]]
+    ) -> tuple[int, RetroSynthesisTree]:
         global analyzer
         return key, analyzer.run(mol, max_depth, known_branches)
 
 
 class RetroSyntheticAnalyzer:
     def __init__(self, env):
-        self.reactions: List[Reaction] = env.reactions
-        self.unimolecular_reactions: List[Reaction] = env.unimolecular_reactions
-        self.bimolecular_reactions: List[Reaction] = env.bimolecular_reactions
+        self.reactions: list[Reaction] = env.reactions
+        self.unimolecular_reactions: list[Reaction] = env.unimolecular_reactions
+        self.bimolecular_reactions: list[Reaction] = env.bimolecular_reactions
 
         # For Fast Search
         self.__max_block_smi_len: int = 0
         self.__prefix_len = 5
-        self.__building_block_search: Dict[str, Set[str]] = {}
+        self.__building_block_search: dict[str, set[str]] = {}
 
         for smi in env.building_blocks:
             self.__max_block_smi_len = max(self.__max_block_smi_len, len(smi))
@@ -124,7 +124,7 @@ class RetroSyntheticAnalyzer:
             return smi in prefix_block_set
         return False
 
-    def load_cache(self, smi: str, depth: int, is_block: bool) -> Optional[RetroSynthesisBranch]:
+    def load_cache(self, smi: str, depth: int, is_block: bool) -> RetroSynthesisBranch | None:
         if is_block:
             return self.__block_cache.get(smi, depth)
         else:
@@ -140,7 +140,7 @@ class RetroSyntheticAnalyzer:
         self,
         mol: Chem.Mol,
         max_depth: int,
-        known_branches: List[tuple[ReactionAction, RetroSynthesisTree]] = [],
+        known_branches: list[tuple[ReactionAction, RetroSynthesisTree]] = [],
     ) -> RetroSynthesisTree:
         return self._retrosynthesis(mol, max_depth, known_branches)
 
@@ -197,7 +197,7 @@ class RetroSyntheticAnalyzer:
         pass_bck_remove: bool = False,
         pass_bck_reactuni: list = [],
         pass_bck_reactbi: list = [],
-    ) -> List[tuple[ReactionAction, RetroSynthesisTree]]:
+    ) -> list[tuple[ReactionAction, RetroSynthesisTree]]:
         if max_depth == 0:
             return []
         if mol.GetNumAtoms() == 0:
@@ -266,7 +266,7 @@ class RetroSyntheticAnalyzer:
 class Cache:
     def __init__(self, max_size: int):
         self.max_size = max_size
-        self.cache: Dict[str, Tuple[int, RetroSynthesisBranch]] = {}
+        self.cache: dict[str, tuple[int, RetroSynthesisBranch]] = {}
 
     def update(self, smiles: str, depth: int, branch: RetroSynthesisBranch):
         cache = self.cache.get(smiles, None)
@@ -279,7 +279,7 @@ class Cache:
             if depth > cached_depth:
                 self.cache[smiles] = (depth, branch)
 
-    def get(self, smiles: str, depth: int) -> Optional[RetroSynthesisBranch]:
+    def get(self, smiles: str, depth: int) -> RetroSynthesisBranch | None:
         cache = self.cache.get(smiles, None)
         if cache is not None:
             cached_depth, cached_branch = cache

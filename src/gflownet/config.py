@@ -110,7 +110,7 @@ class Config:
     cond: ConditionalsConfig = ConditionalsConfig()
 
 
-def init_empty(cfg):
+def init_empty(cfg: Config):
     """
     Initialize a dataclass instance with all fields set to MISSING,
     including nested dataclasses.

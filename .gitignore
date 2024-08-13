@@ -5,8 +5,15 @@ data/envs/
 data/experiments/
 logs/
 .github/
-wandb_*/
+slurmlog/
+wandb/
+wandb_exp_old*/
+job.sh
+debug/
+storage*
+unidock_2024*
 old/
+job*.sh
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

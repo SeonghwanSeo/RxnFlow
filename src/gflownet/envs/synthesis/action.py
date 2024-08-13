@@ -1,7 +1,6 @@
 import enum
 import re
 from functools import cached_property
-from typing import Tuple, Optional
 
 from gflownet.envs.synthesis.reaction import Reaction
 
@@ -32,14 +31,14 @@ class ReactionActionType(enum.Enum):
 
 
 """ TYPE_IDX, IS_STOP, RXN_IDX, BLOCK_IDX, BLOCK_IS_FIRST"""
-ReactionActionIdx = Tuple[int, int, int, int]
+ReactionActionIdx = tuple[int, int, int, int]
 
 
 def get_action_idx(
     type_idx: int,
-    rxn_idx: Optional[int] = None,
-    block_idx: Optional[int] = None,
-    block_is_first: Optional[bool] = None,
+    rxn_idx: int | None = None,
+    block_idx: int | None = None,
+    block_is_first: bool | None = None,
 ) -> ReactionActionIdx:
     _rxn_idx = -1 if rxn_idx is None else rxn_idx
     _block_idx = -1 if block_idx is None else block_idx
@@ -51,10 +50,10 @@ class ReactionAction:
     def __init__(
         self,
         action: ReactionActionType,
-        reaction: Optional[Reaction] = None,
-        block: Optional[str] = None,
-        block_idx: Optional[int] = None,
-        block_is_first: Optional[bool] = None,
+        reaction: Reaction | None = None,
+        block: str | None = None,
+        block_idx: int | None = None,
+        block_is_first: bool | None = None,
     ):
         """A single graph-building action
 
@@ -73,7 +72,7 @@ class ReactionAction:
         self.reaction = reaction
         self.block = block
         self.block_idx = block_idx
-        self.block_is_first: Optional[bool] = block_is_first
+        self.block_is_first: bool | None = block_is_first
 
     def __str__(self):
         return str(self.action)

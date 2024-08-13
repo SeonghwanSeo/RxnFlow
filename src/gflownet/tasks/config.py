@@ -1,32 +1,10 @@
 from dataclasses import dataclass, field
-from typing import List
+from omegaconf import MISSING
 
 
 @dataclass
-class UniDockTaskConfig:
-    env_dir: str = "./data/experiments/unidock-crossdocked2020"
-    code: str = "14gs_A"
-
-
-@dataclass
-class UniDockMOOTaskConfig:
-    objectives: List[str] = field(default_factory=lambda: ["vina", "qed", "sa"])
-    vina_threshold: float = -16.0
-    qed_threshold: float = 0.6
-    sa_score_threshold: float = 0.8  # We don't have to do this in UniDockMOOSynthesisTask!
-    vina_weight: float = 1.5
-    qed_weight: float = 1.0
-    sa_score_weight: float = 1.0
-
-
-@dataclass
-class SEHTaskConfig:
-    reduced_frag: bool = False
-
-
-@dataclass
-class SEHMOOTaskConfig:
-    """Config for the SEHMOOTask
+class MOOTaskConfig:
+    """Common Config for the MOOTasks
 
     Attributes
     ----------
@@ -34,54 +12,56 @@ class SEHMOOTaskConfig:
         The number of valid cond_info tensors to sample.
     n_valid_repeats : int
         The number of times to repeat the valid cond_info tensors.
-    objectives : List[str]
-        The objectives to use for the multi-objective optimization. Should be a subset of ["seh", "qed", "sa", "mw"].
+    objectives : list[str]
+        The objectives to use for the multi-objective optimization..
     online_pareto_front : bool
         Whether to calculate the pareto front online.
     """
 
     n_valid: int = 15
     n_valid_repeats: int = 128
-    objectives: List[str] = field(default_factory=lambda: ["seh", "qed", "sa", "mw"])
+    objectives: list[str] = field(default_factory=lambda: ["vina", "qed"])
     log_topk: bool = False
     online_pareto_front: bool = True
 
 
 @dataclass
-class QM9TaskConfig:
-    h5_path: str = "./data/qm9/qm9.h5"  # see src/gflownet/data/qm9.py
-    model_path: str = "./data/qm9/qm9_model.pt"
-
-
-@dataclass
-class QM9MOOTaskConfig:
-    """
-    Config for the QM9MooTask
+class SBDDConfig:
+    """Config for SBDDConfig
 
     Attributes
     ----------
-    n_valid : int
-        The number of valid cond_info tensors to sample.
-    n_valid_repeats : int
-        The number of times to repeat the valid cond_info tensors.
-    objectives : List[str]
-        The objectives to use for the multi-objective optimization. Should be a subset of ["gap", "qed", "sa", "mw"].
-        While "mw" can be used, it is not recommended as the molecules are already small.
-    online_pareto_front : bool
-        Whether to calculate the pareto front online.
+    proxy: str (qvina | unidock)
+        Proxy name from PharmacoNet
+    pocket_db: str (path)
+        Index file including pocket key-filepath pairs (e.g. 10gs,./data/protein/10gs.pdb)
+    pocket_dim: int
+        Pocket embedding dimension
     """
 
-    n_valid: int = 15
-    n_valid_repeats: int = 128
-    objectives: List[str] = field(default_factory=lambda: ["gap", "qed", "sa"])
-    online_pareto_front: bool = True
+    proxy: str = MISSING
+    pocket_db: str = MISSING
+    pocket_dim: int = 64
+
+
+@dataclass
+class DockingTaskConfig:
+    """Config for SBDDConfig
+
+    Attributes
+    ----------
+    protein_path: str (path)
+        Protein Path
+    center: tuple[float, float, float]
+        Pocket Center
+    """
+
+    protein_path: str = MISSING
+    center: tuple[float, float, float] = MISSING
 
 
 @dataclass
 class TasksConfig:
-    qm9: QM9TaskConfig = QM9TaskConfig()
-    qm9_moo: QM9MOOTaskConfig = QM9MOOTaskConfig()
-    seh: SEHTaskConfig = SEHTaskConfig()
-    seh_moo: SEHMOOTaskConfig = SEHMOOTaskConfig()
-    unidock: UniDockTaskConfig = UniDockTaskConfig()
-    unidock_moo: UniDockMOOTaskConfig = UniDockMOOTaskConfig()
+    moo: MOOTaskConfig = MOOTaskConfig()
+    sbdd: SBDDConfig = SBDDConfig()
+    docking: DockingTaskConfig = DockingTaskConfig()

@@ -22,6 +22,7 @@ from gflownet.data.sampling_iterator import SamplingIterator
 from gflownet.envs.graph_building_env import GraphActionCategorical, GraphBuildingEnv, GraphBuildingEnvContext
 from gflownet.utils.misc import create_logger
 from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
+from gflownet.utils.misc import set_worker_env
 
 from .config import Config
 
@@ -81,13 +82,15 @@ class GFNTask:
         """
         raise NotImplementedError()
 
-    def compute_flat_rewards(self, mols: List[RDMol]) -> Tuple[FlatRewards, Tensor]:
+    def compute_flat_rewards(self, mols: List[RDMol], batch_idx: List[int]) -> Tuple[FlatRewards, Tensor]:
         """Compute the flat rewards of mols according the the tasks' proxies
 
         Parameters
         ----------
         mols: List[RDMol]
             A list of RDKit molecules.
+        batch_idx: List[int]
+            A list of batch index
         Returns
         -------
         reward: FlatRewards
@@ -139,7 +142,7 @@ class GFNTrainer:
         assert isinstance(self.default_cfg, Config) and isinstance(
             config, Config
         )  # make sure the config is a Config object, and not the Config class itself
-        self.cfg = OmegaConf.merge(self.default_cfg, config)
+        self.cfg: Config = OmegaConf.merge(self.default_cfg, config)
 
         self.device = torch.device(self.cfg.device)
         # Print the loss every `self.print_every` iterations
@@ -194,6 +197,11 @@ class GFNTrainer:
         self.setup_env_context()
         self.setup_algo()
         self.setup_model()
+        set_worker_env("trainer", self)
+        set_worker_env("env", self.env)
+        set_worker_env("ctx", self.ctx)
+        set_worker_env("algo", self.algo)
+        set_worker_env("task", self.task)
 
     def _wrap_for_mp(self, obj, send_to_device=False):
         """Wraps an object in a placeholder whose reference can be sent to a
@@ -204,7 +212,7 @@ class GFNTrainer:
             wapper = mp_object_wrapper(
                 obj,
                 self.cfg.num_workers,
-                cast_types=(gd.Batch, GraphActionCategorical, SeqBatch),
+                cast_types=(gd.Batch, GraphActionCategorical),
                 pickle_messages=self.cfg.pickle_mp_messages,
             )
             self.to_terminate.append(wapper.terminate)
@@ -236,7 +244,7 @@ class GFNTrainer:
         )
         for hook in self.sampling_hooks:
             iterator.add_log_hook(hook)
-        return torch.utils.data.DataLoader(
+        return DataLoader(
             iterator,
             batch_size=None,
             num_workers=self.cfg.num_workers,
@@ -263,7 +271,7 @@ class GFNTrainer:
         )
         for hook in self.valid_sampling_hooks:
             iterator.add_log_hook(hook)
-        return torch.utils.data.DataLoader(
+        return DataLoader(
             iterator,
             batch_size=None,
             num_workers=self.cfg.num_workers,
@@ -291,7 +299,7 @@ class GFNTrainer:
         )
         for hook in self.sampling_hooks:
             iterator.add_log_hook(hook)
-        return torch.utils.data.DataLoader(
+        return DataLoader(
             iterator,
             batch_size=None,
             num_workers=self.cfg.num_workers,
@@ -357,7 +365,7 @@ class GFNTrainer:
             # the memory fragmentation or allocation keeps growing, how often should we clean up?
             # is changing the allocation strategy helpful?
 
-            if it % 1024 == 0:
+            if it % 64 == 0:
                 gc.collect()
                 torch.cuda.empty_cache()
             epoch_idx = it // epoch_length

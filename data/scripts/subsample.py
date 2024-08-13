@@ -20,13 +20,12 @@ if __name__ == "__main__":
     root_dir = Path(args.root_dir)
     template_path = root_dir / "template.txt"
     block_path = root_dir / "building_block.smi"
-    mask_path = root_dir / "precompute_bb_mask.npy"
+    mask_path = root_dir / "bb_mask.npy"
+    fp_path = root_dir / "bb_fp_2_1024.npy"
+    desc_path = root_dir / "bb_desc.npy"
 
     with open(block_path) as f:
         lines = f.readlines()
-    mask = np.load(mask_path)
-    assert mask.any(axis=(0, 2)).all()
-
     if args.random:
         print(f"get subset with randomly selected {args.num_samples} blocks with seed {args.seed}")
         random.seed(args.seed)
@@ -39,13 +38,21 @@ if __name__ == "__main__":
         indices = list(range(args.num_samples))
 
     save_dir = Path(args.save_dir)
-    save_dir.mkdir(parents=True)
+    save_dir.mkdir(parents=True, exist_ok=False)
     save_template_path = save_dir / "template.txt"
     save_block_path = save_dir / "building_block.smi"
-    save_mask_path = save_dir / "precompute_bb_mask.npy"
+    save_mask_path = save_dir / "bb_mask.npy"
+    save_fp_path = save_dir / "bb_fp_2_1024.npy"
+    save_desc_path = save_dir / "bb_desc.npy"
     os.system(f"cp {template_path} {save_template_path}")
+
+    mask = np.load(mask_path)
+    fp = np.load(fp_path)
+    desc = np.load(desc_path)
 
     with save_block_path.open("w") as w:
         for idx in indices:
             w.write(lines[idx])
     np.save(save_mask_path, mask[:, :, indices])
+    np.save(save_fp_path, fp[indices])
+    np.save(save_desc_path, desc[indices])

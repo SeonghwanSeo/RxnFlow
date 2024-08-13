@@ -224,7 +224,7 @@ class SamplingIterator(IterableDataset):
                     # fetch the valid trajectories endpoints
                     mols = [self.ctx.graph_to_mol(trajs[i]["result"]) for i in valid_idcs]
                     # ask the task to compute their reward
-                    online_flat_rew, m_is_valid = self.task.compute_flat_rewards(mols)
+                    online_flat_rew, m_is_valid = self.task.compute_flat_rewards(mols, valid_idcs)
                     assert (
                         online_flat_rew.ndim == 2
                     ), "FlatRewards should be (mbsize, n_objectives), even if n_objectives is 1"
