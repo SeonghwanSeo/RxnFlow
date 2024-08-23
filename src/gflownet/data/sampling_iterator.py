@@ -189,12 +189,9 @@ class SamplingIterator(IterableDataset):
                     list(self.task.flat_reward_transform(torch.stack(flat_rewards))) if len(flat_rewards) else []
                 )
 
-                if num_offline > 0:
-                    trajs = self.algo.create_training_data_from_graphs(
-                        graphs, self.model, cond_info["encoding"][:num_offline], 0
-                    )
-                else:
-                    trajs = []
+                trajs = self.algo.create_training_data_from_graphs(
+                    graphs, self.model, cond_info["encoding"][:num_offline], 0
+                )
 
             else:  # If we're not sampling the conditionals, then the idcs refer to listed preferences
                 num_online = num_offline
@@ -227,7 +224,7 @@ class SamplingIterator(IterableDataset):
                     # fetch the valid trajectories endpoints
                     mols = [self.ctx.graph_to_mol(trajs[i]["result"]) for i in valid_idcs]
                     # ask the task to compute their reward
-                    online_flat_rew, m_is_valid = self.task.compute_flat_rewards(mols)
+                    online_flat_rew, m_is_valid = self.task.compute_flat_rewards(mols, valid_idcs)
                     assert (
                         online_flat_rew.ndim == 2
                     ), "FlatRewards should be (mbsize, n_objectives), even if n_objectives is 1"
@@ -253,7 +250,9 @@ class SamplingIterator(IterableDataset):
             if num_online > 0:
                 H = sum(i["fwd_logprob"] for i in trajs[num_offline:])
                 extra_info["entropy"] = -H / num_online
-                extra_info["length"] = np.mean([len(i["traj"]) for i in trajs[num_offline:]])
+                # NOTE: Do not count Stop
+                extra_info["length"] = np.mean([len(i["traj"]) - sum(i["is_sink"]) for i in trajs[num_offline:]])
+                # extra_info["length"] = np.mean([len(i["traj"]) for i in trajs[num_offline:]])
             if not self.sample_cond_info:
                 # If we're using a dataset of preferences, the user may want to know the id of the preference
                 for i, j in zip(trajs, idcs):

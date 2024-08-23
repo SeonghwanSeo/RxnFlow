@@ -2,6 +2,17 @@ import logging
 import sys
 
 
+_WORKER = {}
+
+
+def set_worker_env(key, val):
+    _WORKER[key] = val
+
+
+def get_worker_env(key):
+    return _WORKER[key]
+
+
 def create_logger(name="logger", loglevel=logging.INFO, logfile=None, streamHandle=True):
     logger = logging.getLogger(name)
     logger.setLevel(loglevel)

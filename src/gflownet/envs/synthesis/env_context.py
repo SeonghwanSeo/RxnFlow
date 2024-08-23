@@ -1,87 +1,55 @@
-from typing import List, Optional, Tuple, Union
-
+from tqdm import tqdm
 import numpy as np
+from numpy.typing import NDArray
 import torch
 import torch_geometric.data as gd
 from rdkit import Chem, RDLogger
 from rdkit.Chem import BondType, ChiralType
-from tqdm import tqdm
 
-from gflownet.envs.synthesis.utils import Reaction
-from gflownet.envs.synthesis.env import SynthesisEnv, Graph
-from gflownet.envs.synthesis.action import (
-    ReactionAction,
-    ReactionActionType,
-    ReactionActionIdx,
-    ForwardAction,
-    BackwardAction,
-)
+from gflownet.envs.graph_building_env import GraphBuildingEnvContext, Graph
+from gflownet.envs.synthesis.reaction import Reaction
+from gflownet.envs.synthesis.env import SynthesisEnv
+from gflownet.envs.synthesis.action import ReactionAction, ReactionActionType, ReactionActionIdx
+from gflownet.envs.synthesis.building_block import get_block_features
 
 logger = RDLogger.logger()
 RDLogger.DisableLog("rdApp.*")
 
+DEFAULT_ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 DEFAULT_CHIRAL_TYPES = [ChiralType.CHI_UNSPECIFIED, ChiralType.CHI_TETRAHEDRAL_CW, ChiralType.CHI_TETRAHEDRAL_CCW]
-
-ATOMS: List[str] = [
-    "C",
-    "N",
-    "O",
-    "F",
-    "P",
-    "S",
-    "Cl",
-    "Br",
-    "I",
-    "B",
-    "Sn",
-    "Ca",
-    "Na",
-    "Ba",
-    "Zn",
-    "Rh",
-    "Ag",
-    "Li",
-    "Yb",
-    "K",
-    "Fe",
-    "Cs",
-    "Bi",
-    "Pd",
-    "Cu",
-    "Si",
-]
+DEFAULT_CHARGES = [-3, -2, -1, 0, 1, 2, 3]
+DEFAULT_EXPL_H_RANGE = [0, 1, 2, 3, 4]  # for N
 
 
-class SynthesisEnvContext:
+class SynthesisEnvContext(GraphBuildingEnvContext):
     """This context specifies how to create molecules by applying reaction templates."""
 
     def __init__(
         self,
         env: SynthesisEnv,
         num_cond_dim: int = 0,
-        num_block_sampling: int = 3000,
+        fp_radius_building_block: int = 2,
+        fp_nbits_building_block: int = 1024,
         *args,
-        atoms: List[str] = ATOMS,
-        chiral_types: List = DEFAULT_CHIRAL_TYPES,
-        charges: List[int] = [-3, -2, -1, 0, 1, 2, 3],
-        expl_H_range: List[int] = [0, 1, 2, 3, 4],  # for N
+        atoms: list[str] = DEFAULT_ATOMS,
+        chiral_types: list = DEFAULT_CHIRAL_TYPES,
+        charges: list[int] = DEFAULT_CHARGES,
+        expl_H_range: list[int] = DEFAULT_EXPL_H_RANGE,  # for N
         allow_explicitly_aromatic: bool = False,
-        allow_5_valence_nitrogen: bool = False,
     ):
         """An env context for generating molecules by sequentially applying reaction templates.
         Contains functionalities to build molecular graphs, create masks for actions, and convert molecules to other representations.
 
         Args:
-            atoms (list): List of atom symbols.
-            chiral_types (list): List of chiral types.
-            charges (list): List of charges.
-            expl_H_range (list): List of explicit H counts.
+            atoms (list): list of atom symbols.
+            chiral_types (list): list of chiral types.
+            charges (list): list of charges.
+            expl_H_range (list): list of explicit H counts.
             allow_explicitly_aromatic (bool): Whether to allow explicitly aromatic molecules.
             allow_5_valence_nitrogen (bool): Whether to allow N with valence of 5.
             num_cond_dim (int): The dimensionality of the observations' conditional information vector (if >0)
-            reaction_templates (list): List of SMIRKS.
-            building_blocks (list): List of SMILES strings of building blocks.
-            precomputed_bb_masks (np.ndarray): Precomputed masks (for bimoelcular reactions) for building blocks and reaction templates.
+            reaction_templates (list): list of SMIRKS.
+            building_blocks (list): list of SMILES strings of building blocks.
         """
         # NOTE: For Molecular Graph
         self.atom_attr_values = {
@@ -101,178 +69,146 @@ class SynthesisEnvContext:
         self.bond_attrs = sorted(self.bond_attr_values.keys())
         self.bond_attr_slice = [0] + list(np.cumsum([len(self.bond_attr_values[i]) for i in self.bond_attrs]))
         self.default_wildcard_replacement = "C"
-        self.negative_attrs = ["fill_wildcard"]
-        pt = Chem.GetPeriodicTable()
-
-        # We'll handle nitrogen valence later explicitly in graph_to_Data;
-        # wildcard atoms have 0 valence until filled in
-        self._max_atom_valence = {
-            **{a: max(pt.GetValenceList(a)) for a in atoms},
-            "N": 3 if not allow_5_valence_nitrogen else 5,
-            "*": 0,
-        }
         self.num_node_dim = sum(len(v) for v in self.atom_attr_values.values())
         self.num_edge_dim = sum(len(v) for v in self.bond_attr_values.values())
         self.num_cond_dim = num_cond_dim
 
-        # NOTE: For Molecular Reaction - Environment
-        self.env: SynthesisEnv = env
-        self.reactions: List[Reaction] = env.reactions
-        self.unimolecular_reactions = env.unimolecular_reactions
-        self.bimolecular_reactions = env.bimolecular_reactions
-        self.unimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.unimolecular_reactions)}
-        self.bimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.bimolecular_reactions)}
-        self.num_unimolecular_rxns = len(self.unimolecular_reactions)
-        self.num_bimolecular_rxns = len(self.bimolecular_reactions)
-
         # NOTE: Action Type Order
-        self.primary_action_type_order = [
+        self.action_type_order: list[ReactionActionType] = [
             ReactionActionType.Stop,
             ReactionActionType.ReactUni,
             ReactionActionType.ReactBi,
-        ]
-        self.secondary_action_type_order = [
-            ReactionActionType.AddReactant,
             ReactionActionType.AddFirstReactant,
         ]
-        self.action_type_order = self.primary_action_type_order + self.secondary_action_type_order
 
-        self.primary_bck_action_type_order = [
+        self.bck_action_type_order: list[ReactionActionType] = [
             ReactionActionType.BckReactUni,
             ReactionActionType.BckReactBi,
             ReactionActionType.BckRemoveFirstReactant,
         ]
-        self.secondary_bck_action_type_order = []
-        self.bck_action_type_order = self.primary_bck_action_type_order + self.secondary_bck_action_type_order
 
-        self.building_blocks: List[str] = env.building_blocks
-        self.building_block_mols: List[Chem.Mol] = env.building_block_mols
+        # NOTE: For Molecular Reaction - Environment
+        self.env: SynthesisEnv = env
+        self.reactions: list[Reaction] = env.reactions
+        self.unimolecular_reactions = env.unimolecular_reactions
+        self.bimolecular_reactions = env.bimolecular_reactions
+        self.num_unimolecular_rxns = env.num_unimolecular_rxns
+        self.num_bimolecular_rxns = env.num_bimolecular_rxns
+        self.unimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.unimolecular_reactions)}
+        self.bimolecular_reaction_to_idx = {env: i for i, env in enumerate(env.bimolecular_reactions)}
+
+        self.building_blocks: list[str] = env.building_blocks
         self.num_building_blocks: int = len(self.building_blocks)
-        self.num_block_sampling: int = min(num_block_sampling, self.num_building_blocks)
-        self.precomputed_bb_masks = env.precomputed_bb_masks
 
-        # NOTE: Setup Building Block Datas
-        self.building_block_datas: List[gd.Data] = [
-            self.graph_to_Data_block(self.mol_to_graph(bb)) for bb in tqdm(self.building_block_mols)
-        ]
+        self.building_block_mask: NDArray[np.bool_] = env.building_block_mask
+        self.allowable_birxn_mask: NDArray[np.bool_] = env.building_block_mask.any(-1)
 
-    def setup_blocks(self):
-        block_lmdb_path = self.env.env_dir / "building_block_graph"
-
-    def sample_blocks(self) -> List[int]:
-        if self.num_block_sampling == self.num_building_blocks:
-            block_indices = list(range(self.num_building_blocks))
+        # # NOTE: Setup Building Block Datas
+        self.building_block_features: tuple[NDArray[np.bool_], NDArray[np.float32]]
+        if fp_nbits_building_block == 1024 and fp_radius_building_block == 2:
+            self.building_block_features = env.building_block_features
         else:
-            assert self.num_block_sampling < self.num_building_blocks
-            block_indices = np.random.choice(self.num_building_blocks, self.num_block_sampling, replace=False).tolist()
-            block_indices.sort()
-        return block_indices
+            raise NotImplementedError("I do not check following code block is working")
+            print("Fragment Data Construction...")
+            self.building_block_features = (
+                np.empty((self.num_building_blocks, 166 + 1024), dtype=np.bool_),
+                np.empty((self.num_building_blocks, 8), dtype=np.float32),
+            )
+            for i, smi in enumerate(tqdm(self.building_blocks)):
+                get_block_features(
+                    smi,
+                    fp_radius_building_block,
+                    fp_nbits_building_block,
+                    self.building_block_features[0][i],
+                    self.building_block_features[1][i],
+                )
+        self.num_block_features = self.building_block_features[0].shape[-1] + self.building_block_features[1].shape[-1]
 
-    def get_block_data(self, block_indices: Union[torch.Tensor, List[int]]):
-        if self.num_block_sampling == self.num_building_blocks:
-            return gd.Batch.from_data_list(self.building_block_datas)
+    def get_block_data(
+        self, block_indices: torch.Tensor | list[int] | np.ndarray, device: torch.device
+    ) -> torch.Tensor:
+        if len(block_indices) >= self.num_building_blocks:
+            fp = self.building_block_features[0]
+            feat = self.building_block_features[1]
         else:
-            return gd.Batch.from_data_list([self.building_block_datas[idx] for idx in block_indices])
+            fp = self.building_block_features[0][block_indices]
+            feat = self.building_block_features[1][block_indices]
+        out = torch.cat([torch.as_tensor(fp, dtype=torch.float32), torch.from_numpy(feat)], dim=-1)
+        return out.to(device=device, dtype=torch.float)
 
-    def aidx_to_ReactionAction(
-        self, g: gd.Data, action_idx: ReactionActionIdx, fwd: bool = True, block_indices: Optional[List[int]] = None
-    ) -> ReactionAction:
-        type_idx, is_stop, rxn_idx, block_local_idx, block_is_first = action_idx
+    def aidx_to_ReactionAction(self, action_idx: ReactionActionIdx, fwd: bool = True) -> ReactionAction:
+        type_idx, rxn_idx, block_idx, block_is_first = action_idx
         if fwd:
             t = self.action_type_order[type_idx]
-            if is_stop:
-                return ForwardAction(ReactionActionType.Stop)
-            elif t is ReactionActionType.AddFirstReactant:
-                assert block_local_idx >= 0 and block_indices is not None
-                block_global_idx = block_indices[block_local_idx]
-                building_block = self.building_block_mols[block_global_idx]
-                return ForwardAction(t, block_local_idx=block_local_idx, block=building_block)
-            elif t is ReactionActionType.ReactUni:
-                assert rxn_idx >= 0
-                reaction = self.unimolecular_reactions[rxn_idx]
-                return ForwardAction(t, reaction=reaction)
-            elif t is ReactionActionType.ReactBi:
-                assert rxn_idx >= 0 and block_local_idx >= 0 and block_is_first >= 0 and block_indices is not None
-                reaction = self.bimolecular_reactions[rxn_idx]
-                block_global_idx = block_indices[block_local_idx]
-                building_block = self.building_block_mols[block_global_idx]
-                return ForwardAction(
-                    t,
-                    reaction=reaction,
-                    block_local_idx=block_local_idx,
-                    block=building_block,
-                    block_is_first=(block_is_first == 1),
-                )
-            else:
-                raise ValueError(t)
         else:
             t = self.bck_action_type_order[type_idx]
-            if is_stop:
-                return BackwardAction(ReactionActionType.Stop)
-            elif t is ReactionActionType.BckRemoveFirstReactant:
-                return BackwardAction(t)
-            elif t is ReactionActionType.BckReactUni:
-                assert rxn_idx >= 0
-                reaction = self.unimolecular_reactions[rxn_idx]
-                return BackwardAction(t, reaction=reaction)
-            elif t is ReactionActionType.BckReactBi:
-                assert rxn_idx >= 0 and block_is_first >= 0
-                reaction = self.bimolecular_reactions[rxn_idx]
-                return BackwardAction(t, reaction=reaction, block_is_first=(block_is_first == 1))
-            else:
-                raise ValueError(t)
 
-    def ReactionAction_to_aidx(self, g: gd.Data, action: ReactionAction) -> ReactionActionIdx:
-        type_idx = rxn_idx = block_is_first = block_local_idx = -1
+        if t is ReactionActionType.Stop:
+            return ReactionAction(ReactionActionType.Stop)
+
+        elif t in (ReactionActionType.AddFirstReactant, ReactionActionType.BckRemoveFirstReactant):
+            assert block_idx >= 0
+            building_block = self.building_blocks[block_idx]
+            return ReactionAction(t, block_idx=block_idx, block=building_block)
+
+        elif t in (ReactionActionType.ReactUni, ReactionActionType.BckReactUni):
+            assert rxn_idx >= 0
+            reaction = self.unimolecular_reactions[rxn_idx]
+            return ReactionAction(t, reaction=reaction)
+
+        elif t in (ReactionActionType.ReactBi, ReactionActionType.BckReactBi):
+            assert rxn_idx >= 0 and block_idx >= 0 and block_is_first >= 0
+            reaction = self.bimolecular_reactions[rxn_idx]
+            building_block = self.building_blocks[block_idx]
+            return ReactionAction(
+                t,
+                reaction=reaction,
+                block_idx=block_idx,
+                block=building_block,
+                block_is_first=(block_is_first == 1),
+            )
+        else:
+            raise ValueError(t)
+
+    def ReactionAction_to_aidx(self, action: ReactionAction) -> ReactionActionIdx:
+        type_idx = -1
         for u in [self.action_type_order, self.bck_action_type_order]:
             if action.action in u:
                 type_idx = u.index(action.action)
                 break
         # NOTE: -1: None
         assert type_idx >= 0
+
+        rxn_idx = block_is_first = block_idx = -1
         if action.action is ReactionActionType.Stop:
             pass
         elif action.action is ReactionActionType.AddFirstReactant:
-            assert isinstance(action, ForwardAction)
-            assert action.block_local_idx is not None
-            block_local_idx = action.block_local_idx
+            assert action.block_idx is not None
+            block_idx = action.block_idx
         elif action.action is ReactionActionType.ReactUni:
-            assert isinstance(action, ForwardAction)
             assert action.reaction is not None
             rxn_idx = self.unimolecular_reaction_to_idx[action.reaction]
         elif action.action is ReactionActionType.ReactBi:
-            assert isinstance(action, ForwardAction)
-            assert (
-                action.reaction is not None and action.block_local_idx is not None and action.block_is_first is not None
-            )
+            assert action.reaction is not None and action.block_idx is not None and action.block_is_first is not None
             rxn_idx = self.bimolecular_reaction_to_idx[action.reaction]
-            block_local_idx = action.block_local_idx
+            block_idx = action.block_idx
             block_is_first = int(action.block_is_first)
-
         elif action.action is ReactionActionType.BckRemoveFirstReactant:
-            assert isinstance(action, BackwardAction)
-            pass
+            assert action.block_idx is not None
+            block_idx = action.block_idx
         elif action.action is ReactionActionType.BckReactUni:
-            assert isinstance(action, BackwardAction)
             assert action.reaction is not None
             rxn_idx = self.unimolecular_reaction_to_idx[action.reaction]
         elif action.action is ReactionActionType.BckReactBi:
-            assert isinstance(action, BackwardAction)
-            assert action.reaction is not None and action.block_is_first is not None
+            assert action.reaction is not None and action.block_idx is not None and action.block_is_first is not None
             rxn_idx = self.bimolecular_reaction_to_idx[action.reaction]
+            block_idx = action.block_idx
             block_is_first = action.block_is_first
         else:
             raise ValueError(action)
-        is_stop = action.action is ReactionActionType.Stop
-        return (type_idx, is_stop, rxn_idx, block_local_idx, block_is_first)
+        return (type_idx, rxn_idx, block_idx, block_is_first)
 
-    def graph_to_Data(
-        self,
-        g: Graph,
-        traj_idx: int,
-        do_bck: bool = True,
-        prev_action: Optional[ForwardAction] = None,
-    ) -> gd.Data:
+    def graph_to_Data(self, g: Graph, traj_idx: int) -> gd.Data:
         """Convert a networkx Graph to a torch geometric Data instance"""
         x = np.zeros((max(1, len(g.nodes)), self.num_node_dim), dtype=np.float32)
         x[0, -1] = len(g.nodes) == 0  # If there are no nodes, set the last dimension to 1
@@ -287,7 +223,10 @@ class SynthesisEnvContext:
         for i, e in enumerate(g.edges):
             ad = g.edges[e]
             for k, sl in zip(self.bond_attrs, self.bond_attr_slice):
-                idx = self.bond_attr_values[k].index(ad[k])
+                if True and ad[k] in self.bond_attr_values[k]:
+                    idx = self.bond_attr_values[k].index(ad[k])
+                else:
+                    idx = 0
                 edge_attr[i * 2, sl + idx] = 1
                 edge_attr[i * 2 + 1, sl + idx] = 1
         edge_index = np.array([e for i, j in g.edges for e in [(i, j), (j, i)]]).reshape((-1, 2)).T.astype(np.int64)
@@ -299,65 +238,13 @@ class SynthesisEnvContext:
         )
 
         # NOTE: add attribute for masks
-        data["react_uni_mask"] = self.create_masks(g, fwd=True, unimolecular=True)
-        data["react_bi_mask"] = self.create_masks(g, fwd=True, unimolecular=False)
-
-        # NOTE: mask construction is bottleneck -> add flag `do_bck`
-        if do_bck:
-            bck_react_uni_mask = self.create_masks(g, fwd=False, unimolecular=True)
-            bck_react_bi_mask = self.create_masks(g, fwd=False, unimolecular=False)
-
-            # NOTE: prevent the rdkit bck-reaction error
-            # if (R1, ...) -> P with rxn R,
-            # There are cases where the reverse reaction R is not possible to P although P was performed with R.
-            if prev_action is not None:
-                if prev_action.action is ReactionActionType.ReactUni:
-                    assert prev_action.reaction is not None
-                    rxn_idx = self.unimolecular_reaction_to_idx[prev_action.reaction]
-                    bck_react_uni_mask[0, rxn_idx] = True
-                elif prev_action.action is ReactionActionType.ReactBi:
-                    assert prev_action.reaction is not None
-                    rxn_idx = self.bimolecular_reaction_to_idx[prev_action.reaction]
-                    bck_react_bi_mask[0, rxn_idx] = True
-            data["bck_react_uni_mask"] = bck_react_uni_mask
-            data["bck_react_bi_mask"] = bck_react_bi_mask
+        data["react_uni_mask"] = self.create_masks(g, fwd=True, unimolecular=True).reshape(1, -1)  # [1, Nrxn]
+        data["react_bi_mask"] = self.create_masks(g, fwd=True, unimolecular=False).reshape(1, -1, 2)  # [1, Nrxn, 2]
 
         data = gd.Data(**{k: torch.from_numpy(v) for k, v in data.items()})
         return data
 
-    def graph_to_Data_block(self, g: Graph) -> gd.Data:
-        """Convert a networkx Graph to a torch geometric Data instance"""
-        x = np.zeros((max(1, len(g.nodes)), self.num_node_dim), dtype=np.float32)
-        x[0, -1] = len(g.nodes) == 0  # If there are no nodes, set the last dimension to 1
-
-        for i, n in enumerate(g.nodes):
-            ad = g.nodes[n]
-            for k, sl in zip(self.atom_attrs, self.atom_attr_slice):
-                idx = self.atom_attr_values[k].index(ad[k]) if k in ad else 0
-                x[i, sl + idx] = 1  # One-hot encode the attribute value
-
-        edge_attr = np.zeros((len(g.edges) * 2, self.num_edge_dim), dtype=np.float32)
-        for i, e in enumerate(g.edges):
-            ad = g.edges[e]
-            for k, sl in zip(self.bond_attrs, self.bond_attr_slice):
-                idx = self.bond_attr_values[k].index(ad[k])
-                edge_attr[i * 2, sl + idx] = 1
-                edge_attr[i * 2 + 1, sl + idx] = 1
-        edge_index = np.array([e for i, j in g.edges for e in [(i, j), (j, i)]]).reshape((-1, 2)).T.astype(np.int64)
-
-        data = dict(
-            x=x,
-            edge_index=edge_index,
-            edge_attr=edge_attr,
-        )
-        data = gd.Data(**{k: torch.from_numpy(v) for k, v in data.items()})
-        return data
-
-    def collate(self, graphs: List[gd.Data]):
-        """Batch Data instances"""
-        return gd.Batch.from_data_list(graphs, follow_batch=["edge_index"])
-
-    def get_mol(self, smi: Union[str, Chem.Mol, Graph]) -> Chem.Mol:
+    def get_mol(self, smi: str | Chem.Mol | Graph) -> Chem.Mol:
         """
         A function that returns an `RDKit.Chem.Mol` object.
 
@@ -369,7 +256,6 @@ class SynthesisEnvContext:
             RDKit.Chem.Mol
         """
         if isinstance(smi, str):
-            # return Chem.MolFromSmiles(smi, replacements={"[2H]": "[H]"}) -> This is performed on pre-processing
             return Chem.MolFromSmiles(smi)
         elif isinstance(smi, Chem.Mol):
             return smi
@@ -442,25 +328,12 @@ class SynthesisEnvContext:
         except Exception:
             return ""
 
-    def has_n(self) -> bool:
-        return False
-
-    def log_n(self, g) -> float:
-        return 0.0
-
-    def traj_log_n(self, traj):
-        return [self.log_n(g) for g, _ in traj]
-
-    def traj_to_log_repr(self, traj: List[Tuple[Graph]]):
+    def traj_to_log_repr(self, traj: list[tuple[Graph]]):
         """Convert a tuple of graph, action idx to a string representation, action idx"""
-        smi_traj = []
-        for i in traj:
-            mol = self.graph_to_mol(i[0])
-            assert mol is not None
-            smi_traj.append((Chem.MolToSmiles(mol), i[1]))
-        return str(smi_traj)
+        # TODO: implement!
+        raise NotImplementedError
 
-    def create_masks(self, smi: Union[str, Chem.Mol, Graph], fwd: bool = True, unimolecular: bool = True) -> np.ndarray:
+    def create_masks(self, smi: str | Chem.Mol | Graph, fwd: bool = True, unimolecular: bool = True) -> np.ndarray:
         """Creates masks for reaction templates for a given molecule.
 
         Args:
@@ -469,70 +342,35 @@ class SynthesisEnvContext:
             unimolecular (bool): Whether it is a unimolecular or a bimolecular reaction.
 
         Returns:
-            (torch.Tensor): Masks for invalid actions.
+            (np.ndarry): Masks for invalid actions.
         """
         mol = self.get_mol(smi)
-        if unimolecular:
-            masks = np.ones(self.num_unimolecular_rxns, dtype=np.bool_)
-            reactions = self.unimolecular_reactions
-        else:
-            masks = np.ones(self.num_bimolecular_rxns, dtype=np.bool_)
-            reactions = self.bimolecular_reactions
-        for idx, r in enumerate(reactions):
-            if fwd:
-                if not r.is_reactant(mol):
-                    masks[idx] = False
+        if fwd:
+            if unimolecular:
+                masks = np.zeros((self.num_unimolecular_rxns,), dtype=np.bool_)
+                for idx, r in enumerate(self.unimolecular_reactions):
+                    if r.is_reactant(mol):
+                        masks[idx] = True
             else:
-                if r.is_product(mol):
-                    continue
-                mol_copy = Chem.MolFromSmiles(Chem.MolToSmiles(mol))
-                Chem.Kekulize(mol_copy, clearAromaticFlags=True)
-                if r.is_product(mol_copy):
-                    continue
-                masks[idx] = False
-        return masks.reshape(1, -1)
-
-    def create_masks_for_bb(self, smi: Union[str, Chem.Mol, Graph], bimolecular_rxn_idx: int) -> np.ndarray:
-        """Create masks for building blocks for a given molecule."""
-        raise NotImplementedError()
-        mol = self.get_mol(smi)
-        reaction = self.bimolecular_reactions[bimolecular_rxn_idx]
-        reactants = reaction.rxn.GetReactants()
-        mol_match_0 = mol.HasSubstructMatch(reactants[0])
-        mol_match_1 = mol.HasSubstructMatch(reactants[1])
-        assert (
-            mol_match_0 or mol_match_1
-        ), "Molecule does not match reaction template -- this should be verified at the reaction-selection step."
-
-        masks = np.zeros((self.num_building_blocks, 2), dtype=np.bool_)
-        for idx, bb in enumerate(self.building_block_mols):
-            if mol_match_1 and bb.HasSubstructMatch(reactants[0]):
-                masks[idx, 0] = True
-            elif mol_match_0 and bb.HasSubstructMatch(reactants[1]):
-                masks[idx, 1] = True
+                masks = np.zeros((self.num_bimolecular_rxns, 2), dtype=np.bool_)
+                for idx, r in enumerate(self.bimolecular_reactions):
+                    # NOTE: block_is_first is True
+                    if self.allowable_birxn_mask[idx, 0]:
+                        masks[idx, int(True)] = r.is_reactant_second(mol)
+                    # NOTE: block_is_second
+                    if self.allowable_birxn_mask[idx, 1]:
+                        masks[idx, int(False)] = r.is_reactant_first(mol)
+        else:
+            mol1 = Chem.MolFromSmiles(Chem.MolToSmiles(mol))
+            Chem.Kekulize(mol1, clearAromaticFlags=True)
+            if unimolecular:
+                masks = np.zeros((self.num_unimolecular_rxns,), dtype=np.bool_)
+                for idx, r in enumerate(self.unimolecular_reactions):
+                    if r.is_product(mol) or r.is_product(mol1):
+                        masks[idx] = True
+            else:
+                masks = np.ones((self.num_bimolecular_rxns,), dtype=np.bool_)
+                for idx, r in enumerate(self.bimolecular_reactions):
+                    if r.is_product(mol) or r.is_product(mol1):
+                        masks[idx] = True
         return masks
-
-    def create_masks_for_bb_from_precomputed(
-        self, smi: Union[str, Chem.Mol, Graph], bimolecular_rxn_idx: int
-    ) -> np.ndarray:
-        """Creates masks for building blocks (for the 2nd reactant) for a given molecule and bimolecular reaction.
-        Uses masks precomputed with data/building_blocks/precompute_bb_masks.py.
-
-        Args:
-            smi (Union[str, Chem.Mol, Graph]): Molecule as a rdKit Mol object.
-            bimolecular_rxn_idx (int): Index of the bimolecular reaction.
-        """
-        mol = self.get_mol(smi)
-        reaction = self.bimolecular_reactions[bimolecular_rxn_idx]
-        reactants = reaction.rxn.GetReactants()
-
-        precomputed_bb_masks = self.precomputed_bb_masks[:, bimolecular_rxn_idx, :]
-        mol_mask = np.array(
-            [  # we reverse the order of the reactants w.r.t BBs (i.e. reactants[1] first)
-                [mol.HasSubstructMatch(reactants[1])] * self.num_building_blocks,
-                [mol.HasSubstructMatch(reactants[0])] * self.num_building_blocks,
-            ],
-            dtype=np.bool_,
-        )
-        masks = mol_mask & precomputed_bb_masks
-        return masks.transpose(1, 0).reshape(self.num_building_blocks, 2)

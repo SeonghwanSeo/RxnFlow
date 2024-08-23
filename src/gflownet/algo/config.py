@@ -3,6 +3,16 @@ from enum import Enum
 from typing import Optional
 
 
+@dataclass
+class ActionSamplingConfig:
+    num_mc_sampling: int = 1
+    num_sampling_add_first_reactant: int = 10_000
+    sampling_ratio_reactbi: float = 1.0
+    max_sampling_reactbi: int = 10_000
+    min_sampling_reactbi: int = 100
+    onpolicy_temp: float = 1.0
+
+
 class TBVariant(int, Enum):
     """See algo.trajectory_balance.TrajectoryBalance for details."""
 
@@ -120,9 +130,9 @@ class AlgoConfig:
         The EMA factor for the sampling model (theta_sampler = tau * theta_sampler + (1-tau) * theta)
     """
 
-    method: str = "ASTB"
+    method: str = "TB"
     global_batch_size: int = 64
-    num_block_sampling: int = 5000
+    min_len: int = 2
     max_len: int = 128
     max_nodes: int = 128
     max_edges: int = 128
@@ -134,6 +144,7 @@ class AlgoConfig:
     valid_random_action_prob: float = 0.0
     sampling_tau: float = 0.0
     tb: TBConfig = TBConfig()
+    action_sampling: ActionSamplingConfig = ActionSamplingConfig()
     moql: MOQLConfig = MOQLConfig()
     a2c: A2CConfig = A2CConfig()
     fm: FMConfig = FMConfig()

@@ -138,53 +138,6 @@ class GraphTransformer(nn.Module):
         return o_final, glob
 
 
-class GraphTransformer_Block(nn.Module):
-    def __init__(self, x_dim, e_dim, num_emb=64, num_layers=3, num_heads=2, ln_type="pre"):
-        super().__init__()
-        self.num_layers = num_layers
-        assert ln_type in ["pre", "post"]
-        self.ln_type = ln_type
-
-        self.x2h = mlp(x_dim, num_emb, num_emb, 2)
-        self.e2h = mlp(e_dim, num_emb, num_emb, 2)
-        self.graph2emb = nn.ModuleList(
-            sum(
-                [
-                    [
-                        gnn.GENConv(num_emb, num_emb, num_layers=1, aggr="add", norm=None),
-                        gnn.TransformerConv(num_emb * 2, num_emb, edge_dim=num_emb, heads=num_heads),
-                        nn.Linear(num_heads * num_emb, num_emb),
-                        gnn.LayerNorm(num_emb, affine=False),
-                        mlp(num_emb, num_emb * 4, num_emb, 1),
-                        gnn.LayerNorm(num_emb, affine=False),
-                    ]
-                    for i in range(self.num_layers)
-                ],
-                [],
-            )
-        )
-
-    def forward(self, g: gd.Batch) -> torch.Tensor:
-        o = self.x2h(g.x)
-        e = self.e2h(g.edge_attr)
-        aug_edge_index, aug_e = add_self_loops(g.edge_index, e, "mean")
-
-        for i in range(self.num_layers):
-            gen, trans, linear, norm1, ff, norm2 = self.graph2emb[i * 6 : (i + 1) * 6]
-            if self.ln_type == "post":
-                agg = gen(o, self.edge_index, e)
-                l_h = linear(trans(torch.cat([o, agg], 1), g.edge_index, e))
-                o = norm1(o + l_h, g.batch)
-                o = norm2(o + ff(o), g.batch)
-            else:
-                o_norm = norm1(o, g.batch)
-                agg = gen(o_norm, aug_edge_index, aug_e)
-                l_h = linear(trans(torch.cat([o_norm, agg], 1), aug_edge_index, aug_e))
-                o = o + ff(norm2(o + l_h, g.batch))
-        glob = gnn.global_mean_pool(o, g.batch)
-        return glob
-
-
 class GraphTransformerGFN(nn.Module):
     """GraphTransformer class for a GFlowNet which outputs a GraphActionCategorical.
 
@@ -267,8 +220,10 @@ class GraphTransformerGFN(nn.Module):
             self.bck_action_type_order = env_ctx.bck_action_type_order
 
         self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, cfg.model.graph_transformer.num_mlp_layers)
-        # TODO: flag for this
-        self.logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
+        self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
+
+    def logZ(self, cond: torch.Tensor) -> torch.Tensor:
+        return self._logZ(cond)
 
     def _action_type_to_mask(self, t, g):
         return getattr(g, t.mask_name) if hasattr(g, t.mask_name) else torch.ones((1, 1), device=g.x.device)

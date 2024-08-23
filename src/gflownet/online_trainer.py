@@ -7,15 +7,9 @@ import torch
 from omegaconf import OmegaConf
 from torch import Tensor
 
-from gflownet.algo.advantage_actor_critic import A2C
-from gflownet.algo.flow_matching import FlowMatching
-from gflownet.algo.soft_q_learning import SoftQLearning
 from gflownet.algo.trajectory_balance import TrajectoryBalance
-from gflownet.algo.action_sampling_synthesis import ActionSamplingTrajectoryBalance
 from gflownet.data.replay_buffer import ReplayBuffer
-
-# from gflownet.models.graph_transformer import GraphTransformerGFN
-from gflownet.models.gfn import ASTB_GFN
+from gflownet.models.graph_transformer import GraphTransformerGFN
 
 from .trainer import GFNTrainer
 
@@ -30,7 +24,7 @@ def model_grad_norm(model):
 
 class StandardOnlineTrainer(GFNTrainer):
     def setup_model(self):
-        self.model = ASTB_GFN(
+        self.model = GraphTransformerGFN(
             self.ctx,
             self.cfg,
             do_bck=self.cfg.algo.tb.do_parameterize_p_b,
@@ -38,20 +32,8 @@ class StandardOnlineTrainer(GFNTrainer):
         )
 
     def setup_algo(self):
-        algo = self.cfg.algo.method
-        assert self.cfg.algo.method == "ASTB"
-        if algo == "ASTB":
-            algo = ActionSamplingTrajectoryBalance
-        elif algo == "TB":
-            algo = TrajectoryBalance
-        elif algo == "FM":
-            algo = FlowMatching
-        elif algo == "A2C":
-            algo = A2C
-        elif algo == "SQL":
-            algo = SoftQLearning
-        else:
-            raise ValueError(algo)
+        assert self.cfg.algo.method == "TB"
+        algo = TrajectoryBalance
         self.algo = algo(self.env, self.ctx, self.rng, self.cfg)
 
     def setup_data(self):
@@ -80,8 +62,8 @@ class StandardOnlineTrainer(GFNTrainer):
         self.replay_buffer = ReplayBuffer(self.cfg, self.rng) if self.cfg.replay.use else None
 
         # Separate Z parameters from non-Z to allow for LR decay on the former
-        if hasattr(self.model, "logZ"):
-            Z_params = list(self.model.logZ.parameters())
+        if hasattr(self.model, "_logZ"):
+            Z_params = list(self.model._logZ.parameters())
             non_Z_params = [i for i in self.model.parameters() if all(id(i) != id(j) for j in Z_params)]
         else:
             Z_params = []

@@ -97,6 +97,7 @@ class Config:
     num_final_gen_steps: Optional[int] = None
     num_training_steps: int = 10_000
     num_workers: int = 0
+    num_workers_retrosynthesis: int = 4  # For synthesis-aware generation
     hostname: Optional[str] = None
     pickle_mp_messages: bool = False
     git_hash: Optional[str] = None
@@ -109,7 +110,7 @@ class Config:
     cond: ConditionalsConfig = ConditionalsConfig()
 
 
-def init_empty(cfg):
+def init_empty(cfg: Config):
     """
     Initialize a dataclass instance with all fields set to MISSING,
     including nested dataclasses.
