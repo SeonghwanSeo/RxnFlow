@@ -1,14 +1,13 @@
-project: 'largfn-exp1'
-program: ./scripts/exp1_single_opt.py
-name: 'synflownet'
+project: 'largfn-ana2'
+program: ./scripts/ana2_single_opt.py
+name: '6000'
 
 command:
   - ${env}
   - python
   - ${program}
-  - synflownet # model
-  - synflownet # prefix
-  - ./storage/exp1 # storage
+  - '6k-all' # prefix
+  - ./storage/ana2/ # storage
   - ./data/envs/subsampled_6k/ #env_dir
 
 method: grid
@@ -30,5 +29,3 @@ parameters:
       - PPARG
       - TP53
       - VDR
-  trial:
-    values: [0, 1, 2, 3]

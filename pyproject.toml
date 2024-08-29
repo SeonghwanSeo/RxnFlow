@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-release = [
+icml = [
     "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
 ]
 

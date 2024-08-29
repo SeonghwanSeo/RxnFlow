@@ -29,3 +29,5 @@ parameters:
       - PPARG
       - TP53
       - VDR
+  trial:
+    values: [0, 1, 2, 3]

@@ -328,10 +328,33 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         except Exception:
             return ""
 
-    def traj_to_log_repr(self, traj: list[tuple[Graph]]):
-        """Convert a tuple of graph, action idx to a string representation, action idx"""
-        # TODO: implement!
-        raise NotImplementedError
+    def traj_to_log_repr(
+        self, traj: list[tuple[Graph | Chem.Mol, ReactionAction]]
+    ) -> list[tuple[tuple[str, ...], str]]:
+        """Convert a trajectory of (Graph, Action) to a trajectory of string representation"""
+        repr = []
+        action_repr = tuple()
+        smiles = ""
+        for i, (mol, action) in enumerate(traj):
+            if i > 0:
+                mol = self.get_mol(mol)
+                smiles = Chem.MolToSmiles(mol)
+                repr.append((action_repr, smiles))
+            if action.action is ReactionActionType.AddFirstReactant:
+                assert action.block is not None
+                action_repr = ("Start Block", action.block)
+            elif action.action is ReactionActionType.ReactUni:
+                assert action.reaction is not None
+                action_repr = ("Uni-Molecular Reaction", action.reaction.template)
+            elif action.action is ReactionActionType.ReactBi:
+                assert action.reaction is not None and action.block is not None
+                action_repr = ("Bi-Molecular Reaction", action.reaction.template, action.block)
+            elif action.action is ReactionActionType.Stop:
+                action_repr = ("Stop",)
+            else:
+                raise ValueError(action.action)
+        repr.append((action_repr, smiles))
+        return repr
 
     def create_masks(self, smi: str | Chem.Mol | Graph, fwd: bool = True, unimolecular: bool = True) -> np.ndarray:
         """Creates masks for reaction templates for a given molecule.

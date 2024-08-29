@@ -18,6 +18,7 @@ from gflownet.envs.synthesis import SynthesisEnv, SynthesisEnvContext, ReactionA
 class SynthesisTrajectoryBalance(TrajectoryBalance):
     env: SynthesisEnv
     ctx: SynthesisEnvContext
+    graph_sampler: SynthesisSampler
 
     def __init__(self, env: SynthesisEnv, ctx: SynthesisEnvContext, rng: np.random.RandomState, cfg: Config):
         self.action_sampler: ActionSamplingPolicy = ActionSamplingPolicy(env, cfg)

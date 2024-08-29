@@ -1,12 +1,12 @@
 project: largfn-exp2
-program: ./scripts/exp2_zero_shot_opt.py
-name: pocket_batching
+program: ./scripts/exp2_zero_shot_taco.py
+name: tacogfn-reward-128
 
 command:
   - ${env}
   - python
   - ${program}
-  - synthesis # 1, prefix
+  - taco-128 # 1, prefix
   - ./storage/exp2 # 2, storage
   - ./data/envs/20240610_all/ # 3, env_dir
 

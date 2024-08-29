@@ -1,3 +1,6 @@
+import functools
+from pathlib import Path
+import torch
 import socket
 
 from gflownet.config import Config
@@ -54,6 +57,38 @@ class BaseTrainer(StandardOnlineTrainer):
         cfg.cond.temperature.sample_dist = "uniform"
         cfg.cond.temperature.dist_params = [0, 64.0]
         cfg.algo.train_random_action_prob = 0.05
+
+    def load_checkpoint(self, checkpoint_path: str | Path):
+        state = torch.load(checkpoint_path, map_location="cpu")
+        print(f"load pre-trained model from {checkpoint_path}")
+        self.model.load_state_dict(state["models_state_dict"][0])
+        if self.sampling_model is not self.model:
+            self.sampling_model.load_state_dict(state["sampling_model_state_dict"][0])
+        del state
+
+
+def moo_trainer(cls: type[BaseTrainer]):
+    original_setup = cls.setup
+
+    @functools.wraps(original_setup)
+    def new_setup(self):
+        self.cfg.cond.moo.num_objectives = len(self.cfg.task.moo.objectives)
+        original_setup(self)
+        if self.cfg.task.moo.online_pareto_front:
+            self.sampling_hooks.append(
+                MultiObjectiveStatsHook(
+                    256,
+                    self.cfg.log_dir,
+                    compute_igd=True,
+                    compute_pc_entropy=True,
+                    compute_focus_accuracy=True if self.cfg.cond.focus_region.focus_type is not None else False,
+                    focus_cosim=self.cfg.cond.focus_region.focus_cosim,
+                )
+            )
+            self.to_terminate.append(self.sampling_hooks[-1].terminate)
+
+    cls.setup = new_setup
+    return cls
 
 
 class MOOTrainer(BaseTrainer):

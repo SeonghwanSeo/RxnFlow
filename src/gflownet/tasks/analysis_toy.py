@@ -12,7 +12,7 @@ from gflownet.base.base_trainer import SynthesisTrainer
 
 
 class SizeTask(BaseTask):
-    def compute_flat_rewards(self, mols: list[RDMol], indices: list[int]) -> tuple[FlatRewards, Tensor]:
+    def compute_flat_rewards(self, mols: list[RDMol], batch_idx: list[int]) -> tuple[FlatRewards, Tensor]:
         rewards = torch.tensor([mol.GetNumHeavyAtoms() for mol in mols], dtype=torch.float).unsqueeze(-1)
         return FlatRewards(rewards), torch.ones((len(mols),), dtype=torch.bool)
 
@@ -21,13 +21,17 @@ class ToyTrainer(SynthesisTrainer):
     def set_default_hps(self, cfg: Config):
         super().set_default_hps(cfg)
         cfg.desc = "Toy Task"
-        cfg.env_dir = "./data/experiments/toy/env_1000"
         cfg.algo.min_len = 1
         cfg.algo.max_len = 2
         cfg.algo.sampling_tau = 0
-        cfg.algo.train_random_action_prob = 0.01
-        cfg.algo.action_sampling.max_sampling_reactbi = 1000
+        cfg.algo.train_random_action_prob = 0.05
+        cfg.validate_every = 0
+
+        cfg.algo.action_sampling.sampling_ratio_reactbi = 1.0
+        cfg.algo.action_sampling.num_sampling_add_first_reactant = 10000
+        cfg.algo.action_sampling.max_sampling_reactbi = 10000
         cfg.algo.action_sampling.min_sampling_reactbi = 1
+
         cfg.cond.temperature.sample_dist = "constant"
         cfg.cond.temperature.dist_params = [1]
 
@@ -41,6 +45,11 @@ class ToyTrainer(SynthesisTrainer):
         assert self.cfg.algo.method == "TB"
         algo = ToyTrajectoryBalance
         self.algo = algo(self.env, self.ctx, self.rng, self.cfg)
+
+    def step(self, loss: Tensor):
+        self.opt.zero_grad()
+        self.opt_Z.zero_grad()
+        return super().step(loss)
 
 
 class ToySizeTrainer(ToyTrainer):
@@ -56,7 +65,6 @@ def main():
     """Example of how this trainer can be run"""
     config = init_empty(Config())
     config.print_every = 1
-    config.validate_every = 100
     config.device = "cuda" if torch.cuda.is_available() else "cpu"
     config.overwrite_existing_exp = True
     SAMPLING_RATIO = 1.0

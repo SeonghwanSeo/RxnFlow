@@ -14,6 +14,7 @@ storage*
 unidock_2024*
 old/
 job*.sh
+analysis/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

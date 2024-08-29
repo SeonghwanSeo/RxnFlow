@@ -195,6 +195,7 @@ class SynthesisSampler:
         graphs: list[Graph] = [self.env.new() for _ in range(n)]
         rdmols: list[Chem.Mol] = [Chem.Mol() for _ in range(n)]
         done: list[bool] = [False] * n
+        cond_info = cond_info.to(dev)
 
         def not_done(lst):
             return [e for i, e in enumerate(lst) if not done[i]]
@@ -222,7 +223,8 @@ class SynthesisSampler:
             if all(done):
                 break
         for i in range(n):
-            data[i]["result"] = rdmols[i]
+            data[i]["result"] = graphs[i]
+            data[i]["result_rdmol"] = rdmols[i]
         return data
 
     def sample_backward_from_graphs(

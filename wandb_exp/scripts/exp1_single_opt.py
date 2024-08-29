@@ -45,13 +45,14 @@ def main():
 
     wandb.init(group=prefix)
     code = wandb.config["protein"]
+    trial = wandb.config["trial"]
     config = set_config(model, prefix, code)
-    config.log_dir = os.path.join(storage, prefix, code)
+    config.log_dir = os.path.join(storage, f"trial-{trial}", prefix, code)
 
     # NOTE: Run
     Trainer = TRAINER_DICT[model]
     trainer = Trainer(config)
-    wandb.config.update({"model": model, "config": OmegaConf.to_container(trainer.cfg)})
+    wandb.config.update({"model": model, "config": OmegaConf.to_container(trainer.cfg), "prefix": prefix})
     trainer.run()
     wandb.finish()
 

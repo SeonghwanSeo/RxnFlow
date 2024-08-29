@@ -165,7 +165,12 @@ class SynFlowNet_TrajectoryBalance(GFNAlgorithm):
         """
         dev = self.ctx.device
         cond_info = cond_info.to(dev)
-        data = self.synthesis_sampler.sample_from_model(model, n, cond_info, dev)
+        data = None
+        while data is None:
+            try:
+                data = self.synthesis_sampler.sample_from_model(model, n, cond_info, dev)
+            except Exception:
+                data = None
         logZ_pred = model.logZ(cond_info)
         for i in range(n):
             data[i]["logZ"] = logZ_pred[i].item()

@@ -1,0 +1,19 @@
+project: 'largfn-ana1-toy'
+program: ./scripts/ana1_toy.py
+name: '1000-num_mc'
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - num_mc_sample # prefix
+  - ./storage/ana1/ # storage
+  - ./data/experiments/toy-env/ #env_dir
+  - 1000
+
+method: grid
+parameters:
+  rev_sampling_ratio:
+    value: 9
+  num_mc_samples:
+    values: [2, 4, 6, 8, 16]

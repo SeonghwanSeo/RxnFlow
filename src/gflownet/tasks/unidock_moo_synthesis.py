@@ -3,20 +3,19 @@ import numpy as np
 
 from gflownet.config import Config, init_empty
 
-from gflownet.base.base_trainer import SynthesisTrainer, MOOTrainer
+from gflownet.base.base_trainer import SynthesisTrainer, moo_trainer
 from gflownet.tasks.unidock_task import UniDockMOOTask, calc_diversity
 
 
-class UniDockMOOSynthesisTrainer(MOOTrainer, SynthesisTrainer):
-    task: UniDockMOOTask
-
+@moo_trainer
+class UniDockMOOSynthesisTrainer(SynthesisTrainer):
     def set_default_hps(self, cfg: Config):
         super().set_default_hps(cfg)
         cfg.validate_every = 0
         cfg.task.moo.objectives = ["vina", "qed"]
 
     def setup_task(self):
-        self.task = UniDockMOOTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
+        self.task: UniDockMOOTask = UniDockMOOTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
 
     def log(self, info, index, key):
         for obj, v in self.task.avg_reward_info:

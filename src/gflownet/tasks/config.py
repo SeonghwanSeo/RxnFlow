@@ -41,7 +41,7 @@ class SBDDConfig:
 
     proxy: str = MISSING
     pocket_db: str = MISSING
-    pocket_dim: int = 64
+    pocket_dim: int = 128
 
 
 @dataclass

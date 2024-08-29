@@ -1,0 +1,16 @@
+project: 'largfn-ana3'
+program: ./scripts/ana3_qed_opt.py
+name: 'qed-opt'
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - qed-train # prefix
+  - ./storage/ana3/ # storage
+  - ./data/experiments/generalization/seen/ #env_dir
+
+method: grid
+parameters:
+  sampling_beta:
+    values: [1, 10, 20, 30]
