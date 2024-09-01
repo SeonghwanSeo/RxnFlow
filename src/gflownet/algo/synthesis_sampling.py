@@ -113,7 +113,7 @@ class SynthesisSampler:
             ).bool()
 
             actions = fwd_cat.sample(self.action_sampler, self.onpolicy_temp, self.sample_temp, self.min_len)
-            reaction_actions: list[ReactionAction] = [self.ctx.aidx_to_ReactionAction(a) for a in actions]
+            reaction_actions: list[ReactionAction] = [self.ctx.aidx_to_GraphAction(a) for a in actions]
             log_probs = fwd_cat.log_prob_after_sampling(actions)
             for i, next_rt in self.retro_analyzer.result():
                 bck_logprob[i].append(self.cal_bck_logprob(retro_tree[i], next_rt))
@@ -206,7 +206,7 @@ class SynthesisSampler:
 
             fwd_cat, *_ = model(self.ctx.collate(torch_graphs).to(dev), cond_info[not_done_mask])
             actions = fwd_cat.sample(self.action_sampler, sample_temp=self.sample_temp)
-            reaction_actions: list[ReactionAction] = [self.ctx.aidx_to_ReactionAction(a) for a in actions]
+            reaction_actions: list[ReactionAction] = [self.ctx.aidx_to_GraphAction(a) for a in actions]
             for i, j in zip(not_done(range(n)), range(n)):
                 i: int
                 data[i]["traj"].append((rdmols[i], reaction_actions[j]))

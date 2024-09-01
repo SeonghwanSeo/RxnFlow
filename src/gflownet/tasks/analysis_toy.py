@@ -9,6 +9,7 @@ from gflownet.trainer import FlatRewards
 
 from gflownet.base.base_task import BaseTask
 from gflownet.base.base_trainer import SynthesisTrainer
+from gflownet.tasks.analysis_qed import QEDTask
 
 
 class SizeTask(BaseTask):
@@ -35,11 +36,11 @@ class ToyTrainer(SynthesisTrainer):
         cfg.cond.temperature.sample_dist = "constant"
         cfg.cond.temperature.dist_params = [1]
 
-        cfg.num_training_steps = 40000
+        cfg.num_training_steps = 30000
         cfg.algo.tb.Z_learning_rate = 1e-3
-        cfg.algo.tb.Z_lr_decay = 4000
+        cfg.algo.tb.Z_lr_decay = 3000
         cfg.opt.learning_rate = 1e-4
-        cfg.opt.lr_decay = 2000
+        cfg.opt.lr_decay = 3000
 
     def setup_algo(self):
         assert self.cfg.algo.method == "TB"
@@ -59,6 +60,20 @@ class ToySizeTrainer(ToyTrainer):
 
     def setup_task(self):
         self.task = SizeTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
+
+
+class ToyQEDTrainer(ToyTrainer):
+    def set_default_hps(self, cfg: Config):
+        super().set_default_hps(cfg)
+        cfg.desc = "Toy: QED"
+        cfg.num_training_steps = 40000
+        cfg.algo.tb.Z_learning_rate = 1e-3
+        cfg.algo.tb.Z_lr_decay = 4000
+        cfg.opt.learning_rate = 1e-4
+        cfg.opt.lr_decay = 2000
+
+    def setup_task(self):
+        self.task = QEDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
 
 
 def main():

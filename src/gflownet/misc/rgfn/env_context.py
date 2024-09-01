@@ -37,6 +37,7 @@ class RGFN_EnvContext(SynthesisEnvContext):
             expl_H_range=expl_H_range,
             allow_explicitly_aromatic=allow_explicitly_aromatic,
         )
+        # NOTE: Use only MACCSFingerprint
         self.building_block_features = (self.building_block_features[0][:, :166], self.building_block_features[1])
         self.num_block_features = 166
 

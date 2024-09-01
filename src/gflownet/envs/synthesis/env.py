@@ -128,7 +128,7 @@ class SynthesisEnv(GraphBuildingEnv):
         # the same parent. To do so, we need to enumerate (unique) parents and count how many there are:
         return len(self.parents(mol))
 
-    def reverse(self, ga: str | Chem.Mol | Graph | None, ra: ReactionAction) -> ReactionAction:
+    def reverse(self, g: str | Chem.Mol | Graph | None, ra: ReactionAction) -> ReactionAction:
         if ra.action == ReactionActionType.Stop:
             return ra
         if ra.action == ReactionActionType.AddFirstReactant:

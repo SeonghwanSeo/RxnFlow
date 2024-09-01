@@ -108,7 +108,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         if fp_nbits_building_block == 1024 and fp_radius_building_block == 2:
             self.building_block_features = env.building_block_features
         else:
-            raise NotImplementedError("I do not check following code block is working")
+            raise NotImplementedError("I implement it but do not check following code block is working")
             print("Fragment Data Construction...")
             self.building_block_features = (
                 np.empty((self.num_building_blocks, 166 + 1024), dtype=np.bool_),
@@ -136,7 +136,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         out = torch.cat([torch.as_tensor(fp, dtype=torch.float32), torch.from_numpy(feat)], dim=-1)
         return out.to(device=device, dtype=torch.float)
 
-    def aidx_to_ReactionAction(self, action_idx: ReactionActionIdx, fwd: bool = True) -> ReactionAction:
+    def aidx_to_GraphAction(self, action_idx: ReactionActionIdx, fwd: bool = True) -> ReactionAction:
         type_idx, rxn_idx, block_idx, block_is_first = action_idx
         if fwd:
             t = self.action_type_order[type_idx]
@@ -170,7 +170,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         else:
             raise ValueError(t)
 
-    def ReactionAction_to_aidx(self, action: ReactionAction) -> ReactionActionIdx:
+    def GraphAction_to_aidx(self, action: ReactionAction) -> ReactionActionIdx:
         type_idx = -1
         for u in [self.action_type_order, self.bck_action_type_order]:
             if action.action in u:
