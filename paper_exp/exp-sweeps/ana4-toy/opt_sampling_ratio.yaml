@@ -1,0 +1,18 @@
+project: analysis4
+program: ./scripts/ana4_toy.py
+name: 10k-sampling_ratio
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - 10k # prefix
+  - ./storage/ana4/ # storage
+  - ./data/envs/toy/ #env_dir
+
+method: grid
+parameters:
+  rev_sampling_ratio:
+    values: [1, 3, 5, 7, 9]
+  num_mc_samples:
+    value: 1

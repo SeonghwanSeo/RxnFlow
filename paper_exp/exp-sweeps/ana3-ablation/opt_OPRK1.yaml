@@ -1,0 +1,17 @@
+project: analysis3
+program: ./scripts/ana3_ablation_singleopt.py
+name: OPRK1
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - OPRK1
+  - ./storage/ana3/ # storage
+
+method: grid
+parameters:
+  trial:
+    values: [0, 1, 2, 3]
+  num_blocks:
+    values: [100, 1000, 10000, 100000, 1000000]

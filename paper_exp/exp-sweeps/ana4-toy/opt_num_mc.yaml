@@ -1,0 +1,18 @@
+project: analysis4
+program: ./scripts/ana4_toy.py
+name: 10k-num_mc
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - 10k # prefix
+  - ./storage/ana4/ # storage
+  - ./data/envs/toy/ #env_dir
+
+method: grid
+parameters:
+  rev_sampling_ratio:
+    value: 9
+  num_mc_samples:
+    values: [2, 3, 4, 5]

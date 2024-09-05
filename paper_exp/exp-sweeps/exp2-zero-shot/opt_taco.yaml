@@ -1,0 +1,16 @@
+project: exp2
+program: ./scripts/exp2_zero_shot.py
+name: tacogfn-reward
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - tacogfn_reward # 1, prefix
+  - ./storage/exp2 # 2, storage
+  - ./data/envs/enamine_all/ # 3, env_dir
+
+method: grid
+parameters:
+  proxy:
+    value: [TacoGFN_Reward, QVina, CrossDocked2020]

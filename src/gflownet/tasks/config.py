@@ -31,15 +31,15 @@ class SBDDConfig:
 
     Attributes
     ----------
-    proxy: str (qvina | unidock)
-        Proxy name from PharmacoNet
+    proxy: tuple[str, str, str] (proxy_name, docking_program, train_dataset)
+        Proxy Key from PharmacoNet
     pocket_db: str (path)
         Index file including pocket key-filepath pairs (e.g. 10gs,./data/protein/10gs.pdb)
     pocket_dim: int
         Pocket embedding dimension
     """
 
-    proxy: str = MISSING
+    proxy: tuple[str, str, str] = MISSING
     pocket_db: str = MISSING
     pocket_dim: int = 128
 

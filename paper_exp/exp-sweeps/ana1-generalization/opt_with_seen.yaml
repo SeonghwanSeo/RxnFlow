@@ -1,0 +1,16 @@
+project: analysis1
+program: ./scripts/ana1_qed_opt.py
+name: 'qed-opt'
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - qed # prefix
+  - ./storage/ana1/ # storage
+  - ./data/envs/generalization/seen/ #env_dir
+
+method: grid
+parameters:
+  sampling_beta:
+    values: [1, 10, 20, 30]
