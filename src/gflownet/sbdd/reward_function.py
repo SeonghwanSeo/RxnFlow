@@ -48,24 +48,25 @@ class TacoGFNRewardFunction(RewardFunction):
 
     def run(self, mols: list[RDMol], pocket_key: str | list[str]) -> tuple[Tensor, dict[str, Tensor]]:
         """TacoGFN Reward Function
-        https://github.com/tsa87/TacoGFN-SBDD/blob/main/src/tacogfn/tasks/pharmaco_frag.py
         r_aff:
             - 0                             (0 <= affinity)
-            - -affinity * 0.04              (-7 <= affinity <= 0)
-            - (-affinity - 7) * 0.2 + 0.28  (-12 <= affinity <= -7)
-            - 1.28                          (affinity <= -12)
+            - -affinity * 0.04              (-8 <= affinity <= 0)
+            - (-affinity - 8) * 0.2 + 0.32  (-13 <= affinity <= -8)
+            - 1.32                          (affinity <= -13)
         r_qed:
             - qed * 0.7                     (0 <= qed <= 0.7)
             - 1.0                           (0.7 <= qed)
         r_sa:
             - sa * 0.8                      (0 <= sa <= 0.8)
             - 1.0                           (0.8 <= sa)
-        r = 3 * r_aff * r_qed * r_sa
+        HAC:
+            - num_heavy_atoms
+        r = 3 * r_aff * r_qed * r_sa / HAC^(1/3)
         """
 
         info = {}
         affinity = info["docking"] = self.mol2proxy(mols, pocket_key)
-        r_aff = ((affinity + 7).clip(-5, 0) + 0.2 * affinity.clip(min=-7)) / -5
+        r_aff = -1 * (0.2 * (affinity + 8).clip(-5, 0) + 0.04 * affinity.clip(min=-8))
         if "qed" in self.objectives:
             info["qed"] = qed = chem_metrics.mol2qed(mols)
             r_qed = (qed / 0.7).clip(0, 1)
@@ -76,7 +77,8 @@ class TacoGFNRewardFunction(RewardFunction):
             r_sa = (sa / 0.8).clip(0, 1)
         else:
             r_sa = 1
-        reward = 3 * r_aff * r_qed * r_sa
+        num_heavy_atoms = torch.tensor([mol.GetNumHeavyAtoms() for mol in mols], dtype=torch.float32)
+        reward = 3 * r_aff * r_qed * r_sa / (num_heavy_atoms ** (1 / 3))
         return reward, info
 
     def mol2proxy(self, mols: list[RDMol], pocket_key: str | list[str]) -> Tensor:

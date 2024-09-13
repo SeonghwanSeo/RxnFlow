@@ -50,8 +50,8 @@ class RGFN(nn.Module):
         num_glob_final = num_emb * 2  # *2 for concatenating global mean pooling & node embeddings
 
         self._action_type_to_num_inputs_outputs = {
-            ReactionActionType.AddFirstReactant: (num_glob_final, self.env_ctx.num_building_blocks),
             ReactionActionType.Stop: (num_glob_final, 1),
+            ReactionActionType.AddFirstReactant: (num_glob_final, num_emb_block),
             ReactionActionType.ReactUni: (num_glob_final, env_ctx.num_unimolecular_rxns),
             ReactionActionType.ReactBi: (num_glob_final, env_ctx.num_bimolecular_rxns * 2),
         }
@@ -64,14 +64,15 @@ class RGFN(nn.Module):
         self.mlps = nn.ModuleDict(mlps)
 
         self.second_step_mlp = mlp(
-            num_glob_final + env_ctx.num_bimolecular_rxns * 2 + num_emb_block,
+            num_glob_final + env_ctx.num_bimolecular_rxns * 2,
             num_emb,
-            1,
+            num_emb_block,
             cfg.model.graph_transformer.num_mlp_layers,
         )
 
         self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, cfg.model.graph_transformer.num_mlp_layers)
         self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
+        self.gelu = nn.GELU()
 
     def logZ(self, cond: torch.Tensor) -> torch.Tensor:
         return self._logZ(cond)
@@ -92,8 +93,9 @@ class RGFN(nn.Module):
     def hook_stop(self, emb: torch.Tensor):
         return self.mlps[ReactionActionType.Stop.cname](emb)
 
-    def hook_add_first_reactant(self, emb: torch.Tensor):
-        return self.mlps[ReactionActionType.AddFirstReactant.cname](emb)
+    def hook_add_first_reactant(self, emb: torch.Tensor, block_emb: torch.Tensor):
+        emb = self.gelu(self.mlps[ReactionActionType.AddFirstReactant.cname](emb))  # N_graph, F
+        return torch.matmul(emb, block_emb.T)
 
     def hook_reactbi_primary(self, emb: torch.Tensor, mask: torch.Tensor):
         logit = self.mlps[ReactionActionType.ReactBi.cname](emb)
@@ -103,17 +105,11 @@ class RGFN(nn.Module):
     def hook_reactbi_secondary(
         self, single_emb: torch.Tensor, rxn_id: int, block_is_first: bool, block_emb: torch.Tensor
     ):
-        N_block = block_emb.size(0)
-        mlp = self.second_step_mlp
-
         # Convert `rxn_id` to a one-hot vector
-        rxn_features = torch.zeros(N_block, self.env_ctx.num_bimolecular_rxns * 2, device=single_emb.device)
-        rxn_features[:, rxn_id * 2 + int(block_is_first)] = 1
-
-        _emb = single_emb.unsqueeze(0).repeat(N_block, 1)
-        expanded_input = torch.cat((_emb, block_emb, rxn_features), dim=-1)
-        logits = mlp(expanded_input).squeeze(-1)
-        return logits
+        rxn_features = torch.zeros(self.env_ctx.num_bimolecular_rxns * 2, device=single_emb.device)
+        rxn_features[rxn_id * 2 + int(block_is_first)] = 1
+        _emb = self.gelu(self.second_step_mlp(torch.cat([single_emb, rxn_features])))
+        return torch.matmul(_emb, block_emb.T)
 
     def single_hook_reactbi_primary(self, emb: torch.Tensor, rxn_id: int, block_is_first: bool):
         rxn_id = rxn_id * 2 + int(block_is_first)
@@ -124,6 +120,5 @@ class RGFN(nn.Module):
     ):
         rxn_features = torch.zeros(self.env_ctx.num_bimolecular_rxns * 2, device=emb.device)
         rxn_features[rxn_id * 2 + int(block_is_first)] = 1
-
-        expanded_input = torch.cat((emb, block_emb, rxn_features), dim=-1)
-        return self.second_step_mlp(expanded_input).view(-1)
+        _emb = self.gelu(self.second_step_mlp(torch.cat([emb, rxn_features])))
+        return torch.matmul(_emb, block_emb).view(1)

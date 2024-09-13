@@ -64,9 +64,10 @@ class HierarchicalReactionActionCategorical(GraphActionCategorical):
     def sample_initial_state(self, sample_temp: float = 1.0):
         # NOTE: The first action in a trajectory is always AddFirstReactant (select a building block)
         type_idx = self.types.index(ReactionActionType.AddFirstReactant)
+        block_emb = self.model.block_mlp(self.ctx.get_block_data(list(range(self.ctx.num_building_blocks)), self.dev))
 
         # NOTE: PlaceHolder
-        logits = self.model.hook_add_first_reactant(self.emb)
+        logits = self.model.hook_add_first_reactant(self.emb, block_emb)
         self.logits.append(logits)
 
         # NOTE: Softmax temperature used when sampling
@@ -213,9 +214,10 @@ class HierarchicalReactionActionCategorical(GraphActionCategorical):
 
     def log_prob_initial(self, actions: list[ReactionActionIdx], state_indices: torch.Tensor) -> torch.Tensor:
         emb = self.emb[state_indices]
+        block_emb = self.model.block_mlp(self.ctx.get_block_data(list(range(self.ctx.num_building_blocks)), self.dev))
         log_prob = torch.full((emb.shape[0],), -torch.inf, device=self.dev)
 
-        logits = self.model.hook_add_first_reactant(emb)
+        logits = self.model.hook_add_first_reactant(emb, block_emb)
         max_logits = logits.detach().max(dim=-1, keepdim=True).values
         logZ = torch.logsumexp(logits - max_logits, dim=-1)
 

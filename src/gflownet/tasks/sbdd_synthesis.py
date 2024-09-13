@@ -65,7 +65,26 @@ class SBDDSampler(SynthesisGFNSampler):
         n: int,
         calc_reward: bool = True,
     ) -> list[dict[str, Any]]:
-        self.sampling_model.pocket_embed = None
+        """
+        samples = sampler.sample(200, calc_reward = False)
+        samples[0] = {'smiles': <smiles>, 'traj': <traj>, 'info': <info>}
+        samples[0]['traj'] = [
+            (('Start Block',), smiles1),        # None    -> smiles1
+            (('ReactUni', template), smiles2),  # smiles1 -> smiles2
+            ...                                 # smiles2 -> ...
+        ]
+        samples[0]['info'] = {'beta': <beta>, ...}
+
+
+        samples = sampler.sample(200, calc_reward = True)
+        samples[0]['info'] = {
+            'beta': <beta>,
+            'reward': <reward>,
+            'reward_qed': <qed>,
+            'reward_docking': <proxy>,
+        }
+        """
+        self.model.pocket_embed = None
         self.task.set_protein(str(protein_path), center)
         return self.sample(n, calc_reward)
 
