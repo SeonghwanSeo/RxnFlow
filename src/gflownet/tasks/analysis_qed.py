@@ -1,5 +1,4 @@
 import torch
-from rdkit.Chem import QED
 
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
@@ -8,17 +7,7 @@ from gflownet.base.base_generator import SynthesisGFNSampler
 from gflownet.base.base_trainer import SynthesisTrainer
 from gflownet.trainer import FlatRewards
 from gflownet.base.base_task import BaseTask
-
-
-def safe(f, x, default):
-    try:
-        return f(x)
-    except Exception:
-        return default
-
-
-def mol2qed(mols: list[RDMol], default=0):
-    return torch.tensor([safe(QED.qed, mol, default) for mol in mols])
+from gflownet.misc.chem_metrics import mol2qed
 
 
 class QEDTask(BaseTask):

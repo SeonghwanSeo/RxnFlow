@@ -10,12 +10,13 @@ from gflownet.tasks.sbdd_synthesis import SBDDSampler
 from _exp2_constant import TEST_POCKET_DIR, TEST_POCKET_CENTER_INFO
 
 
-def set_seed(seed: int):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
+torch.manual_seed(1)
+torch.cuda.manual_seed(1)
+torch.cuda.manual_seed_all(1)
+np.random.seed(1)
+random.seed(1)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 
 if __name__ == "__main__":
@@ -36,7 +37,6 @@ if __name__ == "__main__":
         key = pocket_file.stem
         center = TEST_POCKET_CENTER_INFO[key]
 
-        set_seed(1)
         st = time.time()
         res = sampler.sample_against_pocket(pocket_file, center, 100, calc_reward=False)
         runtime.append(time.time() - st)

@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from rdkit import Chem, DataStructs
+from rdkit import Chem
 from rdkit.Chem import QED
 
 from collections.abc import Callable
@@ -11,42 +11,12 @@ from torch import Tensor
 
 from gflownet.config import Config
 from gflownet.trainer import FlatRewards
-from gflownet.misc.unidock.utils import unidock_scores
-from gflownet.utils import sascore
+from gflownet.misc.chem_metrics import mol2qed, mol2sascore, mol2vina
 
 from gflownet.base.base_task import BaseTask, BaseMOOTask
 
 
-def calc_diversity(smiles_list: list[str]):
-    x = [Chem.RDKFingerprint(Chem.MolFromSmiles(smiles)) for smiles in smiles_list]
-    s = np.array([DataStructs.BulkTanimotoSimilarity(i, x) for i in x])
-    n = s.shape[0]
-    return 1 - (np.sum(s) - n) / (n**2 - n)
-
-
-def safe(f, x, default):
-    try:
-        return f(x)
-    except Exception:
-        return default
-
-
-def mol2sas(mols: list[RDMol], default=10):
-    sas = torch.tensor([safe(sascore.calculateScore, mol, default) for mol in mols])
-    sas = (10 - sas) / 9  # Turn into a [0-1] reward
-    return sas
-
-
-def mol2qed(mols: list[RDMol], default=0):
-    return torch.tensor([safe(QED.qed, mol, default) for mol in mols])
-
-
-def mol2vina(mols: list[RDMol], protein_path: str, center: tuple[float, float, float]):
-    vina_score = unidock_scores(mols, protein_path, center)
-    return torch.tensor(vina_score, dtype=torch.float).neg().clip(min=0.0)
-
-
-aux_tasks = {"qed": mol2qed, "sa": mol2sas, "vina": mol2vina}
+aux_tasks = {"qed": mol2qed, "sa": mol2sascore, "vina": mol2vina}
 
 
 class UniDockTask(BaseTask):

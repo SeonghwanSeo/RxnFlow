@@ -109,11 +109,11 @@ class SBDDRewardFunction(RewardFunction):
             - -z * 0.05                     (0 <= z <= 4)
             - -z * 0.2 + 0.2                (z <= 0)
         r_qed:
-            - qed * 0.7                     (0 <= qed <= 0.7)
-            - 1.0                           (0.7 <= qed)
+            - qed * 2                       (0 <= qed <= 0.5)
+            - 1.0                           (0.5 <= qed)
         r_sa:
-            - sa * 0.8                      (0 <= sa <= 0.8)
-            - 1.0                           (0.8 <= sa)
+            - sa * 2                        (0 <= sa <= 0.5)
+            - 1.0                           (0.5 <= sa)
         r = r_aff * r_qed * r_sa
         """
         info = {}
@@ -123,12 +123,12 @@ class SBDDRewardFunction(RewardFunction):
 
         if "qed" in self.objectives:
             info["qed"] = qed = chem_metrics.mol2qed(mols)
-            r_qed = (qed / 0.7).clip(0, 1)
+            r_qed = (qed / 0.5).clip(0, 1)
         else:
             r_qed = 1
         if "sa" in self.objectives:
             info["sa"] = sa = chem_metrics.mol2sascore(mols)
-            r_sa = (sa / 0.8).clip(0, 1)
+            r_sa = (sa / 0.5).clip(0, 1)
         else:
             r_sa = 1
         reward = r_aff * r_qed * r_sa

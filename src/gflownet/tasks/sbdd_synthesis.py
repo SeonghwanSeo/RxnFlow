@@ -66,17 +66,17 @@ class SBDDSampler(SynthesisGFNSampler):
         calc_reward: bool = True,
     ) -> list[dict[str, Any]]:
         """
-        samples = sampler.sample(200, calc_reward = False)
+        samples = sampler.sample_against_pocket(<pocket_file>, <center>, <n>, calc_reward = False)
         samples[0] = {'smiles': <smiles>, 'traj': <traj>, 'info': <info>}
         samples[0]['traj'] = [
-            (('Start Block',), smiles1),        # None    -> smiles1
-            (('ReactUni', template), smiles2),  # smiles1 -> smiles2
+            (('StartingBlock',), smiles1),        # None    -> smiles1
+            (('UniMolecularReaction', template), smiles2),  # smiles1 -> smiles2
             ...                                 # smiles2 -> ...
         ]
         samples[0]['info'] = {'beta': <beta>, ...}
 
 
-        samples = sampler.sample(200, calc_reward = True)
+        samples = sampler.sample_against_pocket(..., calc_reward = True)
         samples[0]['info'] = {
             'beta': <beta>,
             'reward': <reward>,

@@ -374,6 +374,10 @@ class SamplingIterator(IterableDataset):
             mols = [self.ctx.object_to_log_repr(t["result"]) if t["is_valid"] else "" for t in trajs]
         else:
             mols = [""] * len(trajs)
+        if hasattr(self.ctx, "traj_to_log_repr"):
+            trajs = [self.ctx.traj_to_log_repr(t["traj"]) if t["is_valid"] else "" for t in trajs]
+        else:
+            trajs = [""] * len(trajs)
 
         flat_rewards = flat_rewards.reshape((len(flat_rewards), -1)).data.numpy().tolist()
         rewards = rewards.data.numpy().tolist()
@@ -382,7 +386,7 @@ class SamplingIterator(IterableDataset):
         logged_keys = [k for k in sorted(cond_info.keys()) if k not in ["encoding", "preferences", "focus_dir"]]
 
         data = [
-            [mols[i], rewards[i]]
+            [mols[i], rewards[i], trajs[i]]
             + flat_rewards[i]
             + preferences[i]
             + focus_dir[i]
@@ -391,7 +395,7 @@ class SamplingIterator(IterableDataset):
         ]
 
         data_labels = (
-            ["smi", "r"]
+            ["smi", "r", "traj"]
             + [f"fr_{i}" for i in range(len(flat_rewards[0]))]
             + [f"pref_{i}" for i in range(len(preferences[0]))]
             + [f"focus_{i}" for i in range(len(focus_dir[0]))]

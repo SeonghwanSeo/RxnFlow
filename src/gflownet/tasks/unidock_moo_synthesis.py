@@ -2,9 +2,10 @@ from pathlib import Path
 import numpy as np
 
 from gflownet.config import Config, init_empty
+from gflownet.misc.chem_metrics import calc_diversity
 
 from gflownet.base.base_trainer import SynthesisTrainer, moo_trainer
-from gflownet.tasks.unidock_task import UniDockMOOTask, calc_diversity
+from gflownet.tasks.unidock_task import UniDockMOOTask
 
 
 @moo_trainer

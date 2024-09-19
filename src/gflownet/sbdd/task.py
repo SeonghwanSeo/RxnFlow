@@ -56,8 +56,6 @@ class SBDDTask(BaseTask):
         return cond_info
 
     def _load_task_models(self) -> dict[str, nn.Module]:
-        if self.cfg.task.sbdd.proxy == "qvina-CrossDocked2020":
-            self.cfg.task.sbdd.proxy = ("TacoGFN_Reward", "QVina", "CrossDocked2020")
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.sbdd.proxy
         self.proxy_model = proxy_model
         proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, "train", self.cfg.device)

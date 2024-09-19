@@ -141,7 +141,7 @@ class SynthesisGFNSampler:
             for sample in samples:
                 out = {
                     "smiles": Chem.MolToSmiles(sample["result_rdmol"]),
-                    "traj": self.ctx.traj_to_log_repr(sample["traj"]),
+                    "traj": self.ctx.read_traj(sample["traj"]),
                     "info": sample["info"],
                 }
                 yield out

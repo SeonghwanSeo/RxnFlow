@@ -1,3 +1,5 @@
+import json
+from collections import OrderedDict
 from tqdm import tqdm
 import numpy as np
 from numpy.typing import NDArray
@@ -328,10 +330,24 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         except Exception:
             return ""
 
-    def traj_to_log_repr(
-        self, traj: list[tuple[Graph | Chem.Mol, ReactionAction]]
-    ) -> list[tuple[tuple[str, ...], str]]:
-        """Convert a trajectory of (Graph, Action) to a trajectory of string representation"""
+    def traj_to_log_repr(self, traj: list[tuple[Graph | Chem.Mol, ReactionAction]]) -> str:
+        """Convert a trajectory of (Graph, Action) to a trajectory of json representation"""
+        traj_logs = self.read_traj(traj)
+        repr_obj = []
+        for i, (action_repr, smiles) in enumerate(traj_logs):
+            repr_obj.append(
+                OrderedDict(
+                    [
+                        ("step", i),
+                        ("action", action_repr),
+                        ("smiles", smiles),
+                    ]
+                )
+            )
+        return json.dumps(repr_obj, sort_keys=False)
+
+    def read_traj(self, traj: list[tuple[Graph | Chem.Mol, ReactionAction]]) -> list[tuple[tuple[str, ...], str]]:
+        """Convert a trajectory of (Graph, Action) to a trajectory of tuple representation"""
         repr = []
         action_repr = tuple()
         smiles = ""
@@ -342,13 +358,13 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                 repr.append((action_repr, smiles))
             if action.action is ReactionActionType.AddFirstReactant:
                 assert action.block is not None
-                action_repr = ("Start Block", action.block)
+                action_repr = ("StartingBlock", action.block)
             elif action.action is ReactionActionType.ReactUni:
                 assert action.reaction is not None
-                action_repr = ("Uni-Molecular Reaction", action.reaction.template)
+                action_repr = ("UniMolecularReaction", action.reaction.template)
             elif action.action is ReactionActionType.ReactBi:
                 assert action.reaction is not None and action.block is not None
-                action_repr = ("Bi-Molecular Reaction", action.reaction.template, action.block)
+                action_repr = ("BiMolecularReaction", action.reaction.template, action.block)
             elif action.action is ReactionActionType.Stop:
                 action_repr = ("Stop",)
             else:

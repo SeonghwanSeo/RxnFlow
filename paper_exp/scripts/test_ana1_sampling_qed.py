@@ -1,10 +1,19 @@
 import time
 from pathlib import Path
+import torch
+import random
 import numpy as np
 from gflownet.config import Config, init_empty
 from gflownet.tasks.analysis_qed import QEDSynthesisSampler
 import pickle
 
+torch.manual_seed(1)
+torch.cuda.manual_seed(1)
+torch.cuda.manual_seed_all(1)
+np.random.seed(1)
+random.seed(1)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 if __name__ == "__main__":
     ckpt_dir = Path("./release-ckpt/generalization-qed")
@@ -24,9 +33,12 @@ if __name__ == "__main__":
             config = init_empty(Config())
             config.env_dir = str(env_dir)
             config.algo.global_batch_size = 200
-            config.algo.action_sampling.num_sampling_add_first_reactant = 1_000
-            config.algo.action_sampling.max_sampling_reactbi = 1_000
-            config.algo.action_sampling.sampling_ratio_reactbi = 1_000 / 500_000
+            config.algo.action_sampling.num_sampling_add_first_reactant = 10_000
+            config.algo.action_sampling.max_sampling_reactbi = 10_000
+            if label == "all":
+                config.algo.action_sampling.sampling_ratio_reactbi = 10_000 / 1_000_000
+            else:
+                config.algo.action_sampling.sampling_ratio_reactbi = 10_000 / 500_000
 
             sampler = QEDSynthesisSampler(config, checkpoint_path, "cuda")
 

@@ -12,21 +12,20 @@ PROTEIN_PATH = "./data/experiments/KRAS-G12C/6oim_protein.pdb"
 POCKET_CENTER = (1.872, -8.260, -1.361)
 
 
-def set_seed(seed: int):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+torch.manual_seed(1)
+torch.cuda.manual_seed(1)
+torch.cuda.manual_seed_all(1)
+np.random.seed(1)
+random.seed(1)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 
 if __name__ == "__main__":
     env_root_dir = "./data/envs/enamine_all/"
     env_low_tpsa_dir = "./data/envs/restricted_low_tpsa/"
 
-    checkpoint_path = "./release-ckpt/zero_shot_tacogfn_reward/model_state.pt"
+    ckpt_path = Path("./release-ckpt/zero_shot_tacogfn_reward/model_state.pt")
     save_dir = Path("./analysis-result/ana2/")
 
     save_dir.mkdir(parents=True)
@@ -46,9 +45,8 @@ if __name__ == "__main__":
             config.env_dir = env_root_dir
 
         # NOTE: Run
-        sampler = SBDDSampler(config, checkpoint_path, "cuda")
-        set_seed(0)
-        res = sampler.sample_against_pocket(PROTEIN_PATH, POCKET_CENTER, 1000, calc_reward=False)
+        sampler = SBDDSampler(config, ckpt_path, "cuda")
+        res = sampler.sample_against_pocket(PROTEIN_PATH, POCKET_CENTER, 500, calc_reward=False)
         with save_file.open("w") as w:
             w.write(",SMILES,QED,TPSA\n")
             for idx, sample in enumerate(res):
