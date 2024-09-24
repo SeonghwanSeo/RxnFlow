@@ -25,7 +25,7 @@ TARGET_CENTER = {
 
 TRAINER_DICT: dict[str, type[BaseTrainer]] = {
     "frag": UniDockMOOFragTrainer,
-    "synthesis": UniDockMOOSynthesisTrainer,
+    "rxnflow": UniDockMOOSynthesisTrainer,
     "synflownet": UniDockMOOSynFlowNetTrainer,
     "rgfn": UniDockMOORGFNTrainer,
 }

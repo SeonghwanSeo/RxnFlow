@@ -1,15 +1,15 @@
-project: exp1
+project: rxnflow_exp1
 program: ./scripts/exp1_singleopt.py
-name: synflownet
+name: rxnflow
 
 command:
   - ${env}
   - python
   - ${program}
-  - synflownet # model
-  - synflownet # prefix
-  - ./storage/exp1 # storage
-  - ./data/envs/synflownet_6k/ #env_dir
+  - rxnflow # model
+  - rxnflow # prefix
+  - ./storage/exp1/ # storage
+  - ./data/envs/enamine_all/ #env_dir
 
 method: grid
 parameters:

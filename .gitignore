@@ -6,12 +6,14 @@ data/experiments/
 logs/
 debug/
 .github/
+experiments/analysis
+experiments/release-ckpt
 storage*
 job*.sh
-slurmlog/
+slurm-*
 wandb*
-nogit/
-paper_exp/
+nogit*/
+unidock_2024*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

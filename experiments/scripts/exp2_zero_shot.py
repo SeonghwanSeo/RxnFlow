@@ -7,19 +7,13 @@ from _exp2_constant import POCKET_DB_PATH
 from gflownet.tasks.sbdd_synthesis import default_config, SBDDTrainer
 
 
-def set_config(env_dir, proxy, prefix):
+def set_config(env_dir, proxy):
     proxy_model, proxy_docking, proxy_dataset = proxy
     config = default_config(env_dir, POCKET_DB_PATH, proxy_model, proxy_docking, proxy_dataset)
-    config.task.sbdd.pocket_db = 64
-    if "-all" in prefix:
-        config.algo.action_sampling.sampling_ratio_reactbi = 1
-        config.algo.action_sampling.num_sampling_add_first_reactant = 1_200_000
-        config.algo.action_sampling.max_sampling_reactbi = 1_200_000
-    else:
-        config.algo.action_sampling.num_mc_sampling = 1
-        config.algo.action_sampling.sampling_ratio_reactbi = 0.01
-        config.algo.action_sampling.num_sampling_add_first_reactant = 12_000
-        config.algo.action_sampling.max_sampling_reactbi = 12_000
+    config.algo.action_sampling.num_mc_sampling = 1
+    config.algo.action_sampling.sampling_ratio_reactbi = 0.01
+    config.algo.action_sampling.num_sampling_add_first_reactant = 12_000
+    config.algo.action_sampling.max_sampling_reactbi = 12_000
     return config
 
 
@@ -30,7 +24,7 @@ def main():
 
     wandb.init(group=prefix)
     proxy = wandb.config["proxy"]
-    config = set_config(env_dir, proxy, prefix)
+    config = set_config(env_dir, proxy)
     config.log_dir = os.path.join(storage, prefix, "-".join(proxy))
 
     # NOTE: Run

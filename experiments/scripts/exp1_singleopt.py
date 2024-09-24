@@ -17,22 +17,17 @@ def set_config(model, prefix, code):
         opt_sa = "-sa" in prefix
         config = moo_config(protein_path, protein_center, opt_qed, opt_sa)
 
-    elif model in ["synthesis", "synflownet", "rgfn"]:
+    elif model in ["rxnflow", "synflownet", "rgfn"]:
         from gflownet.tasks.unidock_moo_synthesis import moo_config
 
         env_dir = sys.argv[4]
         config = moo_config(env_dir, protein_path, protein_center)
 
-        if model == "synthesis":
-            if "-all" in prefix:
-                config.algo.action_sampling.sampling_ratio_reactbi = 1
-                config.algo.action_sampling.num_sampling_add_first_reactant = 1_200_000
-                config.algo.action_sampling.max_sampling_reactbi = 1_200_000
-            else:
-                config.algo.action_sampling.num_mc_sampling = 1
-                config.algo.action_sampling.sampling_ratio_reactbi = 0.01
-                config.algo.action_sampling.num_sampling_add_first_reactant = 12_000
-                config.algo.action_sampling.max_sampling_reactbi = 12_000
+        if model == "rxnflow":
+            config.algo.action_sampling.num_mc_sampling = 1
+            config.algo.action_sampling.sampling_ratio_reactbi = 0.01
+            config.algo.action_sampling.num_sampling_add_first_reactant = 12_000
+            config.algo.action_sampling.max_sampling_reactbi = 12_000
     else:
         raise ValueError
     return config

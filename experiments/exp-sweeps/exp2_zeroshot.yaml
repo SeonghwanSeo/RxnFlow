@@ -1,4 +1,4 @@
-project: exp2
+project: rxnflow_exp2
 program: ./scripts/exp2_zero_shot.py
 name: tacogfn-reward
 

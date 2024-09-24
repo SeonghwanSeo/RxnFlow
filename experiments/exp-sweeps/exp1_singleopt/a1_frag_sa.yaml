@@ -1,15 +1,14 @@
-project: exp1
+project: rxnflow_exp1
 program: ./scripts/exp1_singleopt.py
-name: rgfn
+name: frag-sa
 
 command:
   - ${env}
   - python
   - ${program}
-  - rgfn # model
-  - rgfn # prefix
-  - ./storage/exp1 # storage
-  - ./data/envs/rgfn_350/ #env_dir
+  - frag # model
+  - frag-qed-sa # prefix
+  - ./storage/exp1/ # storage
 
 method: grid
 parameters:

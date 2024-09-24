@@ -1,5 +1,5 @@
-project: analysis3
-program: ./scripts/ana3_ablation_singleopt.py
+project: rxnflow_exp5
+program: ./scripts/exp5_ablation.py
 name: OPRK1
 
 command:
@@ -7,7 +7,7 @@ command:
   - python
   - ${program}
   - OPRK1
-  - ./storage/ana3/ # storage
+  - ./storage/exp5/ # storage
 
 method: grid
 parameters:

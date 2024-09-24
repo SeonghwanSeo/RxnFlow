@@ -1,15 +1,15 @@
-project: exp1
+project: rxnflow_exp1
 program: ./scripts/exp1_singleopt.py
-name: 'synthesis'
+name: rgfn
 
 command:
   - ${env}
   - python
   - ${program}
-  - synthesis # model
-  - synthesis # prefix
-  - ./storage/exp1/ # storage
-  - ./data/envs/enamine_all/ #env_dir
+  - rgfn # model
+  - rgfn # prefix
+  - ./storage/exp1 # storage
+  - ./data/envs/rgfn_350/ #env_dir
 
 method: grid
 parameters:

@@ -22,8 +22,8 @@ torch.backends.cudnn.benchmark = False
 if __name__ == "__main__":
     env_root_dir = "./data/envs/enamine_all/"
     ckpt_path = Path("./release-ckpt/zero_shot_tacogfn_reward/model_state.pt")
-    save_path = Path("./analysis-result/exp2/")
-    save_path.mkdir(exist_ok=True)
+    save_path = Path("./analysis/result/exp2/")
+    save_path.mkdir(exist_ok=True, parents=True)
     config = init_empty(Config())
     config.env_dir = env_root_dir
     config.algo.global_batch_size = 100
@@ -33,7 +33,7 @@ if __name__ == "__main__":
     # NOTE: Run
     runtime = []
     sampler = SBDDSampler(config, ckpt_path, "cuda")
-    for pocket_file in tqdm(list(Path(TEST_POCKET_DIR).iterdir())):
+    for pocket_file in tqdm(sorted(list(Path(TEST_POCKET_DIR).iterdir()))):
         key = pocket_file.stem
         center = TEST_POCKET_CENTER_INFO[key]
 

@@ -17,7 +17,7 @@ class SBDDTrainer(SynthesisTrainer):
         cfg.desc = "Proxy-QED optimization with proxy model"
         cfg.validate_every = 0
         cfg.task.moo.objectives = ["docking", "qed"]
-        cfg.num_training_steps = 10_000
+        cfg.num_training_steps = 40_000
 
     def setup_task(self):
         self.task: SBDDTask = SBDDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)

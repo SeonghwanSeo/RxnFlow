@@ -1,13 +1,13 @@
-project: exp1
+project: rxnflow_exp1
 program: ./scripts/exp1_singleopt.py
-name: 'frag-sa'
+name: frag
 
 command:
   - ${env}
   - python
   - ${program}
   - frag # model
-  - frag-qed-sa # prefix
+  - frag-qed # prefix
   - ./storage/exp1/ # storage
 
 method: grid

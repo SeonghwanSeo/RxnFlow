@@ -1,14 +1,15 @@
-project: exp1
+project: rxnflow_exp1
 program: ./scripts/exp1_singleopt.py
-name: 'frag'
+name: synflownet
 
 command:
   - ${env}
   - python
   - ${program}
-  - frag # model
-  - frag-qed # prefix
-  - ./storage/exp1/ # storage
+  - synflownet # model
+  - synflownet # prefix
+  - ./storage/exp1 # storage
+  - ./data/envs/synflownet_6k/ #env_dir
 
 method: grid
 parameters:

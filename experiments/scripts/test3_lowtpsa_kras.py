@@ -22,11 +22,10 @@ torch.backends.cudnn.benchmark = False
 
 
 if __name__ == "__main__":
-    env_root_dir = "./data/envs/enamine_all/"
+    env_all_dir = "./data/envs/enamine_all/"
     env_low_tpsa_dir = "./data/envs/restricted_low_tpsa/"
-
     ckpt_path = Path("./release-ckpt/zero_shot_tacogfn_reward/model_state.pt")
-    save_dir = Path("./analysis-result/ana2/")
+    save_dir = Path("./analysis/result/exp3/")
 
     save_dir.mkdir(parents=True)
     for env_name in ["all", "low_tpsa"]:
@@ -42,7 +41,7 @@ if __name__ == "__main__":
             config.algo.action_sampling.max_sampling_reactbi = 12_000
             config.env_dir = env_low_tpsa_dir
         else:
-            config.env_dir = env_root_dir
+            config.env_dir = env_all_dir
 
         # NOTE: Run
         sampler = SBDDSampler(config, ckpt_path, "cuda")

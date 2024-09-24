@@ -339,23 +339,17 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                 OrderedDict(
                     [
                         ("step", i),
-                        ("action", action_repr),
                         ("smiles", smiles),
+                        ("action", action_repr),
                     ]
                 )
             )
         return json.dumps(repr_obj, sort_keys=False)
 
-    def read_traj(self, traj: list[tuple[Graph | Chem.Mol, ReactionAction]]) -> list[tuple[tuple[str, ...], str]]:
+    def read_traj(self, traj: list[tuple[Graph | Chem.Mol, ReactionAction]]) -> list[tuple[str, tuple[str, ...]]]:
         """Convert a trajectory of (Graph, Action) to a trajectory of tuple representation"""
         repr = []
-        action_repr = tuple()
-        smiles = ""
-        for i, (mol, action) in enumerate(traj):
-            if i > 0:
-                mol = self.get_mol(mol)
-                smiles = Chem.MolToSmiles(mol)
-                repr.append((action_repr, smiles))
+        for mol, action in traj:
             if action.action is ReactionActionType.AddFirstReactant:
                 assert action.block is not None
                 action_repr = ("StartingBlock", action.block)
@@ -369,7 +363,8 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                 action_repr = ("Stop",)
             else:
                 raise ValueError(action.action)
-        repr.append((action_repr, smiles))
+            smiles = Chem.MolToSmiles(self.get_mol(mol))
+            repr.append((smiles, action_repr))
         return repr
 
     def create_masks(self, smi: str | Chem.Mol | Graph, fwd: bool = True, unimolecular: bool = True) -> np.ndarray:

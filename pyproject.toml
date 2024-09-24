@@ -3,12 +3,12 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "gflownet"
+name = "rxnflow"
+version = "0.0.1"
 readme = "README.md"
 classifiers = ["Operating System :: OS Independent", "Programming Language :: Python", "Programming Language :: Python :: 3"]
 keywords = ["gflownet"]
 requires-python = ">=3.10,<3.11"
-dynamic = ["version"]
 dependencies = [
     "numpy==1.26.4",
     "torch==2.3.1",
@@ -22,10 +22,11 @@ dependencies = [
     "tensorboard",
     "gitpython",
     "botorch",
+    "pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git",
 ]
 
 [project.optional-dependencies]
-icml = [
+unidock = [
     "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
 ]
 
@@ -59,4 +60,3 @@ reportGeneralTypeIssues = "warning"
 reportDeprecated = "warning"
 reportUnusedVariable = false
 reportUnusedImport = false
-

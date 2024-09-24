@@ -24,9 +24,11 @@ def main():
     env_dir = sys.argv[3]
 
     wandb.init(group=prefix)
-    rev_sampling_ratio = wandb.config["rev_sampling_ratio"]
+    rev_sampling_ratio, num_mc_samples = wandb.config["subsampling_params"]
     sampling_ratio = 1 / rev_sampling_ratio
-    num_mc_samples = wandb.config["num_mc_samples"]
+
+    wandb.config["sampling_ratio"] = sampling_ratio
+    wandb.config["num_mc_samples"] = num_mc_samples
 
     config = set_config(env_dir, sampling_ratio, num_mc_samples)
     config.log_dir = os.path.join(storage, prefix, f"mc-{num_mc_samples}-sr-{rev_sampling_ratio}")

@@ -22,7 +22,7 @@ if __name__ == "__main__":
     unseen_dir = data_dir / "unseen"
     all_dir = data_dir / "all"
 
-    save_dir = Path("./analysis-result/ana1/")
+    save_dir = Path("./analysis/result/exp4/")
     save_dir.mkdir(parents=True)
 
     for beta in [1, 10, 20, 30]:
