@@ -167,8 +167,8 @@ If you use our code in your research, we kindly ask that you consider citing our
   title={TacoGFN: Target Conditioned GFlowNet for Structure-Based Drug Design},
   author={Shen, Tony and Seo, Seonghwan and Lee, Grayson and Pandey, Mohit and Smith, Jason R and Cherkasov, Artem and Kim, Woo Youn and Ester, Martin},
   journal={arXiv preprint arXiv:2310.03223},
-  year={2024}
-  note={Published at Transactions on Machine Learning Research(TMLR)}
+  year={2024},
+  note={Published in Transactions on Machine Learning Research(TMLR)}
 }
 @article{seo2023molecular,
   title={Molecular generative model via retrosynthetically prepared chemical building block assembly},
