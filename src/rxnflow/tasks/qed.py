@@ -15,11 +15,11 @@ class QEDTask(BaseTask):
         return ObjectProperties(fr), is_valid_t
 
 
-class QEDTrainer(RxnFlowTrainer):
+class QEDTrainer(RxnFlowTrainer):  # For online training
     def setup_task(self):
         self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
 
-class QEDSampler(RxnFlowSampler):
+class QEDSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
     def setup_task(self):
         self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)

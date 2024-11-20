@@ -2,7 +2,6 @@ import functools
 from pathlib import Path
 import argparse
 import os
-from typing import List
 
 import numpy as np
 from tqdm import tqdm
@@ -10,14 +9,14 @@ import multiprocessing
 
 from rdkit import Chem
 from rdkit.Chem import BondType
-from gflownet.envs.synthesis.reaction import Reaction
-from gflownet.envs.synthesis.building_block import get_block_features
+from rxnflow.envs.reaction import Reaction
+from rxnflow.envs.building_block import get_block_features
 
 ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 BONDS = [BondType.SINGLE, BondType.DOUBLE, BondType.TRIPLE, BondType.AROMATIC]
 
 
-def run(args, reactions: List[Reaction]):
+def run(args, reactions: list[Reaction]):
     smiles, id = args
     mol = Chem.MolFromSmiles(smiles, replacements={"[2H]": "[H]"})
 

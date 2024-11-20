@@ -24,7 +24,7 @@ def parse_args():
 
 
 def run(args):
-    from rxnflow.tasks.analysis_qed import QEDTrainer
+    from rxnflow.tasks.qed import QEDTrainer
     from rxnflow.config import Config, init_empty
 
     config = init_empty(Config())

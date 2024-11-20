@@ -56,7 +56,7 @@ def run_unidock(
 ):
     cx, cy, cz = center
     with tempfile.TemporaryDirectory() as tempdir:
-        docking_cmd = f"unidocktools unidock_pipeline -r {pocket_file} -i {index_path} -sd {save_dir} -cx {cx:.2f} -cy {cy:.2f} -cz {cz:.2f} --seed {seed} -nm 1 --search_mode {search_mode} -wd {tempdir}"
+        docking_cmd = f"unidocktools unidock_pipeline -r {pocket_file} -i {index_path} -sd {save_dir} -cx {cx:.2f} -cy {cy:.2f} -cz {cz:.2f} --seed {seed} -nm 1 --search_mode {search_mode} -wd {tempdir} -bs 64"
         if not DEBUG:
             docking_cmd += ">/dev/null 2>/dev/null"
         os.system(docking_cmd)

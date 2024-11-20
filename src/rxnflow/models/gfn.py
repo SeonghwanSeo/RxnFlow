@@ -50,9 +50,9 @@ class RxnFlow(TrajectoryBalanceModel):
 
         self._action_type_to_num_inputs_outputs = {
             RxnActionType.Stop: (num_glob_final, 1),
-            RxnActionType.AddFirstReactant: (num_glob_final + num_emb_block, 1),
+            RxnActionType.AddFirstReactant: (num_glob_final, num_emb_block),
             RxnActionType.ReactUni: (num_glob_final, env_ctx.num_unimolecular_rxns),
-            RxnActionType.ReactBi: (num_glob_final + env_ctx.num_bimolecular_rxns * 2 + num_emb_block, 1),
+            RxnActionType.ReactBi: (num_glob_final + env_ctx.num_bimolecular_rxns * 2, num_emb_block),
         }
 
         assert do_bck is False
@@ -146,20 +146,14 @@ class RxnFlow(TrajectoryBalanceModel):
             The logits for (rxn_id, block_is_first).
         """
         N_graph = emb.size(0)
-        N_block = block_emb.size(0)
         mlp = self.mlps[RxnActionType.ReactBi.cname]
 
-        # Convert `rxn_id` to a one-hot vector
-        rxn_features = torch.zeros(N_block, self.num_bimolecular_rxns * 2, device=emb.device)
+        # NOTE: We improve the logit calculation
+        rxn_features = torch.zeros(N_graph, self.num_bimolecular_rxns * 2, device=emb.device)
         rxn_features[:, rxn_id * 2 + int(block_is_first)] = 1
-
-        logits = torch.full((N_graph, N_block), -torch.inf, device=emb.device)
-        for i in range(N_graph):
-            if mask[i]:
-                _emb = emb[i].unsqueeze(0).repeat(N_block, 1)
-                expanded_input = torch.cat((_emb, block_emb, rxn_features), dim=-1)
-                logits[i] = mlp(expanded_input).squeeze(-1)
-        return logits
+        _emb = mlp(torch.cat([emb, rxn_features], dim=-1))
+        logits = torch.matmul(_emb, block_emb.T)  # [N_graph, N_block]
+        return logits.masked_fill(torch.logical_not(mask), -torch.inf)
 
     def hook_add_first_reactant(self, emb: Tensor, block_emb: Tensor):
         """
@@ -174,16 +168,9 @@ class RxnFlow(TrajectoryBalanceModel):
         Tensor
             The logits or output of the MLP after being called with the expanded input.
         """
-        N_graph = emb.size(0)
-        N_block = block_emb.size(0)
         mlp = self.mlps[RxnActionType.AddFirstReactant.cname]
-
-        logits = torch.empty((N_graph, N_block), device=emb.device)
-        for i in range(N_graph):
-            _emb = emb[i].unsqueeze(0).repeat(N_block, 1)
-            expanded_input = torch.cat((_emb, block_emb), dim=-1)
-            logits[i] = mlp(expanded_input).squeeze(-1)
-        return logits
+        _emb = mlp(emb)
+        return torch.matmul(_emb, block_emb.T)
 
     def single_hook_add_first_reactant(self, emb: Tensor, block_emb: Tensor):
         """
@@ -198,8 +185,8 @@ class RxnFlow(TrajectoryBalanceModel):
         Tensor
             The logits or output of the MLP after being called with the expanded input.
         """
-        expanded_input = torch.cat((emb, block_emb), dim=-1)
-        return self.mlps[RxnActionType.AddFirstReactant.cname](expanded_input).squeeze(-1)
+        mlp = self.mlps[RxnActionType.AddFirstReactant.cname]
+        return torch.matmul(mlp(emb), block_emb.T)
 
     def single_hook_stop(self, emb: Tensor):
         """
@@ -244,8 +231,9 @@ class RxnFlow(TrajectoryBalanceModel):
         Tensor
             The logit for (rxn_id, block_is_first, block).
         """
+        mlp = self.mlps[RxnActionType.ReactBi.cname]
+
         rxn_features = torch.zeros(self.num_bimolecular_rxns * 2, device=emb.device)
         rxn_features[rxn_id * 2 + int(block_is_first)] = 1
-
-        expanded_input = torch.cat((emb, block_emb, rxn_features), dim=-1)
-        return self.mlps[RxnActionType.ReactBi.cname](expanded_input).view(-1)
+        _emb = mlp(torch.cat([emb, rxn_features], dim=-1))
+        return torch.matmul(_emb, block_emb.T)

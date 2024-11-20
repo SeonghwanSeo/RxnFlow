@@ -4,7 +4,7 @@
 
 # RxnFlow: Generative Flows on Synthetic Pathway for Drug Design
 
-Official implementation of ***Generative Flows on Synthetic Pathway for Drug Design*** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[arXiv](https://arxiv.org/abs/2410.04542)]
+Official implementation of **_Generative Flows on Synthetic Pathway for Drug Design_** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[arXiv](https://arxiv.org/abs/2410.04542)]
 
 RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space.
 
@@ -44,7 +44,7 @@ The Enamine building block library is available upon request at [https://enamine
   cd data
   # case1: single-step
   python scripts/a_sdf_to_env.py -b <CATALOG_SDF> -d envs/enamine_all --cpu <CPU>
-  
+
   # case2: two-step
   python scripts/b1_sdf_to_smi.py -b <CATALOG_SDF> -o building_blocks/blocks.smi --cpu <CPU>
   python scripts/b2_smi_to_env.py -b building_blocks/blocks.smi -d envs/enamine_all --cpu <CPU> --skip_sanitize
@@ -91,6 +91,8 @@ python script/opt_unidock.py \
 
 ### Zero-shot sampling with Pharmacophore-based QuickVina Proxy
 
+_Not Implemented yet_
+
 Sample high-affinity molecules. The QuickVina docking score is estimated by Proxy Model [[github](https://github.com/SeonghwanSeo/PharmacoNet/tree/main/src/pmnet_appl)].
 
 ```bash
@@ -123,34 +125,35 @@ python script/sampling_zeroshot.py \
 
 ### Custom optimization
 
-If you want to train RxnFlow with your custom reward function, you can use the base classes from  `gflownet.base`. The reward should be **Non-negative**.
+If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
 
 - Example (QED)
 
   ```python
   import torch
-  from gflownet.base import SynthesisTrainer, SynthesisGFNSampler, BaseTask
-  from gflownet.trainer import FlatRewards
   from rdkit.Chem import Mol as RDMol, QED
-  
+  from gflownet import ObjectProperties
+  from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
+
   class QEDTask(BaseTask):
-      def compute_flat_rewards(self, mols: list[RDMol], batch_idx: list[int]) -> tuple[FlatRewards, torch.Tensor]:
+      def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, torch.Tensor]:
           fr = torch.tensor([QED.qed(mol) for mol in mols], dtype=torch.float).reshape(-1, 1)
           is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
-          return FlatRewards(fr), is_valid_t
-  
-  class QEDSynthesisTrainer(SynthesisTrainer): # For online training
+          return ObjectProperties(fr), is_valid_t
+
+  class QEDTrainer(RxnFlowTrainer):  # For online training
       def setup_task(self):
-          self.task: QEDTask = QEDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
-  
-  class QEDSynthesisSampler(SynthesisGFNSampler): # Sampling with pre-trained GFlowNet
+          self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+
+
+  class QEDSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
       def setup_task(self):
-          self.task: QEDTask = QEDTask(cfg=self.cfg, rng=self.rng, wrap_model=self._wrap_for_mp)
+          self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
   ```
 
 ### Reproducing experimental results
 
-Current version do not provide the reproducing code. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive). 
+Current version do not provide the reproducing code. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
 
 ## Citation
 

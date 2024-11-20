@@ -9,15 +9,7 @@ class Reaction:
         self.rxn = self.__init_reaction()
         self.reverse_rxn = self.__init_reverse_template()
         self.num_reactants = self.rxn.GetNumReactantTemplates()
-        # Extract reactants, agents, products
-        reactants, agents, products = self.template.split(">")
-        if self.num_reactants == 1:
-            self.reactant_template = list((reactants,))
-        else:
-            self.reactant_template = list(reactants.split("."))
-        self.product_template = products
 
-    # @cached_property
     def reactants(self):
         return self.rxn.GetReactants()
 
@@ -47,20 +39,17 @@ class Reaction:
 
     def is_reactant_first(self, mol: Chem.Mol) -> bool:
         """Checks if a molecule is the first reactant for the reaction."""
-        pattern = Chem.MolFromSmarts(self.reactant_template[0])
-        return mol.HasSubstructMatch(pattern)
+        return mol.HasSubstructMatch(self.rxn.GetReactantTemplate(0))
 
     def is_reactant_second(self, mol: Chem.Mol) -> bool:
         """Checks if a molecule is the second reactant for the reaction."""
-        pattern = Chem.MolFromSmarts(self.reactant_template[1])
-        return mol.HasSubstructMatch(pattern)
+        return mol.HasSubstructMatch(self.rxn.GetReactantTemplate(1))
 
     def run_reactants(self, reactants: tuple[Chem.Mol, ...], safe=True) -> Chem.Mol | None:
         """Runs the reaction on a set of reactants and returns the product.
 
         Args:
             reactants: A tuple of reactants to run the reaction on.
-            keep_main: Whether to return the main product or all products. Default is True.
 
         Returns:
             The product of the reaction or `None` if the reaction is not possible.
