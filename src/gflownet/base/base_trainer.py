@@ -2,7 +2,6 @@ import functools
 from pathlib import Path
 import torch
 import socket
-from omegaconf import OmegaConf
 
 from gflownet.config import Config
 from gflownet.online_trainer import StandardOnlineTrainer
@@ -137,14 +136,6 @@ class SynthesisTrainer(BaseTrainer):
 
     def setup_env(self):
         self.env = SynthesisEnv(self.cfg.env_dir)
-        if OmegaConf.is_missing(self.cfg.algo.action_sampling, "num_sampling_add_first_reactant"):
-            self.cfg.algo.action_sampling.num_sampling_add_first_reactant = int(
-                self.cfg.algo.action_sampling.sampling_ratio_reactbi * self.env.num_building_blocks
-            )
-        if OmegaConf.is_missing(self.cfg.algo.action_sampling, "max_sampling_reactbi"):
-            self.cfg.algo.action_sampling.max_sampling_reactbi = int(
-                self.cfg.algo.action_sampling.sampling_ratio_reactbi * self.env.num_building_blocks
-            )
 
     def setup_env_context(self):
         self.ctx = SynthesisEnvContext(

@@ -102,10 +102,10 @@ class SBDD_SingleOpt_Task(SBDDTask):
         if self.do_proxy_update:
             cache = proxy.get_cache(self.protein_path, center=self.center)
             proxy.put_cache(self.protein_key, cache)
-            self.do_proxy_update = False
+            self.do_protein_updated = False
 
     def _load_task_models(self) -> dict[str, nn.Module]:
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.sbdd.proxy
         self.proxy_model = proxy_model
-        proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, None, self.cfg.device)
+        proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, None, "cuda")
         return {"proxy": proxy}

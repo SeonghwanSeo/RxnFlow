@@ -2,6 +2,7 @@ from pathlib import Path
 import numpy as np
 
 from gflownet.config import Config, init_empty
+from gflownet.misc.chem_metrics import calc_diversity
 
 from gflownet.base.base_trainer import SynthesisTrainer, moo_trainer
 from gflownet.tasks.unidock_task import UniDockMOOTask
@@ -23,6 +24,8 @@ class UniDockMOOSynthesisTrainer(SynthesisTrainer):
         if len(self.task.best_molecules) > 0:
             info["top100_n"] = len(self.task.best_molecules)
             info["top100_vina"] = np.mean([score for score, _ in self.task.best_molecules])
+            if len(self.task.best_molecules) > 1:
+                info["top100_div"] = calc_diversity([smi for _, smi in self.task.best_molecules])
         super().log(info, index, key)
 
 
@@ -43,13 +46,16 @@ if __name__ == "__main__":
     config.print_every = 1
     config.num_training_steps = 100
     config.log_dir = "./logs/debug-unidock-moo-syn/"
-    config.env_dir = "./data/envs/ablation/subsampled_1k/"
+    config.env_dir = "./data/envs/subsampled_1k/"
     config.overwrite_existing_exp = True
 
+    config.algo.action_sampling.num_mc_sampling = 1
+    config.algo.action_sampling.num_sampling_add_first_reactant = 1000
     config.algo.action_sampling.sampling_ratio_reactbi = 0.1
+    config.algo.action_sampling.max_sampling_reactbi = 100
     config.algo.action_sampling.min_sampling_reactbi = 10
 
-    config.task.docking.protein_path = "./data/experiments/LIT-PCBA/ADRB2.pdb"
+    config.task.docking.protein_path = "./data/experiments/lit-pcba-opt/protein/ADRB2_4ldo_protein.pdb"
     config.task.docking.center = (-1.96, -12.27, -48.98)
 
     trial = UniDockMOOSynthesisTrainer(config)

@@ -1,15 +1,14 @@
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
-from omegaconf import MISSING
 
 
 @dataclass
 class ActionSamplingConfig:
     num_mc_sampling: int = 1
-    num_sampling_add_first_reactant: int = MISSING
+    num_sampling_add_first_reactant: int = 10_000
     sampling_ratio_reactbi: float = 1.0
-    max_sampling_reactbi: int = MISSING
+    max_sampling_reactbi: int = 10_000
     min_sampling_reactbi: int = 100
     onpolicy_temp: float = 1.0
 

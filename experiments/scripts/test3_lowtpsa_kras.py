@@ -8,7 +8,7 @@ from rdkit.Chem import Descriptors, QED
 from gflownet.config import Config, init_empty
 from gflownet.tasks.sbdd_synthesis import SBDDSampler
 
-PROTEIN_PATH = "./data/experiments/examples/6oim_protein.pdb"
+PROTEIN_PATH = "./data/experiments/KRAS-G12C/6oim_protein.pdb"
 POCKET_CENTER = (1.872, -8.260, -1.361)
 
 

@@ -31,8 +31,8 @@ unidock = [
 ]
 
 [[project.authors]]
-name = "Seonghwan Seo"
-email = "shwan0106@kaist.ac.kr"
+name = "Anonymous"
+email = "***@***"
 
 [tool.black]
 line-length = 120

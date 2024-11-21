@@ -75,7 +75,10 @@ class BaseMOOTask(BaseTask):
 
     def sample_conditional_information(self, n: int, train_it: int, final: bool = True) -> dict[str, Tensor]:
         cond_info = super().sample_conditional_information(n, train_it, final)
-        pref_ci, focus_ci = self.sample_moo_conditional_information(n, train_it)
+        pref_ci = self.pref_cond.sample(n)
+        focus_ci = (
+            self.focus_cond.sample(n, train_it) if self.focus_cond is not None else {"encoding": torch.zeros(n, 0)}
+        )
         cond_info = {
             **cond_info,
             **pref_ci,
@@ -83,13 +86,6 @@ class BaseMOOTask(BaseTask):
             "encoding": torch.cat([cond_info["encoding"], pref_ci["encoding"], focus_ci["encoding"]], dim=1),
         }
         return cond_info
-
-    def sample_moo_conditional_information(self, n: int, train_it: int) -> tuple[dict[str, Tensor], dict[str, Tensor]]:
-        pref_ci = self.pref_cond.sample(n)
-        focus_ci = (
-            self.focus_cond.sample(n, train_it) if self.focus_cond is not None else {"encoding": torch.zeros(n, 0)}
-        )
-        return pref_ci, focus_ci
 
     def encode_conditional_information(self, steer_info: Tensor) -> dict[str, Tensor]:
         """
