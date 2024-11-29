@@ -251,9 +251,10 @@ class DataSource(IterableDataset):
         for i in range(len(trajs)):
             trajs[i]["obj_props"] = all_fr[i]
             trajs[i]["is_online"] = mark_as_online
-        # Override the is_valid key in case the task made some objs invalid
-        for i in valid_idcs:
-            trajs[i]["is_valid"] = True
+            # FIXME: I fix here since it looks bug
+            # Override the is_valid key in case the task made some objs invalid
+            if i not in valid_idcs:
+                trajs[i]["is_valid"] = False
 
     def compute_log_rewards(self, trajs):
         """Sets trajs' log_reward key by querying the task."""
