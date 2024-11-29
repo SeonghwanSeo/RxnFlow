@@ -37,10 +37,10 @@ class SynthesisEnv(GraphBuildingEnv):
             BUILDING_BLOCK_IDS = [ln.strip().split()[1] for ln in lines]
 
         self.reactions = [Reaction(template=t.strip()) for t in REACTION_TEMPLATES]  # Reaction objects
-        self.unimolecular_reactions = [r for r in self.reactions if r.num_reactants == 1]  # rdKit reaction objects
-        self.bimolecular_reactions = [r for r in self.reactions if r.num_reactants == 2]
-        self.num_unimolecular_rxns = len(self.unimolecular_reactions)
-        self.num_bimolecular_rxns = len(self.bimolecular_reactions)
+        self.uni_rxns = [r for r in self.reactions if r.num_reactants == 1]  # rdKit reaction objects
+        self.bi_rxns = [r for r in self.reactions if r.num_reactants == 2]
+        self.num_uni_rxns = len(self.uni_rxns)
+        self.num_bi_rxns = len(self.bi_rxns)
 
         self.building_blocks: list[str] = BUILDING_BLOCKS
         self.building_block_ids: list[str] = BUILDING_BLOCK_IDS
@@ -52,7 +52,7 @@ class SynthesisEnv(GraphBuildingEnv):
             np.load(pre_computed_building_block_desc_path),
         )
 
-        self.num_total_actions = 1 + self.num_unimolecular_rxns + int(self.building_block_mask.sum())
+        self.num_total_actions = 1 + self.num_uni_rxns + int(self.building_block_mask.sum())
         self.retrosynthetic_analyzer: RetroSyntheticAnalyzer = RetroSyntheticAnalyzer(self)
 
     def new(self) -> Graph:
@@ -74,15 +74,15 @@ class SynthesisEnv(GraphBuildingEnv):
 
         if action.action is RxnActionType.Stop:
             return mol
-        elif action.action == RxnActionType.AddFirstReactant:
+        elif action.action == RxnActionType.FirstBlock:
             assert isinstance(action.block, str)
             return Chem.MolFromSmiles(action.block)
-        elif action.action is RxnActionType.ReactUni:
+        elif action.action is RxnActionType.UniRxn:
             assert isinstance(action.reaction, Reaction)
             p = action.reaction.run_reactants((mol,), safe=False)
             assert p is not None, "reaction is Fail"
             return p
-        elif action.action is RxnActionType.ReactBi:
+        elif action.action is RxnActionType.BiRxn:
             assert isinstance(action.reaction, Reaction)
             assert isinstance(action.block, str)
             if action.block_is_first:
@@ -91,14 +91,14 @@ class SynthesisEnv(GraphBuildingEnv):
                 p = action.reaction.run_reactants((mol, Chem.MolFromSmiles(action.block)), safe=False)
             assert p is not None, "reaction is Fail"
             return p
-        if action.action == RxnActionType.BckRemoveFirstReactant:
+        if action.action == RxnActionType.BckFirstBlock:
             return Chem.Mol()
-        elif action.action is RxnActionType.BckReactUni:
+        elif action.action is RxnActionType.BckUniRxn:
             assert isinstance(action.reaction, Reaction)
             reactant = action.reaction.run_reverse_reactants(mol)
             assert isinstance(reactant, Chem.Mol)
             return reactant
-        elif action.action is RxnActionType.BckReactBi:
+        elif action.action is RxnActionType.BckBiRxn:
             assert isinstance(action.reaction, Reaction)
             reactants = action.reaction.run_reverse_reactants(mol)
             assert isinstance(reactants, list) and len(reactants) == 2
@@ -107,7 +107,7 @@ class SynthesisEnv(GraphBuildingEnv):
         else:
             raise ValueError(action.action)
 
-    def parents(self, mol: RDMol, max_depth: int = 4) -> list[tuple[RxnAction, Chem.Mol]]:
+    def parents(self, mol: RDMol, max_depth: int = 4) -> list[tuple[RxnAction, str]]:
         """list possible parents of molecule `mol`
 
         Parameters
@@ -117,11 +117,11 @@ class SynthesisEnv(GraphBuildingEnv):
 
         Returns
         -------
-        parents: list[Pair(RxnAction, Chem.Mol)]
+        parents: list[Pair(RxnAction, str)]
             The list of parent-action pairs
         """
         retro_tree = self.retrosynthetic_analyzer.run(mol, max_depth)
-        return [(action, subtree.mol) for action, subtree in retro_tree.branches]
+        return [(action, subtree.smi) for action, subtree in retro_tree.branches]
 
     def count_backward_transitions(self, mol: RDMol, check_idempotent: bool = False):
         """Counts the number of parents of molecule (by default, without checking for isomorphisms)"""
@@ -132,17 +132,17 @@ class SynthesisEnv(GraphBuildingEnv):
     def reverse(self, g: str | RDMol | Graph | None, ra: RxnAction) -> RxnAction:
         if ra.action == RxnActionType.Stop:
             return ra
-        if ra.action == RxnActionType.AddFirstReactant:
-            return RxnAction(RxnActionType.BckRemoveFirstReactant, None, ra.block, ra.block_idx)
-        elif ra.action == RxnActionType.BckRemoveFirstReactant:
-            return RxnAction(RxnActionType.AddFirstReactant, None, ra.block, ra.block_idx)
-        elif ra.action == RxnActionType.ReactUni:
-            return RxnAction(RxnActionType.BckReactUni, ra.reaction)
-        elif ra.action == RxnActionType.BckReactUni:
-            return RxnAction(RxnActionType.ReactUni, ra.reaction)
-        elif ra.action == RxnActionType.ReactBi:
-            return RxnAction(RxnActionType.BckReactBi, ra.reaction, ra.block, ra.block_idx, ra.block_is_first)
-        elif ra.action == RxnActionType.BckReactBi:
-            return RxnAction(RxnActionType.ReactBi, ra.reaction, ra.block, ra.block_idx, ra.block_is_first)
+        if ra.action == RxnActionType.FirstBlock:
+            return RxnAction(RxnActionType.BckFirstBlock, None, ra.block, ra.block_idx)
+        elif ra.action == RxnActionType.BckFirstBlock:
+            return RxnAction(RxnActionType.FirstBlock, None, ra.block, ra.block_idx)
+        elif ra.action == RxnActionType.UniRxn:
+            return RxnAction(RxnActionType.BckUniRxn, ra.reaction)
+        elif ra.action == RxnActionType.BckUniRxn:
+            return RxnAction(RxnActionType.UniRxn, ra.reaction)
+        elif ra.action == RxnActionType.BiRxn:
+            return RxnAction(RxnActionType.BckBiRxn, ra.reaction, ra.block, ra.block_idx, ra.block_is_first)
+        elif ra.action == RxnActionType.BckBiRxn:
+            return RxnAction(RxnActionType.BiRxn, ra.reaction, ra.block, ra.block_idx, ra.block_is_first)
         else:
             raise ValueError(ra)

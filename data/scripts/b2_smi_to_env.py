@@ -55,9 +55,9 @@ def run(args, reactions: list[Reaction], sanitize=False):
 
     mask = np.zeros((len(bimolecular_reactions), 2), dtype=np.bool_)
     for rxn_i, reaction in enumerate(bimolecular_reactions):
-        if reaction.is_reactant_first(mol):
+        if reaction.is_reactant(mol, 0):
             mask[rxn_i, 0] = 1
-        if reaction.is_reactant_second(mol):
+        if reaction.is_reactant(mol, 1):
             mask[rxn_i, 1] = 1
     if mask.sum() == 0:
         fail = True

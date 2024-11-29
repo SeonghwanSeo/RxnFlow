@@ -46,6 +46,7 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         base.validate_every = 0
 
         # Custom Parameters
+        base.model.num_mlp_layers = 1
         base.algo.sampling_tau = 0.9
         base.algo.tb.backward_policy = Backward.Free  # Free or Uniform
         base.cond.temperature.sample_dist = "uniform"
@@ -73,10 +74,10 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
     def setup_env(self):
         self.env = SynthesisEnv(self.cfg.env_dir)
         as_cfg = self.cfg.algo.action_subsampling
-        if OmegaConf.is_missing(as_cfg, "num_sampling_add_first_reactant"):
-            as_cfg.num_sampling_add_first_reactant = int(as_cfg.sampling_ratio * self.env.num_building_blocks)
-        if OmegaConf.is_missing(as_cfg, "sampling_ratio_reactbi"):
-            as_cfg.sampling_ratio_reactbi = as_cfg.sampling_ratio
+        if OmegaConf.is_missing(as_cfg, "num_sampling_first_block"):
+            as_cfg.num_sampling_first_block = int(as_cfg.sampling_ratio * self.env.num_building_blocks)
+        if OmegaConf.is_missing(as_cfg, "sampling_ratio_bi_rxn"):
+            as_cfg.sampling_ratio_bi_rxn = as_cfg.sampling_ratio
 
     def setup_env_context(self):
         self.ctx = SynthesisEnvContext(

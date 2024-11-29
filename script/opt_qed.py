@@ -12,7 +12,7 @@ def parse_args():
         default=10000,
         help="Number of Oracles (64 molecules per oracle; default: 10000)",
     )
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/enamine_all", help="Environment Directory Path")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/real", help="Environment Directory Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,

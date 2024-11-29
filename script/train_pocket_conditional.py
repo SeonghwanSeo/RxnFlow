@@ -17,11 +17,11 @@ def parse_args():
         default=50000,
         help="Number of Oracles (64 molecules per oracle; default: 50000)",
     )
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/enamine_all", help="Environment Directory Path")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/real", help="Environment Directory Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
-        default=0.01,
+        default=0.001,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.01)",
     )
     run_cfg.add_argument("--wandb", action="store_true", help="use wandb")
@@ -46,6 +46,7 @@ def run(args):
 
     if args.debug:
         config.overwrite_existing_exp = True
+        config.print_every = 1
 
     trainer = RxnFlowTrainer_MP(config)
 

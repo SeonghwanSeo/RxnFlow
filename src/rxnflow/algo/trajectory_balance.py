@@ -1,5 +1,6 @@
 import torch
 from torch import Tensor
+import torch_geometric.data as gd
 
 from gflownet.algo.config import TBVariant
 from gflownet.utils.misc import get_worker_device
@@ -68,7 +69,7 @@ class SynthesisTB(CustomTB):
         assert len(graphs) == 0
         return []
 
-    def construct_batch(self, trajs: list[dict], cond_info: Tensor, log_rewards: Tensor):
+    def construct_batch(self, trajs: list[dict], cond_info: Tensor, log_rewards: Tensor) -> gd.Batch:
         """Construct a batch from a list of trajectories and their information
 
         Parameters
@@ -94,6 +95,7 @@ class SynthesisTB(CustomTB):
             actions = [self.ctx.GraphAction_to_aidx(traj[1]) for tj in trajs for traj in tj["traj"]]
         batch = self.ctx.collate(torch_graphs)
         batch.traj_lens = torch.tensor([len(i["traj"]) for i in trajs])
+        batch.num_rxns = torch.tensor([len(i["traj"]) - 1 - i["is_sink"][-1] for i in trajs])
         batch.log_p_B = torch.cat([i["bck_logprobs"] for i in trajs], 0)
         batch.actions = torch.tensor(actions)
         if self.cfg.do_parameterize_p_b:
@@ -104,3 +106,13 @@ class SynthesisTB(CustomTB):
         if self.cfg.do_correct_idempotent:
             raise NotImplementedError()
         return batch
+
+    def compute_batch_losses(
+        self,
+        model: RxnFlow,
+        batch: gd.Batch,
+        num_bootstrap: int = 0,  # type: ignore[override]
+    ):
+        loss, info = super().compute_batch_losses(model, batch, num_bootstrap)
+        info["num_rxns"] = batch.num_rxns.float().mean()
+        return loss, info

@@ -1,27 +1,26 @@
 from rdkit import Chem
-from rdkit.Chem import AllChem
-from rdkit.Chem.rdChemReactions import ChemicalReaction
+from rdkit.Chem.rdChemReactions import ChemicalReaction, ReactionFromSmarts
 
 
 class Reaction:
-    def __init__(self, template=None):
-        self.template = template
-        self.rxn = self.__init_reaction()
-        self.reverse_rxn = self.__init_reverse_template()
-        self.num_reactants = self.rxn.GetNumReactantTemplates()
+    def __init__(self, template: str):
+        self.template: str = template
+        self.rxn: ChemicalReaction = self.__init_forward()
+        self.reverse_rxn: ChemicalReaction = self.__init_reverse()
+        self.num_reactants: int = self.rxn.GetNumReactantTemplates()
 
     def reactants(self):
         return self.rxn.GetReactants()
 
-    def __init_reaction(self) -> ChemicalReaction:
+    def __init_forward(self) -> ChemicalReaction:
         """Initializes a reaction by converting the SMARTS-pattern to an `rdkit` object."""
-        rxn = AllChem.ReactionFromSmarts(self.template)
+        rxn = ReactionFromSmarts(self.template)
         ChemicalReaction.Initialize(rxn)
         return rxn
 
-    def __init_reverse_template(self) -> ChemicalReaction:
+    def __init_reverse(self) -> ChemicalReaction:
         """Reverses a reaction template and returns an initialized, reversed reaction object."""
-        rxn = AllChem.ChemicalReaction()
+        rxn = ChemicalReaction()
         for i in range(self.rxn.GetNumReactantTemplates()):
             rxn.AddProductTemplate(self.rxn.GetReactantTemplate(i))
         for i in range(self.rxn.GetNumProductTemplates()):
@@ -29,47 +28,35 @@ class Reaction:
         rxn.Initialize()
         return rxn
 
+    def is_reactant(self, mol: Chem.Mol, order: int | None = None) -> bool:
+        """Checks if a molecule is the first reactant for the reaction."""
+        if order is None:
+            return self.rxn.IsMoleculeReactant(mol)
+        else:
+            pattern = self.rxn.GetReactantTemplate(order)
+            return mol.HasSubstructMatch(pattern)
+
     def is_product(self, mol: Chem.Mol) -> bool:
         """Checks if a molecule is a reactant for the reaction."""
         return self.rxn.IsMoleculeProduct(mol)
-
-    def is_reactant(self, mol: Chem.Mol) -> bool:
-        """Checks if a molecule is a reactant for the reaction."""
-        return self.rxn.IsMoleculeReactant(mol)
-
-    def is_reactant_first(self, mol: Chem.Mol) -> bool:
-        """Checks if a molecule is the first reactant for the reaction."""
-        return mol.HasSubstructMatch(self.rxn.GetReactantTemplate(0))
-
-    def is_reactant_second(self, mol: Chem.Mol) -> bool:
-        """Checks if a molecule is the second reactant for the reaction."""
-        return mol.HasSubstructMatch(self.rxn.GetReactantTemplate(1))
 
     def run_reactants(self, reactants: tuple[Chem.Mol, ...], safe=True) -> Chem.Mol | None:
         """Runs the reaction on a set of reactants and returns the product.
 
         Args:
             reactants: A tuple of reactants to run the reaction on.
+            keep_main: Whether to return the main product or all products. Default is True.
 
         Returns:
             The product of the reaction or `None` if the reaction is not possible.
         """
-        if len(reactants) not in (1, 2):
-            raise ValueError(f"Can only run reactions with 1 or 2 reactants, not {len(reactants)}.")
+        if len(reactants) != self.num_reactants:
+            raise ValueError(f"Can only run reactions with {self.num_reactants} reactants, not {len(reactants)}.")
 
         if safe:
-            if self.num_reactants == 1:
-                if len(reactants) != 1:
-                    raise ValueError(reactants)
-                if not self.is_reactant(reactants[0]):
+            for i, mol in enumerate(reactants):
+                if not self.is_reactant(mol, i):
                     return None
-            elif self.num_reactants == 2:
-                if len(reactants) != 2:
-                    raise ValueError(reactants)
-                if not (self.is_reactant_first(reactants[0]) and self.is_reactant_second(reactants[1])):
-                    return None
-            else:
-                raise ValueError("Reaction is neither unimolecular nor bimolecular.")
 
         # Run reaction
         ps = self.rxn.RunReactants(reactants)
@@ -94,10 +81,10 @@ class Reaction:
         """
         rxn = self.reverse_rxn
         try:
-            assert rxn.IsMoleculeReactant(product)
             rs_list = rxn.RunReactants((product,))
         except Exception:
             return None
+
         for rs in rs_list:
             if len(rs) != self.num_reactants:
                 continue
@@ -115,17 +102,6 @@ class Reaction:
 
 
 def _refine_molecule(mol: Chem.Mol) -> Chem.Mol | None:
-    atoms_to_remove = [atom.GetIdx() for atom in mol.GetAtoms() if atom.GetSymbol() == "*"]
-    if len(atoms_to_remove) > 0:
-        rw_mol = Chem.RWMol(mol)
-        for idx in sorted(atoms_to_remove, reverse=True):
-            rw_mol.ReplaceAtom(idx, Chem.Atom("H"))
-        try:
-            rw_mol.UpdatePropertyCache()
-            mol = rw_mol.GetMol()
-            assert mol is not None
-        except Exception as e:
-            return None
     smi = Chem.MolToSmiles(mol)
     if "[CH]" in smi:
         smi = smi.replace("[CH]", "C")

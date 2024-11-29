@@ -4,6 +4,8 @@
 
 # RxnFlow: Generative Flows on Synthetic Pathway for Drug Design
 
+<img src="image/overview.png" width=600>
+
 Official implementation of **_Generative Flows on Synthetic Pathway for Drug Design_** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[arXiv](https://arxiv.org/abs/2410.04542)]
 
 RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space.
@@ -33,8 +35,9 @@ pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.3.1+cu
 ### Data
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
-
-The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/templates/hb_edited.txt](data/template/hb_edited.txt).
+We provide two reaction template set:
+  - The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/templates/hb_edited.txt](data/template/hb_edited.txt).
+  - We provide the new reaction template set [data/templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol.
 
 The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10.
 
@@ -58,9 +61,9 @@ The Enamine building block library is available upon request at [https://enamine
 
 ## Experiments
 
-### Docking-QED multi-objective optimization with GPU-accelerated UniDock
+### Docking optimization with GPU-accelerated UniDock
 
-Multi-objective optimization ([Multi-objective GFlowNet](https://arxiv.org/abs/2210.12765)) for docking score and QED. This uses GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
+You can optimize the docking score with GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
 
 ```bash
 python script/opt_unidock.py -h
@@ -68,6 +71,24 @@ python script/opt_unidock.py \
   -p <Protein PDB path> \
   -c <Center X> <Center Y> <Center Z> \
   -l <Reference ligand, required if center is empty. > \
+  -s <Size X> <Size Y> <Size Z> \
+  -o <Output directory> \
+  -n <Num Oracles (default: 1000)> \
+  --filter <drugfilter; choice=(lipinski, veber, null); default: lipinski> \
+  --batch_size <Num generations per oracle; default: 64> \
+  --env_dir <Environment directory> \
+  --subsample_ratio <Subsample ratio; memory-variance trade-off; default: 0.01>
+```
+
+You can also perform multi-objective optimization ([Multi-objective GFlowNet](https://arxiv.org/abs/2210.12765)) for docking score and QED.
+
+```bash
+python script/opt_unidock_moo.py -h
+python script/opt_unidock_moo.py \
+  -p <Protein PDB path> \
+  -c <Center X> <Center Y> <Center Z> \
+  -l <Reference ligand, required if center is empty. > \
+  -s <Size X> <Size Y> <Size Z> \
   -o <Output directory> \
   -n <Num Oracles (default: 1000)> \
   --batch_size <Num generations per oracle; default: 64> \
@@ -80,13 +101,15 @@ python script/opt_unidock.py \
 - Use center coordinates
 
   ```bash
-  python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras
+  python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
+  python script/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
   ```
 
 - Use center of the reference ligand
 
   ```bash
   python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
+  python script/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
   ```
 
 ### Zero-shot sampling with Pharmacophore-based QuickVina Proxy
@@ -144,7 +167,6 @@ If you want to train RxnFlow with your custom reward function, you can use the b
   class QEDTrainer(RxnFlowTrainer):  # For online training
       def setup_task(self):
           self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
-
 
   class QEDSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
       def setup_task(self):

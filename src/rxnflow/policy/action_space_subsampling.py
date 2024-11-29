@@ -57,30 +57,24 @@ class SubsamplingPolicy:
 
         # NOTE: AddFirstReactant
         indices = np.arange(env.num_building_blocks)
-        nsamp = self.cfg.num_sampling_add_first_reactant
+        nsamp: int = self.cfg.num_sampling_first_block
         self._first_reactant_space = BlockSpace.create1(indices, nsamp)
 
         # NOTE: ReactBi
-        sr = self.cfg.sampling_ratio_reactbi
-        nmin = int(self.cfg.min_sampling_reactbi)
-        self._reactbi_reactant_space = {}
-        for i in range(env.num_bimolecular_rxns):
+        sr = self.cfg.sampling_ratio_bi_rxn
+        nmin = int(self.cfg.min_sampling_bi_rxn)
+        self._bi_rxn_reactant_space = {}
+        for i in range(env.num_bi_rxns):
             block_mask = env.building_block_mask[i]
             for block_is_first in (True, False):
                 idx = 0 if block_is_first else 1
                 indices = np.where(block_mask[idx])[0]
-                self._reactbi_reactant_space[(i, block_is_first)] = BlockSpace.create2(indices, sr, nmin)
+                self._bi_rxn_reactant_space[(i, block_is_first)] = BlockSpace.create2(indices, sr, nmin)
 
     def get_space(self, t: RxnActionType, rxn_type: tuple[int, bool] | None = None) -> BlockSpace:
-        if t is RxnActionType.AddFirstReactant:
+        if t is RxnActionType.FirstBlock:
             assert rxn_type is None
             return self._first_reactant_space
         else:
             assert rxn_type is not None
-            return self._reactbi_reactant_space[rxn_type]
-
-    def get_space_addfirstreactant(self) -> BlockSpace:
-        return self._first_reactant_space
-
-    def get_space_reactbi(self, rxn_idx: int, block_is_first: bool) -> BlockSpace:
-        return self._reactbi_reactant_space[(rxn_idx, block_is_first)]
+            return self._bi_rxn_reactant_space[rxn_type]

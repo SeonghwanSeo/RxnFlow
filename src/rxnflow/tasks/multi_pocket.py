@@ -94,6 +94,7 @@ class RxnFlowTrainer_MP(RxnFlowTrainer):
         base.validate_every = 0
         base.num_training_steps = 50_000
         base.algo.train_random_action_prob = 0.1
+        base.model.num_emb_building_block = 64  # TODO: train model on large GPU!
 
         base.cond.temperature.dist_params = [16, 64]  # Different to Paper!
 

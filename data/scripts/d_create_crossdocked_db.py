@@ -1,5 +1,5 @@
 import torch
-from rxnflow.appl.pocket_conditional.pocket.data import generate_protein_data
+from gflownet.sbdd.pocket.data import generate_protein_data
 from pathlib import Path
 from tqdm import tqdm
 

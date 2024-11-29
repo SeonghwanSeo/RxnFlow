@@ -13,9 +13,9 @@ class SubsamplingConfig(StrictDataClass):
     ----------
     sampling_ratio : float
         global subsampling ratio, [0, 1]
-    num_sampling_add_first_reactant : int
+    num_sampling_first_block : int
         the number of actions for AddFirstReactant (override sampling_ratio)
-    sampling_ratio_reactbi : float
+    sampling_ratio_bi_rxn : float
         subsampling ratio for ReactBi (override sampling_ratio)
     min_sampling_reatbi : int
         the minimum number of actions for each reaction template; ReactBi
@@ -28,9 +28,9 @@ class SubsamplingConfig(StrictDataClass):
     """
 
     sampling_ratio: float = 1.0
-    num_sampling_add_first_reactant: int = MISSING
-    sampling_ratio_reactbi: float = MISSING
-    min_sampling_reactbi: int = 100
+    num_sampling_first_block: int = MISSING
+    sampling_ratio_bi_rxn: float = MISSING
+    min_sampling_bi_rxn: int = 100
 
     # Advanced parameters
     onpolicy_temp: float = 1.0
@@ -80,7 +80,7 @@ class AlgoConfig(StrictDataClass):
     valid_num_from_policy: int = 64
     valid_num_from_dataset: int = 0
     min_len: int = 2
-    max_len: int = 4
+    max_len: int = 3
     illegal_action_logreward: float = -100
     train_random_action_prob: float = 0.05
     train_det_after: int | None = None

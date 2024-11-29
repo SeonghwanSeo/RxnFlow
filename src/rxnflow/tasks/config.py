@@ -54,14 +54,37 @@ class DockingTaskConfig:
         Protein Path
     center: tuple[float, float, float]
         Pocket Center
+    size: tuple[float, float, float]
+        Pocket Box Size
+    threshold: float (<0.0)
+        Reward = threshold - (docking score)
     """
 
     protein_path: str = MISSING
     center: tuple[float, float, float] = MISSING
+    size: tuple[float, float, float] = (22.5, 22.5, 22.5)
+    threshold: float = 0.0
+
+
+@dataclass
+class DrugFilter:
+    """Config for SBDDConfig
+
+    Attributes
+    ----------
+    rule: str (path)
+        DrugFilter Rule
+            - null
+            - lipinski
+            - veber
+    """
+
+    rule: str = "null"
 
 
 @dataclass
 class TasksConfig:
     moo: MOOTaskConfig = MOOTaskConfig()
     pocket_conditional: PocketConditionalConfig = PocketConditionalConfig()
+    constraint: DrugFilter = DrugFilter()
     docking: DockingTaskConfig = DockingTaskConfig()

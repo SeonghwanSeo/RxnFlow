@@ -2,6 +2,7 @@ import functools
 from pathlib import Path
 import argparse
 import os
+from typing import List
 
 import numpy as np
 from tqdm import tqdm
@@ -9,14 +10,14 @@ import multiprocessing
 
 from rdkit import Chem
 from rdkit.Chem import BondType
-from rxnflow.envs.reaction import Reaction
-from rxnflow.envs.building_block import get_block_features
+from gflownet.envs.synthesis.reaction import Reaction
+from gflownet.envs.synthesis.building_block import get_block_features
 
 ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 BONDS = [BondType.SINGLE, BondType.DOUBLE, BondType.TRIPLE, BondType.AROMATIC]
 
 
-def run(args, reactions: list[Reaction]):
+def run(args, reactions: List[Reaction]):
     smiles, id = args
     mol = Chem.MolFromSmiles(smiles, replacements={"[2H]": "[H]"})
 
@@ -52,9 +53,9 @@ def run(args, reactions: list[Reaction]):
 
     mask = np.zeros((len(bimolecular_reactions), 2), dtype=np.bool_)
     for rxn_i, reaction in enumerate(bimolecular_reactions):
-        if reaction.is_reactant_first(mol):
+        if reaction.is_reactant(mol, 0):
             mask[rxn_i, 0] = 1
-        if reaction.is_reactant_second(mol):
+        if reaction.is_reactant(mol, 1):
             mask[rxn_i, 1] = 1
     if mask.sum() == 0:
         fail = True

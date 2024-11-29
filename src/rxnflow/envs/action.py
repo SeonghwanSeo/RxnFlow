@@ -9,14 +9,14 @@ from .reaction import Reaction
 class RxnActionType(enum.Enum):
     # Forward actions
     Stop = enum.auto()
-    ReactUni = enum.auto()
-    ReactBi = enum.auto()
-    AddFirstReactant = enum.auto()
+    UniRxn = enum.auto()
+    BiRxn = enum.auto()
+    FirstBlock = enum.auto()
 
     # Backward actions
-    BckReactUni = enum.auto()
-    BckReactBi = enum.auto()
-    BckRemoveFirstReactant = enum.auto()
+    BckUniRxn = enum.auto()
+    BckBiRxn = enum.auto()
+    BckFirstBlock = enum.auto()
 
     @cached_property
     def cname(self) -> str:

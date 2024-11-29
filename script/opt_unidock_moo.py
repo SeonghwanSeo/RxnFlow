@@ -23,9 +23,6 @@ def parse_args():
     )
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/real", help="Environment Directory Path")
     run_cfg.add_argument(
-        "--filter", type=str, default="lipinski", help="Drug Filter", choices=["null", "lipinski", "veber"]
-    )
-    run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
         default=0.01,
@@ -47,13 +44,12 @@ def get_center(ligand_path: str) -> tuple[float, float, float]:
 
 
 def run(args):
-    from rxnflow.tasks.unidock import UniDockTrainer
+    from rxnflow.tasks.unidock_moo import UniDockMOOTrainer
     from rxnflow.config import Config, init_empty
 
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.task.docking.protein_path = args.protein
-    config.task.constraint.rule = args.filter
     config.task.docking.center = tuple(args.center)
     config.task.docking.size = tuple(args.size)
     config.num_training_steps = args.num_oracles
@@ -63,7 +59,7 @@ def run(args):
     if args.debug:
         config.overwrite_existing_exp = True
 
-    trainer = UniDockTrainer(config)
+    trainer = UniDockMOOTrainer(config)
 
     if args.wandb is not None:
         import wandb

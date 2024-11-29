@@ -28,15 +28,16 @@ class RxnActionCategorical(GraphActionCategorical):
         self.fwd = fwd
         self._epsilon = 1e-38
 
+        self.types: list[RxnActionType]
         if fwd:
-            self.types: list[RxnActionType] = self.ctx.action_type_order
+            self.types = self.ctx.action_type_order
         else:
-            self.types: list[RxnActionType] = self.ctx.bck_action_type_order
+            self.types = self.ctx.bck_action_type_order
 
         self._logits: list[torch.Tensor] = []
         self.masks: dict[RxnActionType, torch.Tensor] = {
-            RxnActionType.ReactUni: graphs[RxnActionType.ReactUni.mask_name],
-            RxnActionType.ReactBi: graphs[RxnActionType.ReactBi.mask_name],
+            RxnActionType.UniRxn: graphs[RxnActionType.UniRxn.mask_name],
+            RxnActionType.BiRxn: graphs[RxnActionType.BiRxn.mask_name],
         }
         self.batch = torch.arange(self.num_graphs, device=dev)
         self.random_action_mask: torch.Tensor | None = None
@@ -52,9 +53,9 @@ class RxnActionCategorical(GraphActionCategorical):
         sample_temp:
             Softmax temperature used when sampling
         onpolicy_temp:
-            t<1.0: more ReactUni/Stop
+            t<1.0: more UniRxn/Stop
             t=1.0: on-policy sampling
-            t>1.0: more ReactBi
+            t>1.0: more BiRxn
         """
         traj_idx = self.traj_indices[0]
         assert (self.traj_indices == traj_idx).all()  # For sampling, we use the same traj index
@@ -64,16 +65,16 @@ class RxnActionCategorical(GraphActionCategorical):
             return self.sample_later_state(sample_temp, min_len, onpolicy_temp)
 
     def sample_initial_state(self, sample_temp: float = 1.0):
-        # NOTE: The first action in a trajectory is always AddFirstReactant (select a building block)
-        type_idx = self.types.index(RxnActionType.AddFirstReactant)
+        # NOTE: The first action in a trajectory is always FirstBlock (select a building block)
+        type_idx = self.types.index(RxnActionType.FirstBlock)
 
         action_subsampler: SubsamplingPolicy = get_worker_env("action_subsampler")
-        block_space = action_subsampler.get_space(RxnActionType.AddFirstReactant)
+        block_space = action_subsampler.get_space(RxnActionType.FirstBlock)
         block_indices = block_space.sampling()
         block_emb = self.model.block_embedding(self.ctx.get_block_data(block_indices, self.dev))
 
         # NOTE: PlaceHolder
-        logits = self.model.hook_add_first_reactant(self.emb, block_emb)
+        logits = self.model.hook_firstblock(self.emb, block_emb)
         self._logits.append(logits)
 
         if self.random_action_mask is not None:
@@ -97,23 +98,23 @@ class RxnActionCategorical(GraphActionCategorical):
     ):
         action_subsampler: SubsamplingPolicy = get_worker_env("action_subsampler")
         self._logits.append(self.model.hook_stop(self.emb))
-        self._logits.append(self.model.hook_reactuni(self.emb, self.masks[RxnActionType.ReactUni]))
+        self._logits.append(self.model.hook_uni_rxn(self.emb, self.masks[RxnActionType.UniRxn]))
 
-        block_indices_reactbi = []
-        for rxn_idx in range(self.ctx.num_bimolecular_rxns):
+        block_indices_bi_rxn = []
+        for rxn_idx in range(self.ctx.num_bi_rxns):
             for block_is_first in (True, False):
                 # TODO: Check the efficiency
-                reactant_space = action_subsampler.get_space(RxnActionType.ReactBi, (rxn_idx, block_is_first))
+                reactant_space = action_subsampler.get_space(RxnActionType.BiRxn, (rxn_idx, block_is_first))
                 if reactant_space.num_blocks == 0:
-                    block_indices_reactbi.append([int(1e9)])  # invald index, it should not be sampled
+                    block_indices_bi_rxn.append([int(1e9)])  # invald index, it should not be sampled
                     self._logits.append(torch.full((self.num_graphs, 1), -torch.inf, device=self.dev))
                     continue
                 else:
                     block_indices = reactant_space.sampling()
-                    block_indices_reactbi.append(block_indices)
+                    block_indices_bi_rxn.append(block_indices)
                     block_emb = self.model.block_embedding(self.ctx.get_block_data(block_indices, self.dev))
-                    mask = self.masks[RxnActionType.ReactBi][:, rxn_idx, int(block_is_first)]
-                    logits = self.model.hook_reactbi(self.emb, rxn_idx, block_is_first, block_emb, mask)
+                    mask = self.masks[RxnActionType.BiRxn][:, rxn_idx, int(block_is_first)]
+                    logits = self.model.hook_bi_rxn(self.emb, rxn_idx, block_is_first, block_emb, mask)
                     if onpolicy_temp != 0.0 and reactant_space.sampling_ratio != 1.0:
                         logits = logits - onpolicy_temp * math.log(reactant_space.sampling_ratio)
                     self._logits.append(logits)
@@ -122,21 +123,21 @@ class RxnActionCategorical(GraphActionCategorical):
             mask = self.random_action_mask
             random_action_idx = torch.where(mask)[0]
             for i in random_action_idx:
-                reactuni_mask = self.masks[RxnActionType.ReactUni][i]
-                reactbi_mask = self.masks[RxnActionType.ReactBi][i]
-                num_reactuni = reactuni_mask.sum().item()
-                num_reactbi = reactbi_mask.sum().item()
+                uni_rxn_mask = self.masks[RxnActionType.UniRxn][i]
+                bi_rxn_mask = self.masks[RxnActionType.BiRxn][i]
+                num_uni_rxn = uni_rxn_mask.sum().item()
+                num_bi_rxn = bi_rxn_mask.sum().item()
 
                 self._logits[0][i] = 0
-                if num_reactuni > 0:
-                    self._logits[1][i, reactuni_mask] = -math.log(num_reactuni)
-                if num_reactbi > 0:
+                if num_uni_rxn > 0:
+                    self._logits[1][i, uni_rxn_mask] = -math.log(num_uni_rxn)
+                if num_bi_rxn > 0:
                     offset = 2
-                    for rxn_idx in range(self.ctx.num_bimolecular_rxns):
+                    for rxn_idx in range(self.ctx.num_bi_rxns):
                         for block_is_first in (True, False):
-                            if reactbi_mask[rxn_idx, int(block_is_first)]:
+                            if bi_rxn_mask[rxn_idx, int(block_is_first)]:
                                 num_blocks = self._logits[offset].shape[1]
-                                self._logits[offset][i, None] = -(math.log(num_reactbi) + math.log(num_blocks))
+                                self._logits[offset][i, None] = -(math.log(num_bi_rxn) + math.log(num_blocks))
                             offset += 1
 
         # NOTE: Softmax temperature used when sampling
@@ -159,12 +160,12 @@ class RxnActionCategorical(GraphActionCategorical):
             if idx1 == 0:
                 t = RxnActionType.Stop
             elif idx1 == 1:
-                t = RxnActionType.ReactUni
+                t = RxnActionType.UniRxn
                 rxn_idx = idx2
             else:
-                t = RxnActionType.ReactBi
+                t = RxnActionType.BiRxn
                 idx1 = idx1 - 2
-                block_idx = block_indices_reactbi[idx1][idx2]
+                block_idx = block_indices_bi_rxn[idx1][idx2]
                 rxn_idx, block_is_first = idx1 // 2, bool(idx1 % 2 == 0)
             type_idx = self.types.index(t)
             actions.append(RxnActionIndex.create(type_idx, rxn_idx, block_idx, block_is_first))
@@ -194,18 +195,18 @@ class RxnActionCategorical(GraphActionCategorical):
         for i, action in enumerate(actions):
             type_idx, rxn_idx, block_idx, block_is_first = action
             t = self.types[type_idx]
-            if t is RxnActionType.AddFirstReactant:
+            if t is RxnActionType.FirstBlock:
                 block_emb = self.model.block_embedding(self.ctx.get_block_data([int(block_idx)], self.dev).view(-1))
-                logit = self.model.single_hook_add_first_reactant(self.emb[i], block_emb)
+                logit = self.model.single_hook_firstblock(self.emb[i], block_emb)
             elif t is RxnActionType.Stop:
                 logit = self.model.single_hook_stop(self.emb[i])
-            elif t is RxnActionType.ReactUni:
+            elif t is RxnActionType.UniRxn:
                 self.masks[t][i, rxn_idx] = True
-                logit = self.model.single_hook_reactuni(self.emb[i], rxn_idx)
-            elif t is RxnActionType.ReactBi:
+                logit = self.model.single_hook_uni_rxn(self.emb[i], rxn_idx)
+            elif t is RxnActionType.BiRxn:
                 self.masks[t][i, rxn_idx, int(block_is_first)] = True
                 block_emb = self.model.block_embedding(self.ctx.get_block_data([int(block_idx)], self.dev).view(-1))
-                logit = self.model.single_hook_reactbi(self.emb[i], rxn_idx, block_is_first, block_emb)
+                logit = self.model.single_hook_bi_rxn(self.emb[i], rxn_idx, block_is_first, block_emb)
             else:
                 raise ValueError
             action_logits[i] = logit
@@ -232,17 +233,17 @@ class RxnActionCategorical(GraphActionCategorical):
 
     def cal_logZ_initial(self, state_indices: torch.Tensor) -> torch.Tensor:
         emb = self.emb[state_indices]
-        block_space = self.action_subsampler.get_space(RxnActionType.AddFirstReactant)
+        block_space = self.action_subsampler.get_space(RxnActionType.FirstBlock)
         sampling_ratio = block_space.sampling_ratio
         if sampling_ratio < 1.0:
             block_indices = block_space.sampling()
             block_emb = self.model.block_embedding(self.ctx.get_block_data(block_indices, self.dev))
-            logits = self.model.hook_add_first_reactant(emb, block_emb)
+            logits = self.model.hook_firstblock(emb, block_emb)
             max_logits = logits.detach().max(dim=-1, keepdim=True).values
             logZ = torch.logsumexp(logits - max_logits, dim=-1) - math.log(sampling_ratio)
         else:
             block_emb = self.model.block_embedding(self.ctx.get_block_data(block_space.block_indices, self.dev))
-            logits = self.model.hook_add_first_reactant(emb, block_emb)
+            logits = self.model.hook_firstblock(emb, block_emb)
             max_logits = logits.detach().max(dim=-1, keepdim=True).values
             logZ = torch.logsumexp(logits - max_logits, dim=-1)
         return logZ + max_logits.squeeze(-1)
@@ -251,25 +252,25 @@ class RxnActionCategorical(GraphActionCategorical):
         emb = self.emb[state_indices]
         logit_list = []
         logit_list.append(self.model.hook_stop(emb))
-        logit_list.append(self.model.hook_reactuni(emb, self.masks[RxnActionType.ReactUni][state_indices]))
+        logit_list.append(self.model.hook_uni_rxn(emb, self.masks[RxnActionType.UniRxn][state_indices]))
 
-        for rxn_idx in range(self.ctx.num_bimolecular_rxns):
+        for rxn_idx in range(self.ctx.num_bi_rxns):
             for block_is_first in (True, False):
-                reactant_space = self.action_subsampler.get_space(RxnActionType.ReactBi, (rxn_idx, block_is_first))
+                reactant_space = self.action_subsampler.get_space(RxnActionType.BiRxn, (rxn_idx, block_is_first))
                 if reactant_space.num_blocks == 0:
                     continue
-                mask = self.masks[RxnActionType.ReactBi][state_indices, rxn_idx, int(block_is_first)]
+                mask = self.masks[RxnActionType.BiRxn][state_indices, rxn_idx, int(block_is_first)]
                 sampling_ratio = reactant_space.sampling_ratio
                 if sampling_ratio < 1:
                     block_indices = reactant_space.sampling()
                     block_emb = self.model.block_embedding(self.ctx.get_block_data(block_indices, self.dev))
-                    logits = self.model.hook_reactbi(emb, rxn_idx, block_is_first, block_emb, mask)
+                    logits = self.model.hook_bi_rxn(emb, rxn_idx, block_is_first, block_emb, mask)
                     logit_list.append(logits - math.log(sampling_ratio))
                 else:
                     block_emb = self.model.block_embedding(
                         self.ctx.get_block_data(reactant_space.block_indices, self.dev)
                     )
-                    logits = self.model.hook_reactbi(emb, rxn_idx, block_is_first, block_emb, mask)
+                    logits = self.model.hook_bi_rxn(emb, rxn_idx, block_is_first, block_emb, mask)
                     logit_list.append(logits)
         logits = torch.cat(logit_list, dim=-1)
         max_logits = logits.detach().max(dim=-1, keepdim=True).values

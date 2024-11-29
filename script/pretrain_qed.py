@@ -14,7 +14,7 @@ def parse_args():
         default=50000,
         help="Number of Oracles (64 molecules per oracle; default: 1000)",
     )
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/enamine_all", help="Environment Directory Path")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/real", help="Environment Directory Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
@@ -27,7 +27,7 @@ def parse_args():
 
 
 def run(args):
-    from rxnflow.tasks.unidock import UniDockMOO_Pretrainer
+    from rxnflow.tasks.unidock_moo import UniDockMOO_Pretrainer
     from rxnflow.config import Config, init_empty
 
     config = init_empty(Config())

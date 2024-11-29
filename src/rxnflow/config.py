@@ -51,6 +51,23 @@ class Config(config.Config):
         Whether to overwrite the contents of the log_dir if it already exists
     """
 
+    desc: str = "noDesc"
+    log_dir: str = MISSING
+    device: str = "cuda"
+    seed: int = 0
+    validate_every: int = 1000
+    checkpoint_every: int | None = None
+    store_all_checkpoints: bool = False
+    print_every: int = 100
+    start_at_step: int = 0
+    num_final_gen_steps: int | None = None
+    num_validation_gen_steps: int | None = None
+    num_training_steps: int = 10_000
+    num_workers: int = 0
+    hostname: str | None = None
+    pickle_mp_messages: bool = False
+    git_hash: str | None = None
+    overwrite_existing_exp: bool = False
     env_dir: str = MISSING
     num_workers_retrosynthesis: int = 4
     algo: AlgoConfig = field(default_factory=AlgoConfig)

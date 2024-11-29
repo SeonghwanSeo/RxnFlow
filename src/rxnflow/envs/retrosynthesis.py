@@ -50,12 +50,12 @@ class RetroSynthesisTree:
             return self
         filtered_branches = []
         for action, subtree in self.branches:
-            if action.action is RxnActionType.BckRemoveFirstReactant:
+            if action.action is RxnActionType.BckFirstBlock:
                 assert subtree.is_leaf
                 if action.block not in block_set:
                     continue
             else:
-                if action.action is RxnActionType.BckReactBi and action.block not in block_set:
+                if action.action is RxnActionType.BckBiRxn and action.block not in block_set:
                     continue
                 subtree = subtree.filtering(block_set)
                 if subtree.is_leaf:
@@ -100,8 +100,8 @@ class MultiRetroSyntheticAnalyzer:
 class RetroSyntheticAnalyzer:
     def __init__(self, env):
         self.reactions: list[Reaction] = env.reactions
-        self.unimolecular_reactions: list[Reaction] = env.unimolecular_reactions
-        self.bimolecular_reactions: list[Reaction] = env.bimolecular_reactions
+        self.uni_rxns: list[Reaction] = env.uni_rxns
+        self.bi_rxns: list[Reaction] = env.bi_rxns
 
         # For Fast Search
         self.__max_block_smi_len: int = 0
@@ -153,26 +153,26 @@ class RetroSyntheticAnalyzer:
     ) -> RetroSynthesisTree:
         pass_bck_remove = False
         known_branches = known_branches if known_branches else []
-        pass_bck_reactuni = []
-        pass_bck_reactbi = []
+        pass_bck_uni_rxn = []
+        pass_bck_bi_rxn = []
 
         branches = known_branches.copy()
         for bck_action, subtree in known_branches:
-            if bck_action.action is RxnActionType.BckRemoveFirstReactant:
+            if bck_action.action is RxnActionType.BckFirstBlock:
                 pass_bck_remove = True
-            elif bck_action.action is RxnActionType.BckReactUni:
-                pass_bck_reactuni.append(bck_action.reaction)
-            elif bck_action.action is RxnActionType.BckReactBi:
-                pass_bck_reactbi.append(bck_action.reaction)
+            elif bck_action.action is RxnActionType.BckUniRxn:
+                pass_bck_uni_rxn.append(bck_action.reaction)
+            elif bck_action.action is RxnActionType.BckBiRxn:
+                pass_bck_bi_rxn.append(bck_action.reaction)
                 for next_bck_action, _ in subtree.branches:
-                    if next_bck_action.action is RxnActionType.BckRemoveFirstReactant:
+                    if next_bck_action.action is RxnActionType.BckFirstBlock:
                         _ba1 = RxnAction(
-                            RxnActionType.BckRemoveFirstReactant,
+                            RxnActionType.BckFirstBlock,
                             block=bck_action.block,
                             block_idx=bck_action.block_idx,
                         )
                         _ba2 = RxnAction(
-                            RxnActionType.BckReactBi,
+                            RxnActionType.BckBiRxn,
                             reaction=bck_action.reaction,
                             block=next_bck_action.block,
                             block_idx=next_bck_action.block_idx,
@@ -187,7 +187,7 @@ class RetroSyntheticAnalyzer:
 
         smiles = Chem.MolToSmiles(mol)
         branches.extend(
-            self.__dfs_retrosynthesis(mol, smiles, max_depth, pass_bck_remove, pass_bck_reactuni, pass_bck_reactbi)
+            self.__dfs_retrosynthesis(mol, smiles, max_depth, pass_bck_remove, pass_bck_uni_rxn, pass_bck_bi_rxn)
         )
         return RetroSynthesisTree(smiles, branches)
 
@@ -197,8 +197,8 @@ class RetroSyntheticAnalyzer:
         smiles: str,
         max_depth: int,
         pass_bck_remove: bool = False,
-        pass_bck_reactuni: list | None = None,
-        pass_bck_reactbi: list | None = None,
+        pass_bck_uni_rxn: list | None = None,
+        pass_bck_bi_rxn: list | None = None,
     ) -> list[tuple[RxnAction, RetroSynthesisTree]]:
         if max_depth == 0:
             return []
@@ -213,7 +213,7 @@ class RetroSyntheticAnalyzer:
 
         branches = []
         if (not pass_bck_remove) and is_block:
-            branches.append((RxnAction(RxnActionType.BckRemoveFirstReactant, block=smiles), RetroSynthesisTree("")))
+            branches.append((RxnAction(RxnActionType.BckFirstBlock, block=smiles), RetroSynthesisTree("")))
         if max_depth == 1:
             return branches
 
@@ -229,10 +229,10 @@ class RetroSyntheticAnalyzer:
                 parents = reaction.run_reverse_reactants(kekulized_mol)
             return parents
 
-        pass_bck_reactuni = pass_bck_reactuni if pass_bck_reactuni else []
-        pass_bck_reactbi = pass_bck_reactbi if pass_bck_reactbi else []
-        for reaction in self.unimolecular_reactions:
-            if reaction in pass_bck_reactuni:
+        pass_bck_uni_rxn = pass_bck_uni_rxn if pass_bck_uni_rxn else []
+        pass_bck_bi_rxn = pass_bck_bi_rxn if pass_bck_bi_rxn else []
+        for reaction in self.uni_rxns:
+            if reaction in pass_bck_uni_rxn:
                 continue
             parents = _run_reaction(reaction, mol, kekulized_mol)
             if parents is None:
@@ -240,11 +240,11 @@ class RetroSyntheticAnalyzer:
             assert len(parents) == 1
             _branches = self.__dfs_retrosynthesis(mol, Chem.MolToSmiles(mol), max_depth - 1)
             if len(_branches) > 0:
-                bck_action = RxnAction(RxnActionType.BckReactUni, reaction)
+                bck_action = RxnAction(RxnActionType.BckUniRxn, reaction)
                 branches.append((bck_action, RetroSynthesisTree(smiles, _branches)))
 
-        for reaction in self.bimolecular_reactions:
-            if reaction in pass_bck_reactbi:
+        for reaction in self.bi_rxns:
+            if reaction in pass_bck_bi_rxn:
                 continue
             parents = _run_reaction(reaction, mol, kekulized_mol)
             if parents is None:
@@ -256,7 +256,7 @@ class RetroSyntheticAnalyzer:
                 if self.is_block(block_smi):
                     _branches = self.__dfs_retrosynthesis(parents[j], parents_smi[j], max_depth - 1)
                     if len(_branches) > 0:
-                        bck_action = RxnAction(RxnActionType.BckReactUni, reaction, block_smi, block_is_first=(i == 0))
+                        bck_action = RxnAction(RxnActionType.BckUniRxn, reaction, block_smi, block_is_first=(i == 0))
                         branches.append((bck_action, RetroSynthesisTree(smiles, _branches)))
 
         self.update_cache(smiles, max_depth, branches, is_block)
