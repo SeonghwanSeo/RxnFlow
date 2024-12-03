@@ -106,7 +106,7 @@ class UniDockMOOTrainer(UniDockTrainer):
         base.replay.warmup = 128
         base.cond.weighted_prefs.preference_type = "dirichlet"
         base.cond.focus_region.focus_type = None
-        base.algo.train_random_action_prob = 0.05
+        base.algo.train_random_action_prob = 0.02
 
     def setup_task(self):
         self.task = UniDockMOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)

@@ -13,7 +13,7 @@ from gflownet import ObjectProperties
 
 from rxnflow.config import Config, init_empty
 from rxnflow.base import BaseTask, RxnFlowTrainer
-from rxnflow.utils.chem_metrics import mol2vina
+from rxnflow.utils.unidock import unidock_scores
 
 
 class UniDockTask(BaseTask):
@@ -24,25 +24,27 @@ class UniDockTask(BaseTask):
         self.size: tuple[float, float, float] = cfg.task.docking.size
         self.threshold: float = cfg.task.docking.threshold
         self.filter: str = cfg.task.constraint.rule
+        self.ff_optimization: None | str = None  # None, UFF, MMFF
+        self.search_mode: str = "balance"  # fast, balance, detail
         assert self.filter in ["null", "lipinski", "veber"]
 
         self.last_molecules: list[tuple[float, str]] = []
         self.best_molecules: list[tuple[float, str]] = []
-        self.save_dir: Path = Path(cfg.log_dir) / "unidock"
-        self.search_mode: str = "balance"
+        self.save_dir: Path = Path(cfg.log_dir) / "docking"
+        self.save_dir.mkdir()
         self.oracle_idx = 0
 
     def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        is_valid = [self.constraint(obj) for obj in objs]
-        is_valid_t = torch.tensor(is_valid, dtype=torch.bool)
-        valid_objs = [obj for flag, obj in zip(is_valid, objs, strict=True) if flag]
+        is_valid_t = torch.ones(len(objs), dtype=torch.bool)
+
+        fr = torch.zeros(len(objs), dtype=torch.float)
+        is_pass = [self.constraint(obj) for obj in objs]
+        valid_objs = [obj for flag, obj in zip(is_pass, objs, strict=True) if flag]
         if len(valid_objs) > 0:
             docking_scores = self.run_docking(valid_objs)
             self.update_storage(valid_objs, docking_scores.tolist())
-            fr = self.convert_docking_score(docking_scores).reshape(-1, 1)
-        else:
-            fr = torch.zeros((0, 1), dtype=torch.float)
-        return ObjectProperties(fr), is_valid_t
+            fr[is_pass] = self.convert_docking_score(docking_scores)
+        return ObjectProperties(fr.reshape(-1, 1)), is_valid_t
 
     def constraint(self, mol: RDMol) -> bool:
         if self.filter == "null":
@@ -52,7 +54,7 @@ class UniDockTask(BaseTask):
                 return False
             if Lipinski.NumHDonors(mol) > 5:
                 return False
-            if Lipinski.NumHAcceptors(mol) > 5:
+            if Lipinski.NumHAcceptors(mol) > 10:
                 return False
             if Crippen.MolLogP(mol) > 5:
                 return False
@@ -69,10 +71,19 @@ class UniDockTask(BaseTask):
         return self.threshold - scores
 
     def run_docking(self, mols: list[RDMol]) -> Tensor:
-        out_dir = self.save_dir / f"oracle{self.oracle_idx}"
-        docking_score = mol2vina(mols, self.protein_path, self.center, self.size, self.search_mode, out_dir)
+        out_path = self.save_dir / f"oracle{self.oracle_idx}.sdf"
+        vina_score = unidock_scores(
+            mols,
+            self.protein_path,
+            self.center,
+            out_path,
+            self.size,
+            seed=1,
+            search_mode=self.search_mode,
+            ff_optimization=self.ff_optimization,
+        )
         self.oracle_idx += 1
-        return docking_score
+        return torch.tensor(vina_score, dtype=torch.float).clip(max=0.0)
 
     def update_storage(self, mols: list[RDMol], scores: list[float]):
         smiles_list = [Chem.MolToSmiles(mol) for mol in mols]
@@ -80,7 +91,9 @@ class UniDockTask(BaseTask):
 
         best_smi = set(smi for _, smi in self.best_molecules)
         score_smiles = [(score, smi) for score, smi in self.last_molecules if smi not in best_smi]
-        self.best_molecules = sorted(self.best_molecules + score_smiles, reverse=False)[:1000]
+        self.best_molecules = self.best_molecules + score_smiles
+        self.best_molecules.sort(key=lambda v: v[0])
+        self.best_molecules = self.best_molecules[:1000]
 
 
 class UniDockTrainer(RxnFlowTrainer):
@@ -88,26 +101,33 @@ class UniDockTrainer(RxnFlowTrainer):
 
     def set_default_hps(self, base: Config):
         super().set_default_hps(base)
+        base.print_every = 1
         base.validate_every = 0
         base.num_training_steps = 1000
+        base.task.constraint.rule = "lipinski"
 
-        # NOTE: Different to paper
-        base.cond.temperature.dist_params = [16, 64]
+        base.cond.temperature.sample_dist = "constant"
+        base.cond.temperature.dist_params = [32.0]
         base.replay.use = True
         base.replay.capacity = 6_400
-        base.replay.warmup = 128
-        base.algo.train_random_action_prob = 0.05
+        base.replay.warmup = 256
+        base.algo.train_random_action_prob = 0.01
 
     def setup_task(self):
         self.task = UniDockTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
     def log(self, info, index, key):
+        self.add_extra_info(info)
+        super().log(info, index, key)
+
+    def add_extra_info(self, info):
+        if self.task.filter != "null":
+            info["pass_constraint"] = len(self.task.last_molecules) / self.cfg.algo.num_from_policy
         if len(self.task.last_molecules) > 0:
             info["sample_docking_avg"] = np.mean([score for score, _ in self.task.last_molecules])
         if len(self.task.best_molecules) > 0:
             info["top100_n"] = len(self.task.best_molecules)
             info["top100_docking"] = np.mean([score for score, _ in self.task.best_molecules])
-        super().log(info, index, key)
 
 
 if __name__ == "__main__":
@@ -116,13 +136,14 @@ if __name__ == "__main__":
     config.print_every = 1
     config.num_training_steps = 100
     config.log_dir = "./logs/debug-unidock/"
-    config.env_dir = "./data/envs/enamine_all"
+    config.env_dir = "./data/envs/real"
     config.overwrite_existing_exp = True
-    config.algo.action_subsampling.sampling_ratio = 0.1
+    config.algo.max_len = 2
+    config.algo.action_subsampling.sampling_ratio = 0.01
     config.task.constraint.rule = "lipinski"
 
-    config.task.docking.protein_path = "./data/experiments/LIT-PCBA/ADRB2.pdb"
-    config.task.docking.center = (-1.96, -12.27, -48.98)
+    config.task.docking.protein_path = "./data/examples/6oim_protein.pdb"
+    config.task.docking.center = (1.872, -8.260, -1.361)
 
     trial = UniDockTrainer(config)
     trial.run()

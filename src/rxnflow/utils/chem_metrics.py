@@ -64,15 +64,3 @@ def mol2sascore(mols: list[RDMol], default=10):
 
 def mol2qed(mols: list[RDMol], default=0):
     return torch.tensor([safe(QED.qed, mol, default) for mol in mols])
-
-
-def mol2vina(
-    mols: list[RDMol],
-    protein_path: str | Path,
-    center: tuple[float, float, float],
-    size: tuple[float, float, float] = (22.5, 22.5, 22.5),
-    search_mode: str = "balance",
-    out_dir: Path | str | None = None,
-):
-    vina_score = unidock_scores(mols, protein_path, center, size, seed=1, search_mode=search_mode, out_dir=out_dir)
-    return torch.tensor(vina_score, dtype=torch.float).clip(max=0.0)

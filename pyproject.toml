@@ -51,7 +51,7 @@ ignore = ["E501"]
     "F401", # imported but unused
     "E402", # Module level import not at top of file
 ]
-[tool.pyright]
+[tool.basedpyright]
 pythonVersion = "3.10"
 typeCheckingMode = "standard"
 diagnosticMode = "openFilesOnly"
@@ -60,3 +60,4 @@ reportGeneralTypeIssues = "warning"
 reportDeprecated = "warning"
 reportUnusedVariable = false
 reportUnusedImport = false
+exclude=["data/", "storage/", "wandb/", "nogit/", "logs/"]

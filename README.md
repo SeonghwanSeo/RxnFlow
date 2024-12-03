@@ -51,12 +51,13 @@ The Enamine building block library is available upon request at [https://enamine
   # case2: two-step
   python scripts/b1_sdf_to_smi.py -b <CATALOG_SDF> -o building_blocks/blocks.smi --cpu <CPU>
   python scripts/b2_smi_to_env.py -b building_blocks/blocks.smi -d envs/enamine_all --cpu <CPU> --skip_sanitize
+  python scripts/b2_smi_to_env.py -b building_blocks/blocks.smi -d envs/real -t tesmplates/real.txt --cpu <CPU> --skip_sanitize
   ```
 
 - Use custom SMILES file (`.smi`)
 
   ```bash
-  python scripts/b2_smi_to_env.py -b <SMILES-FILE> -d ./envs/<ENV> --cpu <CPU>
+  python scripts/b2_smi_to_env.py -b <SMILES-FILE> -d ./envs/<ENV> -t ./templates/<RXN> --cpu <CPU>
   ```
 
 ## Experiments
