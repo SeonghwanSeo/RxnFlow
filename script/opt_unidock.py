@@ -84,4 +84,9 @@ if __name__ == "__main__":
         args.center = get_center(args.ref_ligand)
     else:
         assert len(args.center) == 3, "--center need three values: X Y Z"
+    if args.size is not None:
+        assert len(args.size) in [1, 3], "--center need one or three values: X Y Z"
+        if len(args.size) == 1:
+            v = args.size[0]
+            args.size = [v, v, v]
     run(args)

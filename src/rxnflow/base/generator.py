@@ -1,15 +1,16 @@
-from collections.abc import Iterable
 import functools
-from pathlib import Path
-from typing import Any
 
 import numpy as np
-from omegaconf import OmegaConf
 import torch
-import torch.utils.tensorboard
+from omegaconf import OmegaConf
+
+from collections.abc import Iterable
+from pathlib import Path
+from typing import Any
 from rdkit import Chem, RDLogger
 from torch import Tensor
 
+from gflownet.utils.misc import set_main_process_device, set_worker_rng_seed
 from rxnflow.config import Config
 from rxnflow.utils.misc import set_worker_env
 from rxnflow.algo.trajectory_balance import SynthesisTB
@@ -112,10 +113,12 @@ class RxnFlowSampler:
 
     def setup_algo(self):
         assert self.cfg.algo.method == "TB"
-        self.algo = SynthesisTB(self.env, self.ctx, self.rng, self.cfg)
+        self.algo = SynthesisTB(self.env, self.ctx, self.cfg)
 
     def setup(self):
         self.rng = np.random.default_rng(142857)
+        set_worker_rng_seed(self.cfg.seed)
+        set_main_process_device(self.device)
         self.setup_env()
         self.setup_task()
         self.setup_env_context()
@@ -165,7 +168,7 @@ class RxnFlowSampler:
 
     def calc_reward(self, samples: list[Any], valid_idcs: list[int]) -> list[Any]:
         mols = [sample["result_rdmol"] for sample in samples]
-        flat_r, m_is_valid = self.task.compute_obj_properties(mols, valid_idcs)
+        flat_r, m_is_valid = self.task.compute_obj_properties(mols)
         samples = [sample for sample, is_valid in zip(samples, m_is_valid, strict=True) if is_valid]
         for i, sample in enumerate(samples):
             sample["info"]["reward"] = self.to_item(flat_r[i])

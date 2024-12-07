@@ -10,7 +10,7 @@ Official implementation of **_Generative Flows on Synthetic Pathway for Drug Des
 
 RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space.
 
-- RxnFlow can operate on large synthetic action spaces comprising 1.2M building blocks and 71 reaction templates without compute overhead
+- RxnFlow can operate on large synthetic action spaces comprising 1.2M building blocks and 117 reaction templates without compute overhead
 - RxnFlow can explore broader chemical space within less reaction steps, resulting in higher diversity, higher potency, and lower synthetic complexity of generated molecules.
 - RxnFlow can generate molecules with expanded or modified building block libaries without retraining.
 
@@ -36,8 +36,9 @@ pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.3.1+cu
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
 We provide two reaction template set:
-  - The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/templates/hb_edited.txt](data/template/hb_edited.txt).
-  - We provide the new reaction template set [data/templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol.
+
+- We provide the reaction template set [data/templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
+- The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/templates/hb_edited.txt](data/template/hb_edited.txt).
 
 The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10.
 

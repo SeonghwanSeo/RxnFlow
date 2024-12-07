@@ -12,7 +12,7 @@ from torch import Tensor
 from gflownet import ObjectProperties
 
 from rxnflow.config import Config, init_empty
-from rxnflow.base import BaseTask, RxnFlowTrainer
+from rxnflow.base import BaseTask, RxnFlowTrainer, RxnFlowSampler
 from rxnflow.utils.unidock import unidock_scores
 
 
@@ -128,6 +128,12 @@ class UniDockTrainer(RxnFlowTrainer):
         if len(self.task.best_molecules) > 0:
             info["top100_n"] = len(self.task.best_molecules)
             info["top100_docking"] = np.mean([score for score, _ in self.task.best_molecules])
+
+
+# NOTE: Sampling with pre-trained GFlowNet
+class UniDockSampler(RxnFlowSampler):
+    def setup_task(self):
+        self.task: UniDockTask = UniDockTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
 
 if __name__ == "__main__":
