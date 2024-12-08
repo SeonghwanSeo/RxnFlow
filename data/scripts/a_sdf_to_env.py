@@ -2,7 +2,6 @@ import functools
 from pathlib import Path
 import argparse
 import os
-from typing import List
 
 import numpy as np
 from tqdm import tqdm
@@ -10,14 +9,14 @@ import multiprocessing
 
 from rdkit import Chem
 from rdkit.Chem import BondType
-from gflownet.envs.synthesis.reaction import Reaction
-from gflownet.envs.synthesis.building_block import get_block_features
+from rxnflow.envs.reaction import Reaction
+from rxnflow.envs.building_block import get_block_features
 
 ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 BONDS = [BondType.SINGLE, BondType.DOUBLE, BondType.TRIPLE, BondType.AROMATIC]
 
 
-def run(args, reactions: List[Reaction]):
+def run(args, reactions: list[Reaction]):
     smiles, id = args
     mol = Chem.MolFromSmiles(smiles, replacements={"[2H]": "[H]"})
 
@@ -90,7 +89,7 @@ def main(block_path: str, template_path: str, save_directory_path: str, num_cpus
 
     assert len(smiles_list) == len(ids), "sdf file error, number of <smiles> and <id> should be matched"
     print("Including Mols:", len(smiles_list))
-    with open(template_path, "r") as file:
+    with open(template_path) as file:
         reaction_templates = file.readlines()
     reactions = [Reaction(template=t.strip()) for t in reaction_templates]  # Reaction objects
     func = functools.partial(run, reactions=reactions)
@@ -103,7 +102,7 @@ def main(block_path: str, template_path: str, save_directory_path: str, num_cpus
     fp_list = []
     with open(save_block_path, "w") as w:
         for idx in tqdm(range(0, len(smiles_list), 10000)):
-            chunk = list(zip(smiles_list[idx : idx + 10000], ids[idx : idx + 10000]))
+            chunk = list(zip(smiles_list[idx : idx + 10000], ids[idx : idx + 10000], strict=True))
             with multiprocessing.Pool(num_cpus) as pool:
                 results = pool.map(func, chunk)
             for res in results:
