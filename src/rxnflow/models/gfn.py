@@ -65,7 +65,7 @@ class RxnFlow(TrajectoryBalanceModel):
         assert do_bck is False
         self.do_bck = do_bck
 
-        num_mlp_layers: int = cfg.model.graph_transformer.num_layers
+        num_mlp_layers: int = cfg.model.num_mlp_layers
         self.mlp_firstblock = mlp(num_glob_final, num_emb, num_emb_block, 0)
         self.mlp_stop = mlp(num_glob_final, num_emb, 1, num_mlp_layers)
         self.mlp_uni_rxn = mlp(num_glob_final, num_emb, self.num_uni_rxns, num_mlp_layers)
