@@ -56,9 +56,6 @@ class CustomStandardOnlineTrainer(StandardOnlineTrainer):
     def setup_env(self):
         return GraphBuildingEnv()
 
-    def create_data_source(self, replay_buffer: ReplayBuffer | None = None, is_algo_eval: bool = False):
-        return DataSource(self.cfg, self.ctx, self.algo, self.task, replay_buffer, is_algo_eval)
-
     def setup(self):
         if os.path.exists(self.cfg.log_dir):
             if self.cfg.overwrite_existing_exp:
@@ -126,8 +123,17 @@ class CustomStandardOnlineTrainer(StandardOnlineTrainer):
         with open(pathlib.Path(self.cfg.log_dir) / "config.yaml", "w", encoding="utf8") as f:
             f.write(yaml_cfg)
 
+    def log(self, info, index, key):
+        # NOTE: wandb.run log (key_k -> key/k)
+        if not hasattr(self, "_summary_writer"):
+            self._summary_writer = SummaryWriter(self.cfg.log_dir)
+        for k, v in info.items():
+            self._summary_writer.add_scalar(f"{key}_{k}", v, index)
+        if wandb.run is not None:
+            wandb.log({f"{key}/{k}": v for k, v in info.items()}, step=index)
+
     def build_training_data_loader(self) -> DataLoader:
-        # NOTE: This is same function, but the DataSource is our class.
+        # NOTE: This is same function, but the SQLiteLogHook is our class.
 
         # Since the model may be used by a worker in a different process, we need to wrap it.
         # See implementation_notes.md for more details.
@@ -144,7 +150,7 @@ class CustomStandardOnlineTrainer(StandardOnlineTrainer):
         n_new_replay_samples = self.cfg.replay.num_new_samples or n_drawn if self.cfg.replay.use else None
         n_from_dataset = self.cfg.algo.num_from_dataset
 
-        src = self.create_data_source(replay_buffer=replay_buffer)
+        src = DataSource(self.cfg, self.ctx, self.algo, self.task, replay_buffer=replay_buffer)
         if n_from_dataset:
             src.do_sample_dataset(self.training_data, n_from_dataset, backwards_model=model)
         if n_drawn:
@@ -158,10 +164,10 @@ class CustomStandardOnlineTrainer(StandardOnlineTrainer):
         return self._make_data_loader(src)
 
     def build_validation_data_loader(self) -> DataLoader:
-        # NOTE: This is same function, but the DataSource is our class.
+        # NOTE: This is same function, but the SQLiteLogHook is our class.
         model = self._wrap_for_mp(self.model)
         # TODO: we're changing the default, make sure anything that is using test data is adjusted
-        src = self.create_data_source(is_algo_eval=True)
+        src = DataSource(self.cfg, self.ctx, self.algo, self.task, is_algo_eval=True)
         n_drawn = self.cfg.algo.valid_num_from_policy
         n_from_dataset = self.cfg.algo.valid_num_from_dataset
 
@@ -183,7 +189,7 @@ class CustomStandardOnlineTrainer(StandardOnlineTrainer):
         model = self._wrap_for_mp(self.model)
 
         n_drawn = self.cfg.algo.num_from_policy
-        src = self.create_data_source(is_algo_eval=True)
+        src = DataSource(self.cfg, self.ctx, self.algo, self.task, is_algo_eval=True)
         assert self.cfg.num_final_gen_steps is not None
         # TODO: might be better to change total steps to total trajectories drawn
         src.do_sample_model_n_times(model, n_drawn, num_total=self.cfg.num_final_gen_steps * n_drawn)
@@ -193,12 +199,3 @@ class CustomStandardOnlineTrainer(StandardOnlineTrainer):
         for hook in self.sampling_hooks:
             src.add_sampling_hook(hook)
         return self._make_data_loader(src)
-
-    def log(self, info, index, key):
-        # NOTE: wandb.run log (key_k -> key/k)
-        if not hasattr(self, "_summary_writer"):
-            self._summary_writer = SummaryWriter(self.cfg.log_dir)
-        for k, v in info.items():
-            self._summary_writer.add_scalar(f"{key}_{k}", v, index)
-        if wandb.run is not None:
-            wandb.log({f"{key}/{k}": v for k, v in info.items()}, step=index)

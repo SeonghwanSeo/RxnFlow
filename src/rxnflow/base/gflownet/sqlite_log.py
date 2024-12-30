@@ -27,10 +27,12 @@ class CustomSQLiteLogHook:
         else:
             objs = [""] * len(trajs)
 
+        """ This is New """
         if hasattr(self.ctx, "traj_to_log_repr"):
             traj_str = [self.ctx.traj_to_log_repr(t["traj"]) if t["is_valid"] else "" for t in trajs]
         else:
             traj_str = [""] * len(trajs)
+        """ END """
 
         obj_props = obj_props.reshape((len(obj_props), -1)).data.numpy().tolist()
         rewards = rewards.data.numpy().tolist()

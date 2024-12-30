@@ -252,7 +252,7 @@ class CustomTB(TrajectoryBalance):
             # Life is pain, log_p_B is one unit too short for all trajs
 
             log_p_B_unif = torch.zeros_like(log_p_B)
-            for i, (s, e) in enumerate(zip(first_graph_idx, traj_cumlen)):
+            for i, (s, e) in enumerate(zip(first_graph_idx, traj_cumlen, strict=True)):
                 log_p_B_unif[s : e - 1] = batch.log_p_B[s - i : e - 1 - i]
 
             if self.cfg.backward_policy == Backward.Uniform:

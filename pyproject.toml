@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxnflow"
-version = "0.0.2"
+authors = [{ name = "Seonghwan Seo", email = "shwan0106@gmail.com" }]
+version = "0.1.2"
 readme = "README.md"
 classifiers = ["Operating System :: OS Independent", "Programming Language :: Python", "Programming Language :: Python :: 3"]
-keywords = ["gflownet"]
+keywords = ["gflownet", "rxnflow"]
 requires-python = ">=3.10,<3.11"
 dependencies = [
     "numpy==1.26.4",
@@ -22,17 +23,8 @@ dependencies = [
     "tensorboard",
     "gitpython",
     "botorch",
-    "pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git",
+    "pandas",
 ]
-
-[project.optional-dependencies]
-unidock = [
-    "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
-]
-
-[[project.authors]]
-name = "Seonghwan Seo"
-email = "shwan0106@kaist.ac.kr"
 
 [tool.black]
 line-length = 120
@@ -41,12 +33,10 @@ target-version = ["py310"]
 [tool.ruff]
 target-version = "py310"
 line-length = 120
-
 [tool.ruff.lint]
 select = ["E", "F", "B", "UP", "T203",]
 ignore = ["E501"]
-
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = [
     "F401", # imported but unused
     "E402", # Module level import not at top of file
@@ -60,4 +50,6 @@ reportGeneralTypeIssues = "warning"
 reportDeprecated = "warning"
 reportUnusedVariable = false
 reportUnusedImport = false
-exclude=["data/", "storage/", "wandb/", "nogit/", "logs/"]
+venvPath = '.'
+venv = '.venv'
+exclude = ["data/", "wandb/", "logs/", ".venv/"]

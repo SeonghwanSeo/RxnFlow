@@ -69,7 +69,6 @@ class Config(config.Config):
     git_hash: str | None = None
     overwrite_existing_exp: bool = False
     env_dir: str = MISSING
-    num_workers_retrosynthesis: int = 4
     algo: AlgoConfig = field(default_factory=AlgoConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     opt: config.OptimizerConfig = field(default_factory=config.OptimizerConfig)
