@@ -5,33 +5,37 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rxnflow"
 authors = [{ name = "Seonghwan Seo", email = "shwan0106@gmail.com" }]
-version = "0.1.2"
+version = "0.0.3"
 readme = "README.md"
 classifiers = ["Operating System :: OS Independent", "Programming Language :: Python", "Programming Language :: Python :: 3"]
 keywords = ["gflownet", "rxnflow"]
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.12,<3.13" # for pose prediction module
 dependencies = [
     "numpy==1.26.4",
-    "torch==2.3.1",
-    "torch-geometric==2.4.0",
+    "torch>=2.3.0",
+    "torch-geometric>=2.4.0",
     "torch-scatter==2.1.2",
     "torch-sparse==0.6.18",
     "torch-cluster==1.6.3",
-    "rdkit==2023.9.6",
+    "rdkit>=2023.9.6",
     "omegaconf>=2.3",
     "wandb",
     "tensorboard",
     "gitpython",
     "botorch",
     "pandas",
+    "ruff>=0.8.4",
+    "biopython",
+    "openbabel-wheel==3.1.1.20",
+    "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
 ]
 
 [tool.black]
 line-length = 120
-target-version = ["py310"]
+target-version = ["py312"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "B", "UP", "T203",]
@@ -41,8 +45,9 @@ ignore = ["E501"]
     "F401", # imported but unused
     "E402", # Module level import not at top of file
 ]
+
 [tool.basedpyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 typeCheckingMode = "standard"
 diagnosticMode = "openFilesOnly"
 reportImplicitStringConcatenation = false
@@ -52,4 +57,5 @@ reportUnusedVariable = false
 reportUnusedImport = false
 venvPath = '.'
 venv = '.venv'
-exclude = ["data/", "wandb/", "logs/", ".venv/"]
+include = ["src/"]
+exclude = ["data/", "wandb/", "logs/", ".venv/", ".git/", "**/__pycache__/**", "**/*.pyc"]

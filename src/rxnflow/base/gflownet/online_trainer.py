@@ -67,6 +67,7 @@ class CustomStandardOnlineTrainer(StandardOnlineTrainer):
         os.makedirs(self.cfg.log_dir)
 
         RDLogger.DisableLog("rdApp.*")
+        torch.manual_seed(self.cfg.seed + 42)
         set_worker_rng_seed(self.cfg.seed)
         self.setup_env()
         self.setup_data()

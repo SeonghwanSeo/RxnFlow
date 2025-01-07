@@ -78,17 +78,25 @@ class GraphTransformer(nn.Module):
                     [
                         gnn.GENConv(num_emb, num_emb, num_layers=1, aggr="add", norm=None),
                         gnn.TransformerConv(num_emb * 2, n_att // num_heads, edge_dim=num_emb, heads=num_heads),
-                        nn.Linear(n_att, num_emb),
+                        gnn.Linear(n_att, num_emb),
                         gnn.LayerNorm(num_emb, affine=False),
                         mlp(num_emb, num_emb * 4, num_emb, 1),
                         gnn.LayerNorm(num_emb, affine=False),
-                        nn.Linear(num_emb, num_emb * 2),
+                        gnn.Linear(num_emb, num_emb * 2),
                     ]
                     for i in range(self.num_layers)
                 ],
                 [],
             )
         )
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, mode="fan_in", nonlinearity="leaky_relu", a=0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, g: gd.Batch, cond: Optional[torch.Tensor]):
         """Forward pass

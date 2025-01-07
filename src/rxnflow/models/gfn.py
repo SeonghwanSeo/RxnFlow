@@ -1,18 +1,40 @@
+import torch
 import torch.nn as nn
 import torch_geometric.data as gd
-
 from torch import Tensor
 
 from gflownet.algo.trajectory_balance import TrajectoryBalanceModel
 from gflownet.models.graph_transformer import GraphTransformer, mlp
 
 from rxnflow.config import Config
-from rxnflow.envs.env_context import SynthesisEnvContext, protocol_name_to_mask
+from rxnflow.envs.env_context import SynthesisEnvContext
 from rxnflow.policy.action_categorical import RxnActionCategorical
 
 
-# NOTE: Hyperparameters
-ACT_BLOCK = nn.SiLU
+class BlockEmbedding(nn.Module):
+    def __init__(
+        self,
+        fp_dim: int,
+        desc_dim: int,
+        n_type: int,
+        n_hid: int,
+        n_out: int,
+        n_layers: int,
+    ):
+        super().__init__()
+        self.emb_type = nn.Embedding(n_type, n_hid)
+        self.lin_fp = nn.Linear(fp_dim, n_hid, bias=False)
+        self.lin_desc = nn.Linear(desc_dim, n_hid, bias=True)
+        self.mlp = mlp(n_hid, n_hid, n_out, n_layers)
+        self.act = nn.LeakyReLU()
+
+    def forward(self, block_data: tuple[Tensor, Tensor, Tensor]) -> Tensor:
+        typ, desc, fp = block_data
+        x_typ = self.emb_type(typ)
+        x_fp = self.lin_fp(fp)
+        x_desc = self.lin_desc(desc)
+        x = x_typ + x_fp + x_desc
+        return self.mlp(self.act(x))
 
 
 class RxnFlow(TrajectoryBalanceModel):
@@ -27,36 +49,42 @@ class RxnFlow(TrajectoryBalanceModel):
     ) -> None:
         super().__init__()
         assert do_bck is False
+
         self.do_bck: bool = do_bck
         self.num_graph_out: int = num_graph_out
 
         num_emb = cfg.model.num_emb
         num_glob_final = num_emb * 2  # *2 for concatenating global mean pooling & node embeddings
         num_mlp_layers: int = cfg.model.num_mlp_layers
-        num_block_dim = env_ctx.num_block_features
-        num_block_mlp_layers: int = cfg.model.num_mlp_layers_block
-        self.protocol_names = [protocol.name for protocol in env_ctx.protocols]
 
-        # NOTE: Block embedding
-        self.mlp_block = mlp(num_block_dim, num_emb, num_emb, n_layer=num_block_mlp_layers, act=ACT_BLOCK)
+        num_emb_block = cfg.model.num_emb_block
+        num_mlp_layers_block = cfg.model.num_mlp_layers_block
 
         # NOTE: State embedding
         self.transf = GraphTransformer(
             x_dim=env_ctx.num_node_dim,
             e_dim=env_ctx.num_edge_dim,
-            g_dim=env_ctx.num_cond_dim,
+            g_dim=env_ctx.num_cond_dim + env_ctx.num_graph_dim,
             num_emb=cfg.model.num_emb,
             num_layers=cfg.model.graph_transformer.num_layers,
             num_heads=cfg.model.graph_transformer.num_heads,
             ln_type=cfg.model.graph_transformer.ln_type,
         )
 
-        mlps = {
-            k.name: mlp(num_glob_final, num_emb, num_emb, num_mlp_layers)
-            for k in env_ctx.firstblock_list + env_ctx.birxn_list
-        }
-        mlps.update({k.name: mlp(num_glob_final, num_emb, 1, num_mlp_layers) for k in env_ctx.unirxn_list})
-        self.mlp = nn.ModuleDict(mlps)
+        # NOTE: Block embedding
+        self.emb_block = BlockEmbedding(
+            env_ctx.block_fp_dim,
+            env_ctx.block_desc_dim,
+            env_ctx.num_block_types,
+            num_emb_block,
+            num_emb_block,
+            num_mlp_layers_block,
+        )
+
+        embs = {p.name: nn.Parameter(torch.randn((num_glob_final,), requires_grad=True)) for p in env_ctx.protocols}
+        self.emb_protocol = nn.ParameterDict(embs)
+        self.mlp = mlp(num_glob_final, num_emb, num_emb_block, num_mlp_layers)
+        self.act = nn.LeakyReLU()
 
         self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, num_mlp_layers)
         self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2)
@@ -65,12 +93,8 @@ class RxnFlow(TrajectoryBalanceModel):
         return self._logZ(cond_info)
 
     def _make_cat(self, g: gd.Batch, emb: Tensor) -> RxnActionCategorical:
-        return RxnActionCategorical(
-            g,
-            emb,
-            action_masks=[protocol_name_to_mask(t, g) for t in self.protocol_names],
-            model=self,
-        )
+        action_masks = list(torch.unbind(g.protocol_mask, dim=1))  # [Ngraph, Nprotocol]
+        return RxnActionCategorical(g, emb, action_masks=action_masks, model=self)
 
     def forward(self, g: gd.Batch, cond: Tensor) -> tuple[RxnActionCategorical, Tensor]:
         """
@@ -87,60 +111,31 @@ class RxnFlow(TrajectoryBalanceModel):
         RxnActionCategorical
         """
         assert g.num_graphs == cond.shape[0]
-        node_emb, graph_emb = self.transf(g, cond)
+        node_emb, graph_emb = self.transf(g, torch.cat([cond, g.graph_attr], dim=-1))
         # node_emb = node_emb[g.connect_atom] # NOTE: we need to modify here
         emb = graph_emb
         graph_out = self.emb2graph_out(emb)
         fwd_cat = self._make_cat(g, emb)
-
-        if self.do_bck:
-            raise NotImplementedError
         return fwd_cat, graph_out
 
-    def hook_unirxn(self, emb: Tensor, protocol: str):
+    def hook_adding_block(
+        self,
+        emb: Tensor,
+        blocks: tuple[Tensor, Tensor, Tensor],
+        protocol: str,
+    ):
         """
-        The hook function to be called for the UniRxn action.
-        Parameters
-        emb : Tensor
-            The embedding tensor for the current states.
-            shape: [Nstate, Fstate,]
-        protocol: str
-            The name of protocol.
-
-        Returns
-        Tensor
-            The logits for UniRxn
-            shape: [Nstate, 1]
-        """
-        return self.mlp[protocol](emb)
-
-    def single_hook_unirxn(self, single_emb: Tensor, protocol: str):
-        """
-        The single hook function to be called for the UniRxn action.
-        Parameters
-        single_emb : Tensor
-            The embedding tensor for the single state.
-            shape: [Fstate,]
-        protocol: str
-            The name of protocol.
-
-        Returns
-        Tensor
-            The logit for UniRxn
-            shape: (scalar)
-        """
-        return self.mlp[protocol](single_emb).view(-1)
-
-    def hook_adding_block(self, emb: Tensor, blocks: Tensor, protocol: str):
-        """
-        The hook function to be called for the FirstBlock and BiRxn.
+        The hook function to be called for the FirstBlock, BiRxn.
         Parameters
         emb : Tensor
             The embedding tensor for the current states.
             shape: [Nstate, Fstate]
-        blocks : Tensor
-            The tensor for building blocks.
-            shape: [Nblock, Fblock]
+        blocks : tuple[Tensor, Tensor, Tensor]
+            The building block features.
+            shape:
+                - LongTensor, [Nblock,]
+                - FloatTensor, [Nblock, F_desc]
+                - FloatTensor, [Nblock, F_fingerprint]
         protocol: str
             The name of protocol.
 
@@ -149,30 +144,7 @@ class RxnFlow(TrajectoryBalanceModel):
             The logits of the MLP.
             shape: [Nstate, Nblock]
         """
-        state_emb: Tensor = self.mlp[protocol](emb)
-        block_emb = self.mlp_block(blocks)
+        state_emb: Tensor = self.mlp(self.act(emb + self.emb_protocol[protocol].view(1, -1)))
+        block_emb = self.emb_block(blocks)
 
         return state_emb @ block_emb.T
-
-    def single_hook_adding_block(self, single_emb: Tensor, single_block: Tensor, protocol: str):
-        """
-        The single hook function to be called for the FirstBlock and BiRxn.
-        Parameters
-        single_emb : Tensor
-            The embedding tensor for the single state.
-            shape: [Fstate,]
-        single_emb : Tensor
-            The tensor for single building block.
-            shape: [Fblock,]
-        protocol: str
-            The name of protocol.
-
-        Returns
-        Tensor
-            The logit of the MLP.
-            shape: (scalar)
-        """
-        state_emb: Tensor = self.mlp[protocol](single_emb)
-        block_emb = self.mlp_block(single_block)
-
-        return state_emb @ block_emb

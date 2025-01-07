@@ -64,6 +64,7 @@ class Config(config.Config):
     num_validation_gen_steps: int | None = None
     num_training_steps: int = 10_000
     num_workers: int = 0
+    num_workers_retrosynthesis: int = 4  # For retrosynthetic analysis
     hostname: str | None = None
     pickle_mp_messages: bool = False
     git_hash: str | None = None

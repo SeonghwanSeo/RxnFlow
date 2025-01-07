@@ -8,7 +8,7 @@ from rdkit.Chem import Mol as RDMol
 from unidock_tools.application.unidock_pipeline import UniDock
 
 
-def unidock_scores(
+def run_docking(
     rdmol_list: list[RDMol],
     pocket_file: str | Path,
     out_path: Path | str,
@@ -54,6 +54,7 @@ def unidock_scores(
                     with open(docked_sdf_file) as f:
                         lines = f.readlines()
                     writer.writelines(lines)
+
                     for i, ln in enumerate(lines):
                         if ln.startswith(">  <docking_score>"):
                             score = float(lines[i + 1])

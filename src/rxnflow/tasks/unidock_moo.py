@@ -2,12 +2,13 @@ import torch
 import torch.nn as nn
 from rdkit.Chem import QED
 
+from collections import OrderedDict
 from collections.abc import Callable
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
-from rxnflow.config import Config
-from rxnflow.base import RxnFlowTrainer, mogfn_trainer
+from rxnflow.config import Config, init_empty
+from rxnflow.base import mogfn_trainer
 from rxnflow.utils.chem_metrics import mol2qed, mol2sascore
 from rxnflow.tasks.unidock import UniDockTask, UniDockTrainer
 
@@ -22,30 +23,26 @@ class UniDockMOOTask(UniDockTask):
 
     def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
         super().__init__(cfg, wrap_model)
-        assert set(self.objectives) <= {"docking", "qed", "sa"}
+        assert set(self.objectives) <= {"vina", "qed", "sa"}
 
     def compute_rewards(self, objs: list[RDMol]) -> Tensor:
-        out_dir = self.save_dir / f"oracle{self.oracle_idx}"
         fr: Tensor
         flat_r: list[Tensor] = []
-        self.avg_reward_info = []
+        self.avg_reward_info = OrderedDict()
         for prop in self.objectives:
-            if prop == "docking":
-                docking_scores = self.run_docking(objs, out_dir)
-                self.update_storage(objs, docking_scores.tolist())
-                fr = docking_scores * -0.1
+            if prop == "vina":
+                fr = self.run_docking(objs) * -0.1
             else:
                 fr = aux_tasks[prop](objs)
             flat_r.append(fr)
-            self.avg_reward_info.append((prop, fr.mean().item()))
+            self.avg_reward_info[prop] = fr.mean().item()
         flat_rewards = torch.stack(flat_r, dim=1)
         assert flat_rewards.shape[0] == len(objs)
         return flat_rewards
 
     def update_storage(self, objs: list[RDMol], scores: list[float]):
-
         def _filter(obj: RDMol) -> bool:
-            """Check the object passes exact property filter"""
+            """Check the object passes a property filter"""
             return QED.qed(obj) > 0.5
 
         pass_idcs = [i for i, obj in enumerate(objs) if _filter(obj)]
@@ -54,69 +51,42 @@ class UniDockMOOTask(UniDockTask):
         super().update_storage(pass_objs, pass_scores)
 
 
-class UniDockMOO_PretrainTask(UniDockMOOTask):
-    """Sets up a pretraining task where the reward is computed using a UniDock, QED."""
-
-    def compute_rewards(self, objs: list[RDMol]) -> Tensor:
-        fr: Tensor
-        fr_dict: dict[str, Tensor] = {}
-        self.avg_reward_info = []
-        for obj in self.objectives:
-            if obj == "docking":
-                continue
-            else:
-                fr = aux_tasks[obj](objs)
-            fr_dict[obj] = fr
-            self.avg_reward_info.append((obj, fr.mean().item()))
-        avg_fr = torch.stack(list(fr_dict.values()), -1).sum(-1) / (len(self.objectives) - 1)
-        fr_dict["docking"] = avg_fr  # insert dummy values
-        flat_r = [fr_dict[obj] for obj in self.objectives]
-        flat_rewards = torch.stack(flat_r, dim=1)
-        assert flat_rewards.shape[0] == len(objs)
-        return flat_rewards
-
-
 @mogfn_trainer
 class UniDockMOOTrainer(UniDockTrainer):
     task: UniDockMOOTask
 
     def set_default_hps(self, base: Config):
         super().set_default_hps(base)
-        base.validate_every = 0
-        base.task.moo.objectives = ["docking", "qed"]
         base.num_training_steps = 1000
+        base.task.constraint.rule = None
+        base.task.moo.objectives = ["vina", "qed"]
 
-        base.cond.temperature.dist_params = [16, 64]
-        base.replay.use = True
-        base.replay.capacity = 6_400
-        base.replay.warmup = 128
+        base.cond.temperature.sample_dist = "uniform"
+        base.cond.temperature.dist_params = [0, 64]
+        base.algo.train_random_action_prob = 0.05
         base.cond.weighted_prefs.preference_type = "dirichlet"
         base.cond.focus_region.focus_type = None
-        base.algo.train_random_action_prob = 0.02
 
     def setup_task(self):
         self.task = UniDockMOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
+    def add_extra_info(self, info):
+        for prop, fr in self.task.avg_reward_info.items():
+            info[f"sample_r_{prop}_avg"] = fr
+        super().add_extra_info(info)
 
-@mogfn_trainer
-class UniDockMOO_Pretrainer(RxnFlowTrainer):
-    task: UniDockMOO_PretrainTask
 
-    def set_default_hps(self, base: Config):
-        super().set_default_hps(base)
-        base.desc = "Vina-QED optimization with UniDock"
-        base.validate_every = 0
-        base.task.moo.objectives = ["docking", "qed"]
-        base.cond.weighted_prefs.preference_type = "dirichlet"
-        base.cond.focus_region.focus_type = None
+if __name__ == "__main__":
+    """Example of how this trainer can be run"""
+    config = init_empty(Config())
+    config.print_every = 1
+    config.log_dir = "./logs/debug-unidock/"
+    config.env_dir = "./data/envs/stock"
+    config.overwrite_existing_exp = True
+    config.algo.action_subsampling.sampling_ratio = 0.01
 
-        base.cond.temperature.dist_params = [16, 64]
-        base.algo.train_random_action_prob = 0.1
+    config.task.docking.protein_path = "./data/examples/6oim_protein.pdb"
+    config.task.docking.center = (1.872, -8.260, -1.361)
 
-    def setup_task(self):
-        self.task = UniDockMOO_PretrainTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
-
-    def log(self, info, index, key):
-        for obj, v in self.task.avg_reward_info:
-            info[f"sampled_{obj}_avg"] = v
-        super().log(info, index, key)
+    trial = UniDockMOOTrainer(config)
+    trial.run()

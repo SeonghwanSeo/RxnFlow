@@ -9,7 +9,7 @@ class MOOTaskConfig:
     Attributes
     ----------
     objectives : list[str]
-        The objectives to use for the multi-objective optimization..
+        The objectives to use for the multi-objective optimization.
     n_valid : int
         The number of valid cond_info tensors to sample.
     n_valid_repeats : int
@@ -18,7 +18,7 @@ class MOOTaskConfig:
         Whether to calculate the pareto front online.
     """
 
-    objectives: list[str] = field(default_factory=lambda: ["vina", "qed"])
+    objectives: list[str] = field(default_factory=lambda: [])
     n_valid: int = 15
     n_valid_repeats: int = 128
     log_topk: bool = False
@@ -26,27 +26,8 @@ class MOOTaskConfig:
 
 
 @dataclass
-class PocketConditionalConfig:
-    """Config for PocketConditional Training
-
-    Attributes
-    ----------
-    proxy: tuple[str, str, str] (proxy_name, docking_program, train_dataset)
-        Proxy Key from PharmacoNet
-    pocket_db: str (path)
-        Index file including pocket key-filepath pairs (e.g. 10gs,./data/protein/10gs.pdb)
-    pocket_dim: int
-        Pocket embedding dimension
-    """
-
-    proxy: tuple[str, str, str] = MISSING
-    pocket_db: str = MISSING
-    pocket_dim: int = 128
-
-
-@dataclass
 class DockingTaskConfig:
-    """Config for SBDDConfig
+    """Config for DockingTask
 
     Attributes
     ----------
@@ -56,35 +37,31 @@ class DockingTaskConfig:
         Pocket Center
     size: tuple[float, float, float]
         Pocket Box Size
-    threshold: float (<0.0)
-        Reward = threshold - (docking score)
     """
 
     protein_path: str = MISSING
     center: tuple[float, float, float] = MISSING
-    size: tuple[float, float, float] = (22.5, 22.5, 22.5)
-    threshold: float = 0.0
+    size: tuple[float, float, float] = (20, 20, 20)
 
 
 @dataclass
-class DrugFilter:
-    """Config for SBDDConfig
+class ConstraintConfig:
+    """Config for Filtering
 
     Attributes
     ----------
     rule: str (path)
         DrugFilter Rule
-            - null
+            - None
             - lipinski
             - veber
     """
 
-    rule: str = "null"
+    rule: str | None = None
 
 
 @dataclass
 class TasksConfig:
-    moo: MOOTaskConfig = MOOTaskConfig()
-    pocket_conditional: PocketConditionalConfig = PocketConditionalConfig()
-    constraint: DrugFilter = DrugFilter()
-    docking: DockingTaskConfig = DockingTaskConfig()
+    moo: MOOTaskConfig = field(default_factory=MOOTaskConfig)
+    constraint: ConstraintConfig = field(default_factory=ConstraintConfig)
+    docking: DockingTaskConfig = field(default_factory=DockingTaskConfig)

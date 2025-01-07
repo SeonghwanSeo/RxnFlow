@@ -4,17 +4,11 @@ data/building_blocks/
 data/envs/
 data/experiments/
 logs/
-debug/
-.github/
-experiments/analysis
-experiments/release-ckpt
-storage*
+wandb*
 job*.sh
 slurm-*
-wandb*
-nogit*/
-unidock_2024*
-weights/
+uv.lock
+unidock_2025*/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -34,7 +34,7 @@ def shift_right(x: torch.Tensor, z=0):
 
 
 def cross(x: torch.Tensor):
-    """
+    r"""
     Calculate $y_{ij} = \sum_{t=i}^j x_t$.
     The lower triangular portion is the inverse of the upper triangular one.
     """

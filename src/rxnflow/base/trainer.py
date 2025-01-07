@@ -7,12 +7,10 @@ from typing import Any
 
 from gflownet.utils.multiobjective_hooks import MultiObjectiveStatsHook
 
-from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
 from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnv, SynthesisEnvContext
 from rxnflow.algo.trajectory_balance import SynthesisTB
 from rxnflow.models.gfn import RxnFlow
-from rxnflow.policy.action_categorical import RxnActionCategorical
 from rxnflow.utils.misc import set_worker_env
 
 from .gflownet.online_trainer import CustomStandardOnlineTrainer
@@ -48,8 +46,6 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
 
         # Custom Parameters
         base.algo.sampling_tau = 0.0
-        base.cond.temperature.sample_dist = "constant"
-        base.cond.temperature.dist_params = [32.0]
 
     def load_checkpoint(self, checkpoint_path: str | Path):
         state = torch.load(checkpoint_path, map_location="cpu")
@@ -90,21 +86,6 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
             do_bck=self.cfg.algo.tb.do_parameterize_p_b,
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
-
-    def _wrap_for_mp(self, obj):
-        """Wraps an object in a placeholder whose reference can be sent to a
-        data worker process (only if the number of workers is non-zero)."""
-        if self.cfg.num_workers > 0 and obj is not None:
-            wrapper = mp_object_wrapper(
-                obj,
-                self.cfg.num_workers,
-                cast_types=(gd.Batch, RxnActionCategorical),
-                pickle_messages=self.cfg.pickle_mp_messages,
-            )
-            self.to_terminate.append(wrapper.terminate)
-            return wrapper.placeholder
-        else:
-            return obj
 
 
 def mogfn_trainer(cls: type[RxnFlowTrainer]):

@@ -14,10 +14,13 @@ class SubsamplingConfig(StrictDataClass):
         global subsampling ratio, [0, 1]
     min_sampling : int
         the minimum number of actions for each block types
+    importance_temp : float
+        [Experimental] the temperature of importance weighting during sampling
     """
 
     sampling_ratio: float = 1.0
-    min_sampling: int = 100
+    min_sampling: int = 10
+    importance_temp: float = 0.0
 
 
 @dataclass
@@ -63,11 +66,11 @@ class AlgoConfig(StrictDataClass):
     num_from_dataset: int = 0
     valid_num_from_policy: int = 64
     valid_num_from_dataset: int = 0
-    max_len: int = 3  # NOTE: FIXED VALUE!!
+    max_len: int = 4
     illegal_action_logreward: float = -100
     train_random_action_prob: float = 0.05
     train_det_after: int | None = None
     valid_random_action_prob: float = 0.0
     sampling_tau: float = 0.0
     tb: TBConfig = field(default_factory=TBConfig)
-    action_subsampling: SubsamplingConfig = SubsamplingConfig()
+    action_subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)
