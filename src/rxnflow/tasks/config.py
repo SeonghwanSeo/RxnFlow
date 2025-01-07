@@ -8,19 +8,19 @@ class MOOTaskConfig:
 
     Attributes
     ----------
+    objectives : list[str]
+        The objectives to use for the multi-objective optimization..
     n_valid : int
         The number of valid cond_info tensors to sample.
     n_valid_repeats : int
         The number of times to repeat the valid cond_info tensors.
-    objectives : list[str]
-        The objectives to use for the multi-objective optimization..
     online_pareto_front : bool
         Whether to calculate the pareto front online.
     """
 
+    objectives: list[str] = field(default_factory=lambda: ["vina", "qed"])
     n_valid: int = 15
     n_valid_repeats: int = 128
-    objectives: list[str] = field(default_factory=lambda: ["vina", "qed"])
     log_topk: bool = False
     online_pareto_front: bool = True
 

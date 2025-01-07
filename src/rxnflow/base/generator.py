@@ -29,7 +29,7 @@ samples = sampler.sample(200, calc_reward = False)
 samples[0] = {'smiles': <smiles>, 'traj': <traj>, 'info': <info>}
 samples[0]['traj'] = [
     (('Start Block',), smiles1),        # None    -> smiles1
-    (('ReactUni', template), smiles2),  # smiles1 -> smiles2
+    (('UniRxn', template), smiles2),    # smiles1 -> smiles2
     ...                                 # smiles2 -> ...
 ]
 samples[0]['info'] = {'beta': <beta> ...}
@@ -77,7 +77,7 @@ class RxnFlowSampler:
         samples[0] = {'smiles': <smiles>, 'traj': <traj>, 'info': <info>}
         samples[0]['traj'] = [
             (('Start Block',), smiles1),        # None    -> smiles1
-            (('ReactUni', template), smiles2),  # smiles1 -> smiles2
+            (('UniRxn', template), smiles2),  # smiles1 -> smiles2
             ...                                 # smiles2 -> ...
         ]
         samples[0]['info'] = {'beta': <beta>, ...}
@@ -95,7 +95,9 @@ class RxnFlowSampler:
         pass
 
     def setup_task(self):
-        raise NotImplementedError()
+        self.task = BaseTask(self.cfg, self._wrap_for_mp)
+        pass
+        # raise NotImplementedError()
 
     def setup_env(self):
         self.env = SynthesisEnv(self.cfg.env_dir)
@@ -104,8 +106,6 @@ class RxnFlowSampler:
         self.ctx = SynthesisEnvContext(
             self.env,
             num_cond_dim=self.task.num_cond_dim,
-            fp_radius_building_block=self.cfg.model.fp_radius_building_block,
-            fp_nbits_building_block=self.cfg.model.fp_nbits_building_block,
         )
 
     def setup_model(self):
@@ -141,7 +141,7 @@ class RxnFlowSampler:
             samples = self.step(it, batch_size, calc_reward)
             for sample in samples:
                 out = {
-                    "smiles": Chem.MolToSmiles(sample["result_rdmol"]),
+                    "smiles": Chem.MolToSmiles(self.ctx.graph_to_obj(sample["result"])),
                     "traj": self.ctx.read_traj(sample["traj"]),
                     "info": sample["info"],
                 }
@@ -167,7 +167,7 @@ class RxnFlowSampler:
         return samples
 
     def calc_reward(self, samples: list[Any], valid_idcs: list[int]) -> list[Any]:
-        mols = [sample["result_rdmol"] for sample in samples]
+        mols = [self.ctx.graph_to_obj(sample["result"]) for sample in samples]
         flat_r, m_is_valid = self.task.compute_obj_properties(mols)
         samples = [sample for sample, is_valid in zip(samples, m_is_valid, strict=True) if is_valid]
         for i, sample in enumerate(samples):

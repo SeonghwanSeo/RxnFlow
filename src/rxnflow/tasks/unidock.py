@@ -9,8 +9,6 @@ from collections.abc import Callable
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
-from gflownet import ObjectProperties
-
 from rxnflow.config import Config, init_empty
 from rxnflow.base import BaseTask, RxnFlowTrainer, RxnFlowSampler
 from rxnflow.utils.unidock import unidock_scores
@@ -28,72 +26,69 @@ class UniDockTask(BaseTask):
         self.search_mode: str = "balance"  # fast, balance, detail
         assert self.filter in ["null", "lipinski", "veber"]
 
-        self.last_molecules: list[tuple[float, str]] = []
-        self.best_molecules: list[tuple[float, str]] = []
         self.save_dir: Path = Path(cfg.log_dir) / "docking"
         self.save_dir.mkdir()
-        self.oracle_idx = 0
+        self.batch_scores: list[float] = []
+        self.best_scores: list[float] = []
+        self.batch_novelty: float = 0.0
+        self.history: set[str] = set()
 
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        is_valid_t = torch.ones(len(objs), dtype=torch.bool)
+    def compute_rewards(self, objs: list[RDMol]) -> Tensor:
+        out_dir = self.save_dir / f"oracle{self.oracle_idx}"
+        docking_scores = self.run_docking(objs, out_dir)
+        fr = self.convert_docking_score(docking_scores)
+        self.update_storage(objs, docking_scores.tolist())
+        return fr.reshape(-1, 1)
 
-        fr = torch.zeros(len(objs), dtype=torch.float)
-        is_pass = [self.constraint(obj) for obj in objs]
-        valid_objs = [obj for flag, obj in zip(is_pass, objs, strict=True) if flag]
-        if len(valid_objs) > 0:
-            docking_scores = self.run_docking(valid_objs)
-            self.update_storage(valid_objs, docking_scores.tolist())
-            fr[is_pass] = self.convert_docking_score(docking_scores)
-        return ObjectProperties(fr.reshape(-1, 1)), is_valid_t
+    def convert_docking_score(self, scores: torch.Tensor):
+        return self.threshold - scores
 
-    def constraint(self, mol: RDMol) -> bool:
+    def filter_object(self, obj: RDMol) -> bool:
         if self.filter == "null":
             pass
         elif self.filter in ("lipinski", "veber"):
-            if rdMolDescriptors.CalcExactMolWt(mol) > 500:
+            if rdMolDescriptors.CalcExactMolWt(obj) > 500:
                 return False
-            if Lipinski.NumHDonors(mol) > 5:
+            if Lipinski.NumHDonors(obj) > 5:
                 return False
-            if Lipinski.NumHAcceptors(mol) > 10:
+            if Lipinski.NumHAcceptors(obj) > 10:
                 return False
-            if Crippen.MolLogP(mol) > 5:
+            if Crippen.MolLogP(obj) > 5:
                 return False
             if self.filter == "veber":
-                if rdMolDescriptors.CalcTPSA(mol) > 140:
+                if rdMolDescriptors.CalcTPSA(obj) > 140:
                     return False
-                if Lipinski.NumRotatableBonds(mol) > 10:
+                if Lipinski.NumRotatableBonds(obj) > 10:
                     return False
         else:
             raise ValueError(self.filter)
         return True
 
-    def convert_docking_score(self, scores: torch.Tensor):
-        return self.threshold - scores
-
-    def run_docking(self, mols: list[RDMol]) -> Tensor:
-        out_path = self.save_dir / f"oracle{self.oracle_idx}.sdf"
+    def run_docking(self, mols: list[RDMol], out_dir: Path) -> Tensor:
         vina_score = unidock_scores(
             mols,
             self.protein_path,
+            out_dir,
             self.center,
-            out_path,
             self.size,
             seed=1,
             search_mode=self.search_mode,
             ff_optimization=self.ff_optimization,
         )
-        self.oracle_idx += 1
         return torch.tensor(vina_score, dtype=torch.float).clip(max=0.0)
 
-    def update_storage(self, mols: list[RDMol], scores: list[float]):
-        smiles_list = [Chem.MolToSmiles(mol) for mol in mols]
-        self.last_molecules = [(score, smi) for score, smi in zip(scores, smiles_list, strict=True)]
+    def update_storage(self, objs: list[RDMol], scores: list[float]):
+        self.batch_scores = scores
+        smiles_list = [Chem.MolToSmiles(obj) for obj in objs]
 
-        best_smi = set(smi for _, smi in self.best_molecules)
-        score_smiles = [(score, smi) for score, smi in self.last_molecules if smi not in best_smi]
-        self.best_molecules = self.best_molecules + score_smiles
-        self.best_molecules.sort(key=lambda v: v[0])
-        self.best_molecules = self.best_molecules[:1000]
+        score_dict = {smi: v for smi, v in zip(smiles_list, scores, strict=True)}
+        nov_uniq_smi = list(set(smiles_list).difference(self.history))
+        self.history.update(nov_uniq_smi)
+
+        nov_uniq_scores = [score_dict[smi] for smi in nov_uniq_smi]
+        self.best_scores = self.best_scores + nov_uniq_scores
+        self.best_scores.sort()
+        self.best_scores = self.best_scores[:1000]
 
 
 class UniDockTrainer(RxnFlowTrainer):
@@ -111,7 +106,7 @@ class UniDockTrainer(RxnFlowTrainer):
         base.replay.use = True
         base.replay.capacity = 6_400
         base.replay.warmup = 256
-        base.algo.train_random_action_prob = 0.01
+        base.algo.train_random_action_prob = 0.1
 
     def setup_task(self):
         self.task = UniDockTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
@@ -121,13 +116,11 @@ class UniDockTrainer(RxnFlowTrainer):
         super().log(info, index, key)
 
     def add_extra_info(self, info):
-        if self.task.filter != "null":
-            info["pass_constraint"] = len(self.task.last_molecules) / self.cfg.algo.num_from_policy
-        if len(self.task.last_molecules) > 0:
-            info["sample_docking_avg"] = np.mean([score for score, _ in self.task.last_molecules])
-        if len(self.task.best_molecules) > 0:
-            info["top100_n"] = len(self.task.best_molecules)
-            info["top100_docking"] = np.mean([score for score, _ in self.task.best_molecules])
+        if len(self.task.batch_scores) > 0:
+            info["sample_docking_avg"] = np.mean(self.task.batch_scores)
+        info["top_n"] = len(self.task.best_scores)
+        for topn in [10, 50, 100, 500, 1000]:
+            info[f"top{topn}_docking"] = np.mean(self.task.best_scores[:topn])
 
 
 # NOTE: Sampling with pre-trained GFlowNet
@@ -144,9 +137,7 @@ if __name__ == "__main__":
     config.log_dir = "./logs/debug-unidock/"
     config.env_dir = "./data/envs/real"
     config.overwrite_existing_exp = True
-    config.algo.max_len = 2
-    config.algo.action_subsampling.sampling_ratio = 0.01
-    config.task.constraint.rule = "lipinski"
+    config.algo.action_subsampling.sampling_ratio = 0.1
 
     config.task.docking.protein_path = "./data/examples/6oim_protein.pdb"
     config.task.docking.center = (1.872, -8.260, -1.361)

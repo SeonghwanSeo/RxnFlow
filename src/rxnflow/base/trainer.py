@@ -1,18 +1,18 @@
 import functools
 import socket
 from pathlib import Path
-from omegaconf import OmegaConf
 import torch
 import torch_geometric.data as gd
 from typing import Any
 
-from gflownet.algo.config import Backward
 from gflownet.utils.multiobjective_hooks import MultiObjectiveStatsHook
 
+from gflownet.utils.multiprocessing_proxy import mp_object_wrapper
 from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnv, SynthesisEnvContext
 from rxnflow.algo.trajectory_balance import SynthesisTB
 from rxnflow.models.gfn import RxnFlow
+from rxnflow.policy.action_categorical import RxnActionCategorical
 from rxnflow.utils.misc import set_worker_env
 
 from .gflownet.online_trainer import CustomStandardOnlineTrainer
@@ -36,21 +36,20 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         base.algo.tb.Z_learning_rate = 1e-3
 
         # Important Parameters
-        base.algo.train_random_action_prob = 0.05  # >= 0.05
+        base.algo.train_random_action_prob = 0.05
         base.algo.tb.do_sample_p_b = False
         base.algo.tb.do_parameterize_p_b = False
 
         # Online Training Parameters
         base.algo.num_from_policy = 64
         base.algo.valid_num_from_policy = 0
+        base.num_validation_gen_steps = 0
         base.validate_every = 0
 
         # Custom Parameters
-        base.model.num_mlp_layers = 1
-        base.algo.sampling_tau = 0.9
-        base.algo.tb.backward_policy = Backward.Free  # Free or Uniform
-        base.cond.temperature.sample_dist = "uniform"
-        base.cond.temperature.dist_params = [0, 64.0]
+        base.algo.sampling_tau = 0.0
+        base.cond.temperature.sample_dist = "constant"
+        base.cond.temperature.dist_params = [32.0]
 
     def load_checkpoint(self, checkpoint_path: str | Path):
         state = torch.load(checkpoint_path, map_location="cpu")
@@ -73,18 +72,11 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
 
     def setup_env(self):
         self.env = SynthesisEnv(self.cfg.env_dir)
-        as_cfg = self.cfg.algo.action_subsampling
-        if OmegaConf.is_missing(as_cfg, "num_sampling_first_block"):
-            as_cfg.num_sampling_first_block = int(as_cfg.sampling_ratio * self.env.num_building_blocks)
-        if OmegaConf.is_missing(as_cfg, "sampling_ratio_bi_rxn"):
-            as_cfg.sampling_ratio_bi_rxn = as_cfg.sampling_ratio
 
     def setup_env_context(self):
         self.ctx = SynthesisEnvContext(
             self.env,
             num_cond_dim=self.task.num_cond_dim,
-            fp_radius_building_block=self.cfg.model.fp_radius_building_block,
-            fp_nbits_building_block=self.cfg.model.fp_nbits_building_block,
         )
 
     def setup_algo(self):
@@ -98,6 +90,21 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
             do_bck=self.cfg.algo.tb.do_parameterize_p_b,
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
+
+    def _wrap_for_mp(self, obj):
+        """Wraps an object in a placeholder whose reference can be sent to a
+        data worker process (only if the number of workers is non-zero)."""
+        if self.cfg.num_workers > 0 and obj is not None:
+            wrapper = mp_object_wrapper(
+                obj,
+                self.cfg.num_workers,
+                cast_types=(gd.Batch, RxnActionCategorical),
+                pickle_messages=self.cfg.pickle_mp_messages,
+            )
+            self.to_terminate.append(wrapper.terminate)
+            return wrapper.placeholder
+        else:
+            return obj
 
 
 def mogfn_trainer(cls: type[RxnFlowTrainer]):

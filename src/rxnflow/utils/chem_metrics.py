@@ -1,14 +1,11 @@
-from pathlib import Path
 import numpy as np
 import torch
 
 from rdkit import Chem, DataStructs
-from rdkit.Chem import QED
-
+from rdkit.Chem import QED, Descriptors
 from rdkit.Chem import Mol as RDMol
 
 from gflownet.utils import sascore
-from .unidock import unidock_scores
 
 
 def compute_diverse_top_k(
@@ -64,3 +61,7 @@ def mol2sascore(mols: list[RDMol], default=10):
 
 def mol2qed(mols: list[RDMol], default=0):
     return torch.tensor([safe(QED.qed, mol, default) for mol in mols])
+
+
+def mol2mw(mols: list[RDMol]):
+    return torch.tensor([Descriptors.MolWt(mol) for mol in mols])

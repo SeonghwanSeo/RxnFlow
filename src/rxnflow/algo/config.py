@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from omegaconf import MISSING
 
 from gflownet.utils.misc import StrictDataClass
 from gflownet.algo.config import TBConfig
@@ -13,27 +12,12 @@ class SubsamplingConfig(StrictDataClass):
     ----------
     sampling_ratio : float
         global subsampling ratio, [0, 1]
-    num_sampling_first_block : int
-        the number of actions for AddFirstReactant (override sampling_ratio)
-    sampling_ratio_bi_rxn : float
-        subsampling ratio for ReactBi (override sampling_ratio)
-    min_sampling_reatbi : int
-        the minimum number of actions for each reaction template; ReactBi
-
-    ** Advanced Parameters **
-    num_mc_sampling : int
-        Theoretically, set num_mc_sampling to 1 and set larger sampling ratio is better.
-    onpolicy_temp : float
-        Recommended to set 1.0. We do not investigate this option in the paper.
+    min_sampling : int
+        the minimum number of actions for each block types
     """
 
     sampling_ratio: float = 1.0
-    num_sampling_first_block: int = MISSING
-    sampling_ratio_bi_rxn: float = MISSING
-    min_sampling_bi_rxn: int = 100
-
-    # Advanced parameters
-    onpolicy_temp: float = 1.0
+    min_sampling: int = 100
 
 
 @dataclass
@@ -57,7 +41,7 @@ class AlgoConfig(StrictDataClass):
     valid_num_from_dataset : int
         The number of samples from the dataset for a validation batch
     max_len : int
-        The maximum length of a trajectory
+        The maximum length of a trajectory. In this project, it is fixed value
     max_nodes : int
         The maximum number of nodes in a generated graph
     max_edges : int
@@ -79,8 +63,7 @@ class AlgoConfig(StrictDataClass):
     num_from_dataset: int = 0
     valid_num_from_policy: int = 64
     valid_num_from_dataset: int = 0
-    min_len: int = 2
-    max_len: int = 3
+    max_len: int = 3  # NOTE: FIXED VALUE!!
     illegal_action_logreward: float = -100
     train_random_action_prob: float = 0.05
     train_det_after: int | None = None

@@ -11,8 +11,8 @@ from unidock_tools.application.unidock_pipeline import UniDock
 def unidock_scores(
     rdmol_list: list[RDMol],
     pocket_file: str | Path,
-    center: tuple[float, float, float],
     out_path: Path | str,
+    center: tuple[float, float, float],
     size: float | tuple[float, float, float] = 22.5,
     seed: int = 1,
     search_mode: str = "balance",
@@ -88,5 +88,5 @@ def run_etkdg(mol: RDMol, index: int, folder: Path | str, seed: int = 1, ff_opt:
         with Chem.SDWriter(sdf_path) as w:
             w.write(mol)
         return sdf_path
-    except Exception as e:
+    except Exception:
         return None

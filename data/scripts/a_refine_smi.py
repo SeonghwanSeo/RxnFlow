@@ -1,6 +1,5 @@
 from pathlib import Path
 import argparse
-
 from tqdm import tqdm
 import multiprocessing
 
@@ -9,23 +8,22 @@ from _utils import get_clean_smiles
 
 def main(block_path: str, save_block_path: str, num_cpus: int):
     block_file = Path(block_path)
-    assert block_file.suffix == ".sdf"
+    assert block_file.suffix == ".smi"
 
-    print("Read SDF Files")
+    print("Read SMI Files")
     with block_file.open() as f:
-        lines = f.readlines()
-    smiles_list = [lines[i].strip() for i in tqdm(range(1, len(lines))) if lines[i - 1].startswith(">  <smiles>")]
-    ids = [lines[i].strip() for i in tqdm(range(1, len(lines))) if lines[i - 1].startswith(">  <id>")]
+        lines = f.readlines()[1:]
+    block_list: list[tuple[str, str]] = [tuple(ln.strip().split()) for ln in lines]
 
-    clean_block_list: list[str | None] = []
-    for idx in tqdm(range(0, len(smiles_list), 10000)):
-        chunk = smiles_list[idx : idx + 10000]
+    clean_block_list = []
+    for idx in tqdm(range(0, len(block_list), 10000)):
+        chunk = block_list[idx : idx + 10000]
         with multiprocessing.Pool(num_cpus) as pool:
             results = pool.map(get_clean_smiles, chunk)
-        clean_block_list.extend(results)
+        clean_block_list.extend(v for v in results if v is not None)
 
     with open(save_block_path, "w") as w:
-        for smiles, id in zip(clean_block_list, ids, strict=True):
+        for smiles, id in clean_block_list:
             w.write(f"{smiles}\t{id}\n")
 
 
@@ -35,7 +33,7 @@ if __name__ == "__main__":
         "-b",
         "--building_block_path",
         type=str,
-        help="Path to input enamine building block file (.sdf)",
+        help="Path to input enamine building block file (.smi)",
     )
     parser.add_argument(
         "-o",

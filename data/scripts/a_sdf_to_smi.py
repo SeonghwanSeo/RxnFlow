@@ -3,43 +3,7 @@ import argparse
 from tqdm import tqdm
 import multiprocessing
 
-from rdkit import Chem
-from rdkit.Chem import BondType
-
-ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
-BONDS = [BondType.SINGLE, BondType.DOUBLE, BondType.TRIPLE, BondType.AROMATIC]
-
-
-def run(args):
-    smiles, id = args
-    mol = Chem.MolFromSmiles(smiles, replacements={"[2H]": "[H]"})
-
-    # NOTE: Filtering Molecules with its structure
-    if mol is None:
-        return None
-    try:
-        Chem.SanitizeMol(mol)
-    except Exception:
-        return None
-    smi = Chem.MolToSmiles(mol)
-    if smi is None:
-        return None
-    mol = Chem.MolFromSmiles(smi)
-    fail = False
-    for atom in mol.GetAtoms():
-        if atom.GetSymbol() not in ATOMS:
-            fail = True
-            break
-    if fail:
-        return None
-
-    for bond in mol.GetBonds():
-        if bond.GetBondType() not in BONDS:
-            fail = True
-            break
-    if fail:
-        return None
-    return smi, id
+from _utils import get_clean_smiles
 
 
 def main(block_path: str, save_block_path: str, num_cpus: int):
@@ -60,7 +24,7 @@ def main(block_path: str, save_block_path: str, num_cpus: int):
         for idx in tqdm(range(0, len(smiles_list), 10000)):
             chunk = list(zip(smiles_list[idx : idx + 10000], ids[idx : idx + 10000], strict=True))
             with multiprocessing.Pool(num_cpus) as pool:
-                results = pool.map(run, chunk)
+                results = pool.map(get_clean_smiles, chunk)
             for res in results:
                 if res is None:
                     continue
