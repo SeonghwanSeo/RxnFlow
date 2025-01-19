@@ -8,7 +8,7 @@ from rxnflow.envs.env import SynthesisEnv
 
 class ActionSpace:
     def __init__(self, num_actions: int, sampling_ratio: float, min_sampling: int):
-        assert sampling_ratio < 1
+        assert sampling_ratio <= 1
         min_sampling = min(num_actions, min_sampling)
         self.num_actions: int = num_actions
         self.num_sampling = max(int(num_actions * sampling_ratio), min_sampling)

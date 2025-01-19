@@ -58,4 +58,4 @@ reportUnusedImport = false
 venvPath = '.'
 venv = '.venv'
 include = ["src/"]
-exclude = ["data/", "wandb/", "logs/", ".venv/", ".git/", "**/__pycache__/**", "**/*.pyc"]
+exclude = ["data/", "logs/", ".venv/", ".git/", "experiments/", "**/__pycache__/**", "**/*.pyc"]

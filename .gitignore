@@ -2,7 +2,7 @@
 src/gflownet/models/cache/
 data/building_blocks/
 data/envs/
-data/experiments/
+experiments/
 logs/
 wandb*
 job*.sh

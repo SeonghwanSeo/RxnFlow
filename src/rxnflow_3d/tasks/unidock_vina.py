@@ -26,10 +26,12 @@ class VinaTrainer_unidock(RxnFlow3DTrainer_unidock):
         base.num_training_steps = 1000
         base.task.constraint.rule = "lipinski"
 
+        # hparams
         base.replay.use = False
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0, 64]
         base.algo.train_random_action_prob = 0.05
+        base.algo.action_subsampling.sampling_ratio = 0.01
 
     def setup_task(self):
         self.task = VinaTask_unidock(cfg=self.cfg, wrap_model=self._wrap_for_mp)
@@ -57,12 +59,14 @@ class VinaMOOTrainer_unidock(VinaTrainer_unidock):
         base.task.constraint.rule = None
         base.task.moo.objectives = ["vina", "qed"]
 
+        # hparams
         base.replay.use = False
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0, 64]
-        base.algo.train_random_action_prob = 0.05
         base.cond.weighted_prefs.preference_type = "dirichlet"
         base.cond.focus_region.focus_type = None
+        base.algo.train_random_action_prob = 0.05
+        base.algo.action_subsampling.sampling_ratio = 0.01
 
     def setup_task(self):
         self.task = VinaMOOTask_unidock(cfg=self.cfg, wrap_model=self._wrap_for_mp)
