@@ -4,55 +4,54 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxnflow"
-version = "0.0.2"
+authors = [{name = "Seonghwan Seo", email = "shwan0106@gmail.com"}]
+version = "0.0.3"
 readme = "README.md"
 classifiers = ["Operating System :: OS Independent", "Programming Language :: Python", "Programming Language :: Python :: 3"]
 keywords = ["gflownet"]
-requires-python = ">=3.10,<3.11"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "numpy==1.26.4",
-    "torch==2.3.1",
+    "torch>=2.3.1",
     "torch-geometric==2.4.0",
     "torch-scatter==2.1.2",
     "torch-sparse==0.6.18",
     "torch-cluster==1.6.3",
-    "rdkit==2023.9.6",
+    "rdkit>=2023.9.6",
     "omegaconf>=2.3",
     "wandb",
     "tensorboard",
     "gitpython",
     "botorch",
-    "pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git",
+    "ruff>=0.9.3",
 ]
 
 [project.optional-dependencies]
 unidock = [
     "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
 ]
-
-[[project.authors]]
-name = "Seonghwan Seo"
-email = "shwan0106@kaist.ac.kr"
+pmnet = [
+    "pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git@openbabel-wheel",
+]
 
 [tool.black]
 line-length = 120
-target-version = ["py310"]
+target-version = ["py312"]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py312"
 line-length = 120
-
 [tool.ruff.lint]
 select = ["E", "F", "B", "UP", "T203",]
 ignore = ["E501"]
-
 [tool.ruff.per-file-ignores]
 "__init__.py" = [
     "F401", # imported but unused
     "E402", # Module level import not at top of file
 ]
+
 [tool.basedpyright]
-pythonVersion = "3.10"
+pythonVersion = "3.12"
 typeCheckingMode = "standard"
 diagnosticMode = "openFilesOnly"
 reportImplicitStringConcatenation = false
@@ -60,4 +59,7 @@ reportGeneralTypeIssues = "warning"
 reportDeprecated = "warning"
 reportUnusedVariable = false
 reportUnusedImport = false
-exclude=["data/", "storage/", "wandb/", "nogit/", "logs/"]
+venvPath = '.'
+venv = '.venv'
+include = ["src/"]
+exclude = [".venv/", ".git/", ".ruff_cache", "**/__pycache__/**", "**/*.pyc", "data/", "logs/", "experiments/", "unidock_*", "wandb/", ]

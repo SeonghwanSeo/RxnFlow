@@ -1,7 +1,7 @@
+from dataclasses import dataclass
 import enum
 import re
 from functools import cached_property
-from typing import NamedTuple
 
 from .reaction import Reaction
 
@@ -14,6 +14,7 @@ class RxnActionType(enum.Enum):
     FirstBlock = enum.auto()
 
     # Backward actions
+    BckStop = enum.auto()
     BckUniRxn = enum.auto()
     BckBiRxn = enum.auto()
     BckFirstBlock = enum.auto()
@@ -31,68 +32,66 @@ class RxnActionType(enum.Enum):
         return self.name.startswith("Bck")
 
 
-""" TYPE_IDX, IS_STOP, RXN_IDX, BLOCK_IDX, BLOCK_IS_FIRST"""
-
-
-class RxnActionIndex(NamedTuple):
-    type_idx: int  # Index of the action type according to RxnActionType
-    rxn_idx: int  # Index of the reaction template
-    block_idx: int  # Index of the reactant block
-    block_is_first: int  # Whether the block is the first reactant
-
-    @classmethod
-    def create(
-        cls,
-        type_idx: int,
-        rxn_idx: int | None = None,
-        block_idx: int | None = None,
-        block_is_first: bool | None = None,
-    ):
-        _rxn_idx = -1 if rxn_idx is None else rxn_idx
-        _block_idx = -1 if block_idx is None else block_idx
-        _block_is_first = -1 if block_is_first is None else int(block_is_first)
-        return cls(type_idx, _rxn_idx, _block_idx, _block_is_first)
-
-
-def get_action_idx(
-    type_idx: int,
-    rxn_idx: int | None = None,
-    block_idx: int | None = None,
-    block_is_first: bool | None = None,
-) -> RxnActionIndex:
-    _rxn_idx = -1 if rxn_idx is None else rxn_idx
-    _block_idx = -1 if block_idx is None else block_idx
-    _block_is_first = -1 if block_is_first is None else int(block_is_first)
-    return RxnActionIndex(type_idx, _rxn_idx, _block_idx, _block_is_first)
-
-
-class RxnAction:
+class Protocol:
     def __init__(
         self,
+        name: str,
         action: RxnActionType,
-        reaction: Reaction | None = None,
-        block: str | None = None,
-        block_idx: int | None = None,
-        block_is_first: bool | None = None,
+        rxn: Reaction | None = None,
     ):
-        """A single graph-building action
+        self.name: str = name
+        self.action: RxnActionType = action
+        self._rxn: Reaction | None = rxn
 
-        Parameters
-        ----------
-        action: GraphActionType
-            the action type
-        reaction: Reaction, optional
-        block: str, optional
-            the block smi object
-        block_local_idx: int, optional
-            the block idx
-        block_is_first: bool, optional
-        """
-        self.action = action
-        self.reaction = reaction
-        self.block = block
-        self.block_idx = block_idx
-        self.block_is_first: bool | None = block_is_first
+    def __str__(self) -> str:
+        return self.name
+
+    @property
+    def rxn(self) -> Reaction:
+        assert self._rxn is not None
+        return self._rxn
+
+
+@dataclass()
+class RxnAction:
+    """A single graph-building action
+
+    Parameters
+    ----------
+    action: GraphActionType
+        the action type
+    protocol: str
+        protocol name
+    block: str, optional
+        the block smi object
+    """
+
+    action: RxnActionType
+    _protocol: str | None = None
+    _block: str | None = None
+    _block_idx: int | None = None
+
+    def __repr__(self):
+        return f"<{str(self)}>"
 
     def __str__(self):
-        return str(self.action)
+        return f"<{self._protocol}> - {self._block}({self._block_idx})"
+
+    @property
+    def is_fwd(self) -> bool:
+        return self.action in (RxnActionType.FirstBlock, RxnActionType.UniRxn, RxnActionType.BiRxn, RxnActionType.Stop)
+
+    @property
+    def protocol(self) -> str:
+        assert self._protocol is not None
+        return self._protocol
+
+    @property
+    def block(self) -> str:
+        assert self._block is not None
+        return self._block
+
+    @property
+    def block_idx(self) -> int:
+        assert self._block_idx is not None
+        return self._block_idx

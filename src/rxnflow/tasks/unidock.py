@@ -13,7 +13,7 @@ from gflownet import ObjectProperties
 
 from rxnflow.config import Config, init_empty
 from rxnflow.base import BaseTask, RxnFlowTrainer, RxnFlowSampler
-from rxnflow.utils.unidock import unidock_scores
+from rxnflow.tasks.utils.unidock import unidock_scores
 
 
 class UniDockTask(BaseTask):

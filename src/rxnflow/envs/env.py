@@ -1,3 +1,4 @@
+from functools import cached_property
 from pathlib import Path
 import numpy as np
 from numpy.typing import NDArray
@@ -5,12 +6,36 @@ from rdkit import Chem, RDLogger
 from rdkit.Chem import Mol as RDMol
 
 from gflownet.envs.graph_building_env import Graph, GraphBuildingEnv
-from .reaction import Reaction
-from .action import RxnAction, RxnActionType
+from .reaction import BiReaction, Reaction, UniReaction
+from .action import RxnAction, RxnActionType, Protocol
 from .retrosynthesis import RetroSyntheticAnalyzer
 
 logger = RDLogger.logger()
 RDLogger.DisableLog("rdApp.*")
+
+
+class MolGraph(Graph):
+    def __init__(self, mol: str | Chem.Mol, **kwargs):
+        super().__init__(**kwargs)
+        self._mol: str | Chem.Mol = mol
+        self.is_setup: bool = False
+
+    def __repr__(self):
+        return self.smi
+
+    @cached_property
+    def smi(self) -> str:
+        if isinstance(self._mol, Chem.Mol):
+            return Chem.MolToSmiles(self._mol)
+        else:
+            return self._mol
+
+    @cached_property
+    def mol(self) -> Chem.Mol:
+        if isinstance(self._mol, Chem.Mol):
+            return self._mol
+        else:
+            return Chem.MolFromSmiles(self._mol)
 
 
 class SynthesisEnv(GraphBuildingEnv):
@@ -29,36 +54,55 @@ class SynthesisEnv(GraphBuildingEnv):
         pre_computed_building_block_fp_path = env_dir / "bb_fp_2_1024.npy"
         pre_computed_building_block_desc_path = env_dir / "bb_desc.npy"
 
+        # set protocol
+        self.protocols: list[Protocol] = []
+        self.protocols.append(Protocol("stop", RxnActionType.Stop))
+        self.protocols.append(Protocol("firstblock", RxnActionType.FirstBlock))
         with reaction_template_path.open() as file:
-            REACTION_TEMPLATES = file.readlines()
+            reaction_templates = [ln.strip() for ln in file.readlines()]
+        for i, template in enumerate(reaction_templates):
+            _rxn = Reaction(template)
+            if _rxn.num_reactants == 1:
+                rxn = UniReaction(template)
+                self.protocols.append(Protocol(f"unirxn{i}", RxnActionType.UniRxn, _rxn))
+            elif _rxn.num_reactants == 2:
+                for block_is_first in [True, False]:  # this order is important
+                    rxn = BiReaction(template, block_is_first)
+                    self.protocols.append(Protocol(f"birxn{i}_{block_is_first}", RxnActionType.BiRxn, rxn))
+        self.protocol_dict: dict[str, Protocol] = {protocol.name: protocol for protocol in self.protocols}
+        self.stop_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.Stop]
+        self.firstblock_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.FirstBlock]
+        self.unirxn_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.UniRxn]
+        self.birxn_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.BiRxn]
+
+        # set building blocks
         with building_block_path.open() as file:
             lines = file.readlines()
-            BUILDING_BLOCKS = [ln.split()[0] for ln in lines]
-            BUILDING_BLOCK_IDS = [ln.strip().split()[1] for ln in lines]
+            building_blocks = [ln.split()[0] for ln in lines]
+            building_block_ids = [ln.strip().split()[1] for ln in lines]
+        self.blocks: list[str] = building_blocks
+        self.block_ids: list[str] = building_block_ids
+        self.num_blocks: int = len(building_blocks)
 
-        self.reactions = [Reaction(template=t.strip()) for t in REACTION_TEMPLATES]  # Reaction objects
-        self.uni_rxns = [r for r in self.reactions if r.num_reactants == 1]  # rdKit reaction objects
-        self.bi_rxns = [r for r in self.reactions if r.num_reactants == 2]
-        self.num_uni_rxns = len(self.uni_rxns)
-        self.num_bi_rxns = len(self.bi_rxns)
+        # set precomputed building block feature
+        self.block_fp = np.load(pre_computed_building_block_fp_path)
+        self.block_desc = np.load(pre_computed_building_block_desc_path)
 
-        self.building_blocks: list[str] = BUILDING_BLOCKS
-        self.building_block_ids: list[str] = BUILDING_BLOCK_IDS
-        self.num_building_blocks: int = len(BUILDING_BLOCKS)
-
-        self.building_block_mask: NDArray[np.bool_] = np.load(pre_computed_building_block_mask_path)
-        self.building_block_features: tuple[NDArray[np.bool_], NDArray[np.float32]] = (
-            np.load(pre_computed_building_block_fp_path),
-            np.load(pre_computed_building_block_desc_path),
+        # set block mask
+        block_mask: NDArray[np.bool_] = np.load(pre_computed_building_block_mask_path)
+        self.birxn_block_indices: dict[str, np.ndarray] = {}
+        for i, protocol in enumerate(self.birxn_list):
+            self.birxn_block_indices[protocol.name] = np.where(block_mask[i])[0]
+        self.num_total_actions = (
+            1 + len(self.unirxn_list) + sum(indices.shape[0] for indices in self.birxn_block_indices.values())
         )
 
-        self.num_total_actions = 1 + self.num_uni_rxns + int(self.building_block_mask.sum())
-        self.retrosynthetic_analyzer: RetroSyntheticAnalyzer = RetroSyntheticAnalyzer(self)
+        self.retro_analyzer: RetroSyntheticAnalyzer = RetroSyntheticAnalyzer(self.protocols, self.blocks)
 
-    def new(self) -> Graph:
-        return Graph()
+    def new(self) -> MolGraph:
+        return MolGraph("")
 
-    def step(self, mol: RDMol, action: RxnAction) -> Chem.Mol:
+    def step(self, g: MolGraph, action: RxnAction) -> MolGraph:
         """Applies the action to the current state and returns the next state.
 
         Args:
@@ -69,43 +113,41 @@ class SynthesisEnv(GraphBuildingEnv):
         Returns:
             (Chem.Mol): Next state as an RDKit mol.
         """
-        mol = Chem.Mol(mol)
-        Chem.SanitizeMol(mol)
+        state_info = g.graph
+        protocol = self.protocol_dict[action.protocol]
 
         if action.action is RxnActionType.Stop:
-            return mol
+            return g
+        elif action.action is RxnActionType.BckStop:
+            return g
+
         elif action.action == RxnActionType.FirstBlock:
-            assert isinstance(action.block, str)
-            return Chem.MolFromSmiles(action.block)
+            obj = action.block
+        elif action.action == RxnActionType.BckFirstBlock:
+            obj = ""
+
         elif action.action is RxnActionType.UniRxn:
-            assert isinstance(action.reaction, Reaction)
-            p = action.reaction.run_reactants((mol,), safe=False)
-            assert p is not None, "reaction is Fail"
-            return p
-        elif action.action is RxnActionType.BiRxn:
-            assert isinstance(action.reaction, Reaction)
-            assert isinstance(action.block, str)
-            if action.block_is_first:
-                p = action.reaction.run_reactants((Chem.MolFromSmiles(action.block), mol), safe=False)
-            else:
-                p = action.reaction.run_reactants((mol, Chem.MolFromSmiles(action.block)), safe=False)
-            assert p is not None, "reaction is Fail"
-            return p
-        if action.action == RxnActionType.BckFirstBlock:
-            return Chem.Mol()
+            ps = protocol.rxn.forward(g.mol, strict=True)
+            assert len(ps) > 0, "reaction is Fail"
+            obj = Chem.MolToSmiles(ps[0][0])
         elif action.action is RxnActionType.BckUniRxn:
-            assert isinstance(action.reaction, Reaction)
-            reactant = action.reaction.run_reverse_reactants(mol)
-            assert isinstance(reactant, Chem.Mol)
-            return reactant
+            rs = protocol.rxn.reverse(g.mol)[0]
+            assert len(rs) > 0, "reverse reaction is Fail"
+            obj = Chem.MolToSmiles(rs[0])
+
+        elif action.action is RxnActionType.BiRxn:
+            block = Chem.MolFromSmiles(action.block)
+            ps = protocol.rxn.forward(g.mol, block, strict=True)
+            assert len(ps) > 0, "forward reaction is Fail"
+            obj = Chem.MolToSmiles(ps[0][0])
         elif action.action is RxnActionType.BckBiRxn:
-            assert isinstance(action.reaction, Reaction)
-            reactants = action.reaction.run_reverse_reactants(mol)
-            assert isinstance(reactants, list) and len(reactants) == 2
-            reactant = reactants[1] if action.block_is_first else reactants[0]
-            return reactant
+            rs = protocol.rxn.reverse(g.mol)[0]
+            assert len(rs) > 0, "reverse reaction is Fail"
+            obj = Chem.MolToSmiles(rs[0])
+
         else:
             raise ValueError(action.action)
+        return MolGraph(obj, **state_info)
 
     def parents(self, mol: RDMol, max_depth: int = 4) -> list[tuple[RxnAction, str]]:
         """list possible parents of molecule `mol`
@@ -120,6 +162,7 @@ class SynthesisEnv(GraphBuildingEnv):
         parents: list[Pair(RxnAction, str)]
             The list of parent-action pairs
         """
+        raise NotImplementedError
         retro_tree = self.retrosynthetic_analyzer.run(mol, max_depth)
         return [(action, subtree.smi) for action, subtree in retro_tree.branches]
 
@@ -131,18 +174,20 @@ class SynthesisEnv(GraphBuildingEnv):
 
     def reverse(self, g: str | RDMol | Graph | None, ra: RxnAction) -> RxnAction:
         if ra.action == RxnActionType.Stop:
-            return ra
-        if ra.action == RxnActionType.FirstBlock:
-            return RxnAction(RxnActionType.BckFirstBlock, None, ra.block, ra.block_idx)
+            return RxnAction(RxnActionType.BckStop, ra.protocol)
+        elif ra.action == RxnActionType.BckStop:
+            return RxnAction(RxnActionType.Stop, ra.protocol)
+        elif ra.action == RxnActionType.FirstBlock:
+            return RxnAction(RxnActionType.BckFirstBlock, ra.protocol, ra.block, ra.block_idx)
         elif ra.action == RxnActionType.BckFirstBlock:
-            return RxnAction(RxnActionType.FirstBlock, None, ra.block, ra.block_idx)
+            return RxnAction(RxnActionType.FirstBlock, ra.protocol, ra.block, ra.block_idx)
         elif ra.action == RxnActionType.UniRxn:
-            return RxnAction(RxnActionType.BckUniRxn, ra.reaction)
+            return RxnAction(RxnActionType.BckUniRxn, ra.protocol)
         elif ra.action == RxnActionType.BckUniRxn:
-            return RxnAction(RxnActionType.UniRxn, ra.reaction)
+            return RxnAction(RxnActionType.UniRxn, ra.protocol)
         elif ra.action == RxnActionType.BiRxn:
-            return RxnAction(RxnActionType.BckBiRxn, ra.reaction, ra.block, ra.block_idx, ra.block_is_first)
+            return RxnAction(RxnActionType.BckBiRxn, ra.protocol, ra.block, ra.block_idx)
         elif ra.action == RxnActionType.BckBiRxn:
-            return RxnAction(RxnActionType.BiRxn, ra.reaction, ra.block, ra.block_idx, ra.block_is_first)
+            return RxnAction(RxnActionType.BiRxn, ra.protocol, ra.block, ra.block_idx)
         else:
             raise ValueError(ra)

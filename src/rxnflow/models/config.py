@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from gflownet.utils.misc import StrictDataClass
 
@@ -30,8 +30,6 @@ class ModelConfig(StrictDataClass):
     num_mlp_layers: int = 1
     num_emb: int = 128
     dropout: float = 0
-    fp_radius_building_block: int = 2
-    fp_nbits_building_block: int = 1024
-    num_layers_building_block: int = 1
-    num_emb_building_block: int = 128
-    graph_transformer: GraphTransformerConfig = GraphTransformerConfig()
+    num_mlp_layers_block: int = 1
+    num_emb_block: int = 128
+    graph_transformer: GraphTransformerConfig = field(default_factory=GraphTransformerConfig)

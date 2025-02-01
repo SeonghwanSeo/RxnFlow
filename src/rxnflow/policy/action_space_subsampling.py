@@ -1,80 +1,52 @@
+import math
 import numpy as np
-from numpy.typing import NDArray
-from gflownet.utils.misc import get_worker_rng
+import torch
 
+from gflownet.utils.misc import get_worker_rng
 from rxnflow.config import Config
 from rxnflow.envs.env import SynthesisEnv
-from rxnflow.envs.action import RxnActionType
 
 
-class BlockSpace:
-    def __init__(
-        self,
-        allowable_block_indices: NDArray[np.int_],
-        num_sampling: int,
-    ):
-        self.block_indices: NDArray[np.int_] = allowable_block_indices
-        self.num_blocks: int = len(self.block_indices)
-        self.num_sampling: int = num_sampling
-        self.sampling_ratio: float = 1.0 if num_sampling == 0 else (self.num_sampling / self.num_blocks)
+class ActionSpace:
+    def __init__(self, action_idcs: np.ndarray, sampling_ratio: float, min_sampling: int):
+        assert sampling_ratio <= 1
+        self.action_idcs = action_idcs
+        num_actions = self.action_idcs.shape[0]
+        min_sampling = min(num_actions, min_sampling)
+        self.num_actions: int = num_actions
+        self.num_sampling = max(int(num_actions * sampling_ratio), min_sampling)
 
-    def sampling(self) -> NDArray[np.int_]:
+        self.sampling_ratio: float = max(self.num_sampling, 1) / max(self.num_actions, 1)
+
+    def sampling(self) -> torch.Tensor:
+        # TODO: introduce importance subsampling instead of uniform subsampling
+        if self.num_sampling == 0:
+            return torch.tensor([], dtype=torch.long)
         if self.sampling_ratio < 1:
             rng: np.random.RandomState = get_worker_rng()
-            block_indices = rng.choice(self.block_indices, self.num_sampling, replace=False)
-            np.sort(block_indices)
+            indices = rng.choice(self.action_idcs, self.num_sampling, replace=False)
+            np.sort(indices)
+            return torch.from_numpy(indices).to(torch.long)
         else:
-            return self.block_indices.copy()
-        return block_indices
-
-    @classmethod
-    def create1(cls, block_indices: NDArray[np.int_], num_sampling: int):
-        num_blocks = len(block_indices)
-        num_sampling = min(num_sampling, num_blocks)
-        return cls(block_indices, num_sampling)
-
-    @classmethod
-    def create2(
-        cls,
-        block_indices: NDArray[np.int_],
-        sampling_ratio: float,
-        min_sampling: int,
-    ):
-        num_blocks = len(block_indices)
-        min_sampling = min(min_sampling, num_blocks)
-        if num_blocks != 0:
-            num_sampling = max(int(num_blocks * sampling_ratio), min_sampling)
-            return cls(block_indices, num_sampling)
-        else:
-            return cls(block_indices, 0)
+            return torch.from_numpy(self.action_idcs)
 
 
 class SubsamplingPolicy:
     def __init__(self, env: SynthesisEnv, cfg: Config):
-        self.env: SynthesisEnv = env
         self.global_cfg = cfg
         self.cfg = cfg.algo.action_subsampling
 
-        # NOTE: AddFirstReactant
-        indices = np.arange(env.num_building_blocks)
-        nsamp: int = self.cfg.num_sampling_first_block
-        self._first_reactant_space = BlockSpace.create1(indices, nsamp)
+        sr = self.cfg.sampling_ratio
+        nmin = int(self.cfg.min_sampling)
 
-        # NOTE: ReactBi
-        sr = self.cfg.sampling_ratio_bi_rxn
-        nmin = int(self.cfg.min_sampling_bi_rxn)
-        self._bi_rxn_reactant_space = {}
-        for i in range(env.num_bi_rxns):
-            block_mask = env.building_block_mask[i]
-            for block_is_first in (True, False):
-                idx = 0 if block_is_first else 1
-                indices = np.where(block_mask[idx])[0]
-                self._bi_rxn_reactant_space[(i, block_is_first)] = BlockSpace.create2(indices, sr, nmin)
+        self.block_spaces: dict[str, ActionSpace] = {}
+        self.num_blocks: dict[str, int] = {}
+        for protocol in env.firstblock_list:
+            self.block_spaces[protocol.name] = ActionSpace(np.arange(env.num_blocks), sr, nmin)
+        for protocol in env.birxn_list:
+            self.block_spaces[protocol.name] = ActionSpace(env.birxn_block_indices[protocol.name], sr, nmin)
+        self.sampling_ratios = {t: space.sampling_ratio for t, space in self.block_spaces.items()}
+        self.weights = {t: math.log(1 / sr) for t, sr in self.sampling_ratios.items()}
 
-    def get_space(self, t: RxnActionType, rxn_type: tuple[int, bool] | None = None) -> BlockSpace:
-        if t is RxnActionType.FirstBlock:
-            assert rxn_type is None
-            return self._first_reactant_space
-        else:
-            assert rxn_type is not None
-            return self._bi_rxn_reactant_space[rxn_type]
+    def sampling(self, protocol: str) -> tuple[torch.Tensor, float]:
+        return self.block_spaces[protocol].sampling(), self.weights[protocol]

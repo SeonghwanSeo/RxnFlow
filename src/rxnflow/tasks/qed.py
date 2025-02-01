@@ -5,7 +5,7 @@ from torch import Tensor
 
 from gflownet import ObjectProperties
 from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
-from rxnflow.utils.chem_metrics import mol2qed
+from rxnflow.tasks.utils.chem_metrics import mol2qed
 
 
 class QEDTask(BaseTask):

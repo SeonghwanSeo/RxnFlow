@@ -23,12 +23,11 @@ This repository was developed for research. The code for real-world drug discove
 ### Install
 
 ```bash
-# python: 3.10
-conda install openbabel # For PharmacoNet
+# python>=3.10, torch>=2.3.1
 pip install -e . --find-links https://data.pyg.org/whl/torch-2.3.1+cu121.html
 
 # For UniDock
-conda install openbabel unidock
+conda install unidock
 pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.3.1+cu121.html
 ```
 

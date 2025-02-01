@@ -11,7 +11,7 @@ from torch import Tensor
 from gflownet import ObjectProperties
 
 from rxnflow.config import Config
-from rxnflow.base import BaseTask, RxnFlowTrainer, mogfn_trainer
+from rxnflow.base import BaseTask, RxnFlowTrainer
 from rxnflow.utils.chem_metrics import mol2qed
 from rxnflow.tasks.unidock import UniDockTask, UniDockTrainer
 
@@ -89,7 +89,6 @@ class UniDockMOOTask(UniDockTask):
         self.best_molecules = sorted(self.best_molecules + score_smiles, reverse=False)[:1000]
 
 
-@mogfn_trainer
 class UniDockMOOTrainer(UniDockTrainer):
     task: UniDockMOOTask
 
@@ -104,8 +103,6 @@ class UniDockMOOTrainer(UniDockTrainer):
         base.replay.use = True
         base.replay.capacity = 6_400
         base.replay.warmup = 128
-        base.cond.weighted_prefs.preference_type = "dirichlet"
-        base.cond.focus_region.focus_type = None
         base.algo.train_random_action_prob = 0.02
 
     def setup_task(self):
@@ -120,7 +117,6 @@ class UniDockMOOTrainer(UniDockTrainer):
         super().log(info, index, key)
 
 
-@mogfn_trainer
 class UniDockMOO_Pretrainer(RxnFlowTrainer):
     task: UniDockMOO_PretrainTask
 

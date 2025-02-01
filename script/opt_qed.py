@@ -12,7 +12,7 @@ def parse_args():
         default=10000,
         help="Number of Oracles (64 molecules per oracle; default: 10000)",
     )
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/real", help="Environment Directory Path")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
@@ -37,7 +37,7 @@ def run(args):
     config.print_every = 1
     config.num_workers_retrosynthesis = 4
 
-    config.cond.temperature.dist_params = [16, 64]  # Different to Paper!
+    config.cond.temperature.dist_params = [0, 64]
     config.algo.train_random_action_prob = 0.1
     # config.replay.use = True
     # config.replay.capacity = 10_000

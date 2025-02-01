@@ -2,6 +2,8 @@
 
 ## LIT-PCBA optimization
 
+The protein/ligand files used in the paper can be accessed in [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
+
 From https://drugdesign.unistra.fr/LIT-PCBA/
 
 | Target     | PDB ID | Center                |
@@ -33,4 +35,5 @@ From https://github.com/gnina/models/tree/master/data/CrossDocked2020
 (15,201 training pockets + 100 test pockets.)
 
 ## KRAS-G12C (example)
+
 center: 1.872, -8.260, -1.361

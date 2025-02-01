@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from omegaconf import MISSING
 
 from gflownet.utils.misc import StrictDataClass
 from gflownet.algo.config import TBConfig
@@ -13,27 +12,15 @@ class SubsamplingConfig(StrictDataClass):
     ----------
     sampling_ratio : float
         global subsampling ratio, [0, 1]
-    num_sampling_first_block : int
-        the number of actions for AddFirstReactant (override sampling_ratio)
-    sampling_ratio_bi_rxn : float
-        subsampling ratio for ReactBi (override sampling_ratio)
-    min_sampling_reatbi : int
-        the minimum number of actions for each reaction template; ReactBi
-
-    ** Advanced Parameters **
-    num_mc_sampling : int
-        Theoretically, set num_mc_sampling to 1 and set larger sampling ratio is better.
-    onpolicy_temp : float
-        Recommended to set 1.0. We do not investigate this option in the paper.
+    min_sampling : int
+        the minimum number of actions for each block types
+    importance_temp : float
+        [Experimental] the temperature of importance weighting during sampling
     """
 
     sampling_ratio: float = 1.0
-    num_sampling_first_block: int = MISSING
-    sampling_ratio_bi_rxn: float = MISSING
-    min_sampling_bi_rxn: int = 100
-
-    # Advanced parameters
-    onpolicy_temp: float = 1.0
+    min_sampling: int = 100
+    importance_temp: float = 0.0
 
 
 @dataclass
@@ -87,4 +74,4 @@ class AlgoConfig(StrictDataClass):
     valid_random_action_prob: float = 0.0
     sampling_tau: float = 0.0
     tb: TBConfig = field(default_factory=TBConfig)
-    action_subsampling: SubsamplingConfig = SubsamplingConfig()
+    action_subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)

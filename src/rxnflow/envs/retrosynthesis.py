@@ -1,10 +1,10 @@
 import copy
 from concurrent.futures import ProcessPoolExecutor
+from functools import cached_property
 from rdkit import Chem
 from collections.abc import Iterable
 
-from .reaction import Reaction
-from .action import RxnAction, RxnActionType
+from rxnflow.envs.action import Protocol, RxnActionType, RxnAction
 
 
 class RetroSynthesisTree:
@@ -16,55 +16,174 @@ class RetroSynthesisTree:
     def is_leaf(self) -> bool:
         return len(self.branches) == 0
 
-    def iteration(
-        self, prev_traj: list[RxnAction] | None = None, max_len: int | None = None
-    ) -> Iterable[list[RxnAction]]:
+    def iteration(self, prev_traj: list[RxnAction] | None = None) -> Iterable[list[RxnAction]]:
         prev_traj = prev_traj if prev_traj else []
-        max_len = max_len if max_len else 100
-        prev_len = len(prev_traj)
-        if self.is_leaf and prev_len <= max_len:
+        if self.is_leaf:
             yield prev_traj
-        elif (not self.is_leaf) and (prev_len < max_len):
+        else:
             for bck_action, subtree in self.branches:
-                yield from subtree.iteration(prev_traj + [bck_action], max_len)
+                yield from subtree.iteration(prev_traj + [bck_action])
 
     def __len__(self):
         return len(self.branches)
 
-    def depth(self, max_len: int) -> int:
-        return min(self.iteration_length(0, max_len))
+    @cached_property
+    def height(self) -> int:
+        return max(self.iteration_depth(0))
 
-    def length_distribution(self, max_len: int) -> list[int]:
-        lengths = list(self.iteration_length(0, max_len))
-        return [sum(length == _t for length in lengths) for _t in range(0, max_len + 1)]
-
-    def iteration_length(self, prev_len: int, max_len: int) -> Iterable[int]:
-        if self.is_leaf and prev_len <= max_len:
+    def iteration_depth(self, prev_len: int = 0) -> Iterable[int]:
+        if self.is_leaf:
             yield prev_len
-        elif (not self.is_leaf) and (prev_len < max_len):
+        elif not self.is_leaf:
             for _, subtree in self.branches:
-                yield from subtree.iteration_length(prev_len + 1, max_len)
+                yield from subtree.iteration_depth(prev_len + 1)
 
-    def filtering(self, block_set: set[str] | None):
-        if block_set is None:
-            return self
-        filtered_branches = []
-        for action, subtree in self.branches:
-            if action.action is RxnActionType.BckFirstBlock:
-                assert subtree.is_leaf
-                if action.block not in block_set:
-                    continue
-            else:
-                if action.action is RxnActionType.BckBiRxn and action.block not in block_set:
-                    continue
-                subtree = subtree.filtering(block_set)
-                if subtree.is_leaf:
-                    continue
-            filtered_branches.append((action, subtree))
-        return RetroSynthesisTree(self.smi, filtered_branches)
+    def print(self, indent=0):
+        print(" " * indent + "SMILES: " + self.smi)
+        for action, child in self.branches:
+            print(" " * (indent + 2) + "- ACTION:", action)
+            if not child.is_leaf:
+                child.print(indent + 4)
 
 
-RetroSynthesisBranch = list[tuple[RxnAction, RetroSynthesisTree]]
+class RetroSyntheticAnalyzer:
+    def __init__(
+        self,
+        protocols: list[Protocol],
+        blocks: list[str],
+        approx: bool = True,
+    ):
+        self.protocols: list[Protocol] = protocols
+        self.approx: bool = approx  # Fast analyzing
+        self.__cache: Cache = Cache(100_000)  # For Caching
+
+        # For Fast Search
+        self.__max_block_smi_len: int = 0
+        self.__prefix_len = 5
+        self.__block_search: dict[str, dict[str, int]] = {}
+        for idx, smi in enumerate(blocks):
+            self.__max_block_smi_len = max(self.__max_block_smi_len, len(smi))
+            prefix = smi[: self.__prefix_len]
+            self.__block_search.setdefault(prefix, dict())[smi] = idx
+
+        # temporary
+        self.__min_depth: int
+        self.__max_depth: int
+
+    def block_search(self, smi: str) -> int | None:
+        if len(smi) > self.__max_block_smi_len:
+            return False
+        prefix = smi[: self.__prefix_len]
+        prefix_block_set = self.__block_search.get(prefix, None)
+        if prefix_block_set is not None:
+            return prefix_block_set.get(smi, None)
+        return None
+
+    def from_cache(self, smi: str, depth: int) -> tuple[bool, RetroSynthesisTree | None]:
+        return self.__cache.get(smi, self.__max_depth - depth)
+
+    def to_cache(self, smi: str, depth: int, cache: RetroSynthesisTree | None):
+        return self.__cache.update(smi, self.__max_depth - depth, cache)
+
+    def run(
+        self,
+        mol: str | Chem.Mol,
+        max_rxns: int,
+        known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
+    ) -> RetroSynthesisTree | None:
+        if isinstance(mol, str):
+            smi = mol
+            mol = Chem.MolFromSmiles(mol)
+        else:
+            mol = mol
+            smi = Chem.MolToSmiles(mol)
+
+        self.__max_depth = self.__min_depth = max_rxns + 1  # 1: AddFirstBlock
+        if known_branches is not None:
+            for _, tree in known_branches:
+                self.__min_depth = min(self.__min_depth, min(tree.iteration_depth()) + 1)
+        res = self.__dfs(smi, mol, 1, known_branches)
+        del self.__max_depth, self.__min_depth
+        return res
+
+    def check_depth(self, depth: int) -> bool:
+        if depth > self.__max_depth:
+            return False
+        if self.approx and (depth > self.__min_depth):
+            return False
+        return True
+
+    def __dfs(
+        self,
+        smiles: str,
+        mol: Chem.Mol,
+        depth: int,
+        known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
+    ) -> RetroSynthesisTree | None:
+        if (not self.check_depth(depth)) or (mol is None):
+            return None
+
+        # NOTE: Load cache
+        is_cached, cached_tree = self.from_cache(smiles, depth)
+        if is_cached:
+            return cached_tree
+
+        known_branches = known_branches if known_branches is not None else []
+        known_protocols: set[str] = set(action.protocol for action, _ in known_branches)
+        branches: list[tuple[RxnAction, RetroSynthesisTree]] = known_branches.copy()
+
+        tmp_cache = dict()
+
+        for protocol in self.protocols:
+            if protocol.name in known_protocols:
+                continue
+            if protocol.action is RxnActionType.FirstBlock:
+                block_idx = self.block_search(smiles)
+                if block_idx is not None:
+                    bck_action = RxnAction(RxnActionType.FirstBlock, protocol.name, smiles, block_idx)
+                    branches.append((bck_action, RetroSynthesisTree("")))
+                    self.__min_depth = depth
+
+            elif protocol.action is RxnActionType.UniRxn:
+                if not self.check_depth(depth + 1):
+                    continue
+                for child_mol, *_ in protocol.rxn.reverse(mol)[:2]:
+                    child_smi = Chem.MolToSmiles(child_mol)
+                    if child_smi in tmp_cache:
+                        child_tree = tmp_cache[child_smi]
+                    else:
+                        child_tree = self.__dfs(child_smi, child_mol, depth + 1)
+                        tmp_cache[child_smi] = child_tree
+                    if child_tree is not None:
+                        bck_action = RxnAction(RxnActionType.BiRxn, protocol.name)
+                        branches.append((bck_action, child_tree))
+
+            elif protocol.action is RxnActionType.BiRxn:
+                if not self.check_depth(depth + 1):
+                    continue
+                for child_mol, block_mol in protocol.rxn.reverse(mol)[:2]:
+                    block_smi = Chem.MolToSmiles(block_mol)
+                    block_idx = self.block_search(block_smi)
+                    if block_idx is not None:
+                        child_smi = Chem.MolToSmiles(child_mol)
+                        if child_smi in tmp_cache:
+                            child_tree = tmp_cache[child_smi]
+                        else:
+                            child_tree = self.__dfs(child_smi, child_mol, depth + 1)
+                        tmp_cache[child_smi] = child_tree
+                        if child_tree is not None:
+                            bck_action = RxnAction(RxnActionType.BiRxn, protocol.name, block_smi, block_idx)
+                            branches.append((bck_action, child_tree))
+
+        # return if retrosynthetically inaccessible
+        if len(branches) == 0:
+            return None
+
+        # insert cache when possible actions are not only firstblock
+        result = RetroSynthesisTree(smiles, branches)
+        if not (len(branches) == 1 and branches[0][0].action is RxnActionType.BckFirstBlock):
+            self.to_cache(smiles, depth, result)
+        return result
 
 
 class MultiRetroSyntheticAnalyzer:
@@ -72,216 +191,63 @@ class MultiRetroSyntheticAnalyzer:
         self.pool = ProcessPoolExecutor(num_workers, initializer=self._init_worker, initargs=(analyzer,))
         self.futures = []
 
+    def _init_worker(self, base_analyzer):
+        global analyzer
+        analyzer = copy.deepcopy(base_analyzer)
+
     def init(self):
         self.result()
 
-    def result(self):
+    def result(self) -> list[tuple[int, RetroSynthesisTree]]:
         result = [future.result() for future in self.futures]
         self.futures = []
         return result
 
     def submit(
-        self, key: int, mol: Chem.Mol, max_depth: int, known_branches: list[tuple[RxnAction, RetroSynthesisTree]]
+        self,
+        key: int,
+        mol: str | Chem.Mol,
+        max_rxns: int,
+        known_branches: list[tuple[RxnAction, RetroSynthesisTree]],
     ):
-        self.futures.append(self.pool.submit(self._worker, key, mol, max_depth, known_branches))
-
-    def _init_worker(self, base_analyzer):
-        global analyzer
-        analyzer = copy.deepcopy(base_analyzer)
+        self.futures.append(self.pool.submit(self._worker, key, mol, max_rxns, known_branches))
 
     @staticmethod
     def _worker(
-        key: int, mol: Chem.Mol, max_depth: int, known_branches: list[tuple[RxnAction, RetroSynthesisTree]]
+        key: int,
+        mol: str | Chem.Mol,
+        max_step: int,
+        known_branches: list[tuple[RxnAction, RetroSynthesisTree]],
     ) -> tuple[int, RetroSynthesisTree]:
         global analyzer
-        return key, analyzer.run(mol, max_depth, known_branches)
-
-
-class RetroSyntheticAnalyzer:
-    def __init__(self, env):
-        self.reactions: list[Reaction] = env.reactions
-        self.uni_rxns: list[Reaction] = env.uni_rxns
-        self.bi_rxns: list[Reaction] = env.bi_rxns
-
-        # For Fast Search
-        self.__max_block_smi_len: int = 0
-        self.__prefix_len = 5
-        self.__building_block_search: dict[str, set[str]] = {}
-
-        for smi in env.building_blocks:
-            self.__max_block_smi_len = max(self.__max_block_smi_len, len(smi))
-            prefix = smi[: self.__prefix_len]
-            self.__building_block_search.setdefault(prefix, set()).add(smi)
-
-        self.__cache: Cache = Cache(100_000)
-        self.__block_cache: Cache = Cache(500_000)
-
-    def is_block(self, smi: str) -> bool:
-        if len(smi) > self.__max_block_smi_len:
-            return False
-        prefix = smi[: self.__prefix_len]
-        prefix_block_set = self.__building_block_search.get(prefix, None)
-        if prefix_block_set is not None:
-            return smi in prefix_block_set
-        return False
-
-    def load_cache(self, smi: str, depth: int, is_block: bool) -> RetroSynthesisBranch | None:
-        if is_block:
-            return self.__block_cache.get(smi, depth)
-        else:
-            return self.__cache.get(smi, depth)
-
-    def update_cache(self, smi: str, depth: int, branch: RetroSynthesisBranch, is_block: bool):
-        if is_block:
-            return self.__block_cache.update(smi, depth, branch)
-        else:
-            return self.__cache.update(smi, depth, branch)
-
-    def run(
-        self,
-        mol: Chem.Mol,
-        max_depth: int,
-        known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
-    ) -> RetroSynthesisTree:
-        return self._retrosynthesis(mol, max_depth, known_branches)
-
-    def _retrosynthesis(
-        self,
-        mol: Chem.Mol,
-        max_depth: int,
-        known_branches: RetroSynthesisBranch | None = None,
-    ) -> RetroSynthesisTree:
-        pass_bck_remove = False
-        known_branches = known_branches if known_branches else []
-        pass_bck_uni_rxn = []
-        pass_bck_bi_rxn = []
-
-        branches = known_branches.copy()
-        for bck_action, subtree in known_branches:
-            if bck_action.action is RxnActionType.BckFirstBlock:
-                pass_bck_remove = True
-            elif bck_action.action is RxnActionType.BckUniRxn:
-                pass_bck_uni_rxn.append(bck_action.reaction)
-            elif bck_action.action is RxnActionType.BckBiRxn:
-                pass_bck_bi_rxn.append(bck_action.reaction)
-                for next_bck_action, _ in subtree.branches:
-                    if next_bck_action.action is RxnActionType.BckFirstBlock:
-                        _ba1 = RxnAction(
-                            RxnActionType.BckFirstBlock,
-                            block=bck_action.block,
-                            block_idx=bck_action.block_idx,
-                        )
-                        _ba2 = RxnAction(
-                            RxnActionType.BckBiRxn,
-                            reaction=bck_action.reaction,
-                            block=next_bck_action.block,
-                            block_idx=next_bck_action.block_idx,
-                            block_is_first=not (bck_action.block_is_first),
-                        )
-                        _rdmol = Chem.MolFromSmiles(bck_action.block)
-                        _rt = self._retrosynthesis(_rdmol, max_depth - 1, [(_ba1, RetroSynthesisTree(""))])
-                        branches.append((_ba2, _rt))
-                        break
-            else:
-                raise ValueError(bck_action)
-
-        smiles = Chem.MolToSmiles(mol)
-        branches.extend(
-            self.__dfs_retrosynthesis(mol, smiles, max_depth, pass_bck_remove, pass_bck_uni_rxn, pass_bck_bi_rxn)
-        )
-        return RetroSynthesisTree(smiles, branches)
-
-    def __dfs_retrosynthesis(
-        self,
-        mol: Chem.Mol,
-        smiles: str,
-        max_depth: int,
-        pass_bck_remove: bool = False,
-        pass_bck_uni_rxn: list | None = None,
-        pass_bck_bi_rxn: list | None = None,
-    ) -> list[tuple[RxnAction, RetroSynthesisTree]]:
-        if max_depth == 0:
-            return []
-        if mol.GetNumAtoms() == 0:
-            return []
-
-        is_block = pass_bck_remove or self.is_block(smiles)
-
-        cached_branches = self.load_cache(smiles, max_depth, is_block)
-        if cached_branches is not None:
-            return cached_branches
-
-        branches = []
-        if (not pass_bck_remove) and is_block:
-            branches.append((RxnAction(RxnActionType.BckFirstBlock, block=smiles), RetroSynthesisTree("")))
-        if max_depth == 1:
-            return branches
-
-        try:
-            kekulized_mol = Chem.MolFromSmiles(smiles)
-            Chem.Kekulize(kekulized_mol, clearAromaticFlags=True)
-        except Exception:
-            kekulized_mol = None
-
-        def _run_reaction(reaction: Reaction, mol: Chem.Mol, kekulized_mol: Chem.Mol):
-            parents = reaction.run_reverse_reactants(mol)
-            if (parents is None) and (kekulized_mol is not None):
-                parents = reaction.run_reverse_reactants(kekulized_mol)
-            return parents
-
-        pass_bck_uni_rxn = pass_bck_uni_rxn if pass_bck_uni_rxn else []
-        pass_bck_bi_rxn = pass_bck_bi_rxn if pass_bck_bi_rxn else []
-        for reaction in self.uni_rxns:
-            if reaction in pass_bck_uni_rxn:
-                continue
-            parents = _run_reaction(reaction, mol, kekulized_mol)
-            if parents is None:
-                continue
-            assert len(parents) == 1
-            _branches = self.__dfs_retrosynthesis(mol, Chem.MolToSmiles(mol), max_depth - 1)
-            if len(_branches) > 0:
-                bck_action = RxnAction(RxnActionType.BckUniRxn, reaction)
-                branches.append((bck_action, RetroSynthesisTree(smiles, _branches)))
-
-        for reaction in self.bi_rxns:
-            if reaction in pass_bck_bi_rxn:
-                continue
-            parents = _run_reaction(reaction, mol, kekulized_mol)
-            if parents is None:
-                continue
-            assert len(parents) == 2
-            parents_smi = Chem.MolToSmiles(parents[0]), Chem.MolToSmiles(parents[1])
-            for i, j in [(0, 1), (1, 0)]:
-                block_smi = parents_smi[i]
-                if self.is_block(block_smi):
-                    _branches = self.__dfs_retrosynthesis(parents[j], parents_smi[j], max_depth - 1)
-                    if len(_branches) > 0:
-                        bck_action = RxnAction(RxnActionType.BckUniRxn, reaction, block_smi, block_is_first=(i == 0))
-                        branches.append((bck_action, RetroSynthesisTree(smiles, _branches)))
-
-        self.update_cache(smiles, max_depth, branches, is_block)
-        return branches
+        res = analyzer.run(mol, max_step, known_branches)
+        return key, res
 
 
 class Cache:
     def __init__(self, max_size: int):
         self.max_size = max_size
-        self.cache: dict[str, tuple[int, RetroSynthesisBranch]] = {}
+        self.cache_valid: dict[str, tuple[int, RetroSynthesisTree]] = {}
+        self.cache_invalid: dict[str, int] = {}
 
-    def update(self, smiles: str, depth: int, branch: RetroSynthesisBranch):
-        cache = self.cache.get(smiles, None)
-        if cache is None:
-            if len(self.cache) >= self.max_size:
-                self.cache.popitem()
-            self.cache[smiles] = (depth, branch)
+    def update(self, smiles: str, height: int, tree: RetroSynthesisTree | None):
+        if tree is not None:
+            flag, cache = self.get(smiles, height)
+            if flag is False:
+                if len(self.cache_valid) >= self.max_size:
+                    self.cache_valid.popitem()
+                self.cache_valid[smiles] = (height, tree)
         else:
-            cached_depth, cached_branch = cache
-            if depth > cached_depth:
-                self.cache[smiles] = (depth, branch)
+            self.cache_invalid[smiles] = max(self.cache_invalid.get(smiles, -1), height)
 
-    def get(self, smiles: str, depth: int) -> RetroSynthesisBranch | None:
-        cache = self.cache.get(smiles, None)
+    def get(self, smiles: str, height: int) -> tuple[bool, RetroSynthesisTree | None]:
+        cache = self.cache_valid.get(smiles, None)
         if cache is not None:
-            cached_depth, cached_branch = cache
-            if depth <= cached_depth:
-                return cached_branch
+            cached_height, cached_tree = cache
+            if height <= cached_height:
+                return True, cached_tree
+        cached_height = self.cache_invalid.get(smiles, -1)
+        if height <= cached_height:
+            return True, None
+        else:
+            return False, None

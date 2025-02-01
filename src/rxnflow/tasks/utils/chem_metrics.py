@@ -1,4 +1,3 @@
-from pathlib import Path
 import numpy as np
 import torch
 
@@ -8,7 +7,6 @@ from rdkit.Chem import QED
 from rdkit.Chem import Mol as RDMol
 
 from gflownet.utils import sascore
-from .unidock import unidock_scores
 
 
 def compute_diverse_top_k(

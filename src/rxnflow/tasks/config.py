@@ -56,14 +56,11 @@ class DockingTaskConfig:
         Pocket Center
     size: tuple[float, float, float]
         Pocket Box Size
-    threshold: float (<0.0)
-        Reward = threshold - (docking score)
     """
 
     protein_path: str = MISSING
     center: tuple[float, float, float] = MISSING
-    size: tuple[float, float, float] = (22.5, 22.5, 22.5)
-    threshold: float = 0.0
+    size: tuple[float, float, float] = (22.5, 22.5, 22.5)  # unidock default
 
 
 @dataclass
@@ -84,7 +81,7 @@ class DrugFilter:
 
 @dataclass
 class TasksConfig:
-    moo: MOOTaskConfig = MOOTaskConfig()
-    pocket_conditional: PocketConditionalConfig = PocketConditionalConfig()
-    constraint: DrugFilter = DrugFilter()
-    docking: DockingTaskConfig = DockingTaskConfig()
+    moo: MOOTaskConfig = field(default_factory=MOOTaskConfig)
+    pocket_conditional: PocketConditionalConfig = field(default_factory=PocketConditionalConfig)
+    constraint: DrugFilter = field(default_factory=DrugFilter)
+    docking: DockingTaskConfig = field(default_factory=DockingTaskConfig)
