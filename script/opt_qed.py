@@ -35,7 +35,7 @@ def run(args):
     config.store_all_checkpoints = True
     config.log_dir = args.out_dir
     config.print_every = 1
-    config.num_workers_retrosynthesis = 4
+    config.num_workers_retrosynthesis = 8
 
     config.cond.temperature.dist_params = [0, 64]
     config.algo.train_random_action_prob = 0.1

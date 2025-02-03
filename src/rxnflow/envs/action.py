@@ -75,7 +75,7 @@ class RxnAction:
         return f"<{str(self)}>"
 
     def __str__(self):
-        return f"<{self._protocol}> - {self._block}({self._block_idx})"
+        return f"<{self.action}> {self._protocol} - {self._block}({self._block_idx})"
 
     @property
     def is_fwd(self) -> bool:

@@ -142,6 +142,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             edge_index=edge_index,
             edge_attr=edge_attr,
             protocol_mask=self.create_masks(g).reshape(1, -1),
+            sample_idx=g.graph["sample_idx"],
         )
 
     def create_masks(self, g: MolGraph) -> Tensor:

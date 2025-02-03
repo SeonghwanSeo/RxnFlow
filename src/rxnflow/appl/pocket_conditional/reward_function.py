@@ -7,7 +7,7 @@ from rdkit.Chem import Mol as RDMol
 from pmnet_appl.base import BaseProxy
 from pmnet_appl.tacogfn_reward import TacoGFN_Proxy
 
-from rxnflow.utils import chem_metrics
+from rxnflow.tasks.utils import chem_metrics
 
 
 def get_reward_function(proxy: BaseProxy, objectives: list[str]) -> RewardFunction:

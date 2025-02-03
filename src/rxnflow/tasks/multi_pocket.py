@@ -17,7 +17,6 @@ from gflownet.utils.misc import get_worker_rng
 from rxnflow.config import Config
 from rxnflow.base import BaseTask, RxnFlowTrainer
 from rxnflow.appl.pocket_conditional.model import RxnFlow_SP, RxnFlow_MP
-from rxnflow.appl.pocket_conditional.algo import SynthesisTB_MP
 from rxnflow.appl.pocket_conditional.utils import PocketDB
 from rxnflow.appl.pocket_conditional.pocket.data import generate_protein_data
 from rxnflow.appl.pocket_conditional.reward_function import get_reward_function
@@ -94,16 +93,12 @@ class RxnFlowTrainer_MP(RxnFlowTrainer):
         base.validate_every = 0
         base.num_training_steps = 50_000
         base.algo.train_random_action_prob = 0.1
-        base.model.num_emb_building_block = 64  # TODO: train model on large GPU!
+        base.model.num_emb_block = 64  # TODO: train model on large GPU!
 
-        base.cond.temperature.dist_params = [16, 64]  # Different to Paper!
+        base.cond.temperature.dist_params = [0, 64]
 
     def setup_task(self):
         self.task: ProxyTask_MP = ProxyTask_MP(cfg=self.cfg, wrap_model=self._wrap_for_mp)
-
-    def setup_algo(self):
-        assert self.cfg.algo.method == "TB"
-        self.algo = SynthesisTB_MP(self.env, self.ctx, self.cfg)
 
     def setup_model(self):
         self.model: RxnFlow_MP = RxnFlow_MP(

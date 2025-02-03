@@ -52,10 +52,13 @@ class RetroSyntheticAnalyzer:
         protocols: list[Protocol],
         blocks: list[str],
         approx: bool = True,
+        max_decomposes: int = 2,
     ):
         self.protocols: list[Protocol] = protocols
         self.approx: bool = approx  # Fast analyzing
-        self.__cache: Cache = Cache(100_000)  # For Caching
+        self.__cache_success: Cache = Cache(100_000)
+        self.__cache_fail: Cache = Cache(100_000)
+        self.max_decomposes: int = max_decomposes
 
         # For Fast Search
         self.__max_block_smi_len: int = 0
@@ -69,21 +72,6 @@ class RetroSyntheticAnalyzer:
         # temporary
         self.__min_depth: int
         self.__max_depth: int
-
-    def block_search(self, smi: str) -> int | None:
-        if len(smi) > self.__max_block_smi_len:
-            return False
-        prefix = smi[: self.__prefix_len]
-        prefix_block_set = self.__block_search.get(prefix, None)
-        if prefix_block_set is not None:
-            return prefix_block_set.get(smi, None)
-        return None
-
-    def from_cache(self, smi: str, depth: int) -> tuple[bool, RetroSynthesisTree | None]:
-        return self.__cache.get(smi, self.__max_depth - depth)
-
-    def to_cache(self, smi: str, depth: int, cache: RetroSynthesisTree | None):
-        return self.__cache.update(smi, self.__max_depth - depth, cache)
 
     def run(
         self,
@@ -106,6 +94,33 @@ class RetroSyntheticAnalyzer:
         del self.__max_depth, self.__min_depth
         return res
 
+    def block_search(self, smi: str) -> int | None:
+        if len(smi) > self.__max_block_smi_len:
+            return False
+        prefix = smi[: self.__prefix_len]
+        prefix_block_set = self.__block_search.get(prefix, None)
+        if prefix_block_set is not None:
+            return prefix_block_set.get(smi, None)
+        return None
+
+    # For entire run
+    def from_cache(self, smi: str, depth: int) -> tuple[bool, RetroSynthesisTree | None]:
+        is_cached, _ = self.__cache_fail.get(smi, depth)
+        if is_cached:
+            return True, None
+        is_cached, cached_tree = self.__cache_success.get(smi, depth)
+        if is_cached:
+            return True, cached_tree
+        return False, None
+
+    def to_cache(self, smi: str, depth: int, cache: RetroSynthesisTree | None):
+        if cache is None:
+            self.__cache_fail.update(smi, depth, None)
+        elif not (len(cache.branches) == 1 and cache.branches[0][0].action is RxnActionType.BckFirstBlock):
+            # insert cache when possible actions are not only firstblock
+            self.__cache_success.update(smi, depth, cache)
+
+    # Check tree depth
     def check_depth(self, depth: int) -> bool:
         if depth > self.__max_depth:
             return False
@@ -120,19 +135,18 @@ class RetroSyntheticAnalyzer:
         depth: int,
         known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
     ) -> RetroSynthesisTree | None:
-        if (not self.check_depth(depth)) or (mol is None):
+        # Check state
+        if (not self.check_depth(depth)) or (mol is None) or (len(smiles) == 0):
             return None
-
-        # NOTE: Load cache
+        # Load cache
         is_cached, cached_tree = self.from_cache(smiles, depth)
         if is_cached:
             return cached_tree
 
-        known_branches = known_branches if known_branches is not None else []
+        if known_branches is None:
+            known_branches = []
         known_protocols: set[str] = set(action.protocol for action, _ in known_branches)
         branches: list[tuple[RxnAction, RetroSynthesisTree]] = known_branches.copy()
-
-        tmp_cache = dict()
 
         for protocol in self.protocols:
             if protocol.name in known_protocols:
@@ -140,49 +154,41 @@ class RetroSyntheticAnalyzer:
             if protocol.action is RxnActionType.FirstBlock:
                 block_idx = self.block_search(smiles)
                 if block_idx is not None:
-                    bck_action = RxnAction(RxnActionType.FirstBlock, protocol.name, smiles, block_idx)
+                    bck_action = RxnAction(RxnActionType.BckFirstBlock, protocol.name, smiles, block_idx)
                     branches.append((bck_action, RetroSynthesisTree("")))
                     self.__min_depth = depth
 
             elif protocol.action is RxnActionType.UniRxn:
                 if not self.check_depth(depth + 1):
                     continue
-                for child_mol, *_ in protocol.rxn.reverse(mol)[:2]:
+                for child_mol, *_ in protocol.rxn.reverse(mol)[: self.max_decomposes]:
                     child_smi = Chem.MolToSmiles(child_mol)
-                    if child_smi in tmp_cache:
-                        child_tree = tmp_cache[child_smi]
-                    else:
-                        child_tree = self.__dfs(child_smi, child_mol, depth + 1)
-                        tmp_cache[child_smi] = child_tree
+                    child_tree = self.__dfs(child_smi, child_mol, depth + 1)
                     if child_tree is not None:
-                        bck_action = RxnAction(RxnActionType.BiRxn, protocol.name)
+                        bck_action = RxnAction(RxnActionType.BckUniRxn, protocol.name)
                         branches.append((bck_action, child_tree))
 
             elif protocol.action is RxnActionType.BiRxn:
                 if not self.check_depth(depth + 1):
                     continue
-                for child_mol, block_mol in protocol.rxn.reverse(mol)[:2]:
+                for child_mol, block_mol in protocol.rxn.reverse(mol)[: self.max_decomposes]:
                     block_smi = Chem.MolToSmiles(block_mol)
                     block_idx = self.block_search(block_smi)
                     if block_idx is not None:
                         child_smi = Chem.MolToSmiles(child_mol)
-                        if child_smi in tmp_cache:
-                            child_tree = tmp_cache[child_smi]
-                        else:
-                            child_tree = self.__dfs(child_smi, child_mol, depth + 1)
-                        tmp_cache[child_smi] = child_tree
+                        child_tree = self.__dfs(child_smi, child_mol, depth + 1)
                         if child_tree is not None:
-                            bck_action = RxnAction(RxnActionType.BiRxn, protocol.name, block_smi, block_idx)
+                            bck_action = RxnAction(RxnActionType.BckBiRxn, protocol.name, block_smi, block_idx)
                             branches.append((bck_action, child_tree))
 
         # return if retrosynthetically inaccessible
         if len(branches) == 0:
-            return None
+            result = None
+        else:
+            result = RetroSynthesisTree(smiles, branches)
 
-        # insert cache when possible actions are not only firstblock
-        result = RetroSynthesisTree(smiles, branches)
-        if not (len(branches) == 1 and branches[0][0].action is RxnActionType.BckFirstBlock):
-            self.to_cache(smiles, depth, result)
+        # update cache
+        self.to_cache(smiles, depth, result)
         return result
 
 

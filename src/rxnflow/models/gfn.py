@@ -98,6 +98,9 @@ class RxnFlow(TrajectoryBalanceModel):
             return fwd_cat, bck_cat, graph_out
         return fwd_cat, graph_out
 
+    def block_embedding(self, block: Tensor):
+        return self.mlp_block(block)
+
     def hook_stop(self, emb: Tensor):
         """
         The hook function to be called for the Stop.
@@ -112,14 +115,14 @@ class RxnFlow(TrajectoryBalanceModel):
         """
         return self.mlp_stop(emb)
 
-    def hook_firstblock(self, emb: Tensor, blocks: Tensor):
+    def hook_firstblock(self, emb: Tensor, block: Tensor):
         """
         The hook function to be called for the FirstBlock.
         Parameters
         emb : Tensor
             The embedding tensor for the current states.
             shape: [Nstate, Fstate]
-        blocks : Tensor
+        block : Tensor
             The building block features.
 
         Returns
@@ -128,7 +131,7 @@ class RxnFlow(TrajectoryBalanceModel):
             shape: [Nstate, Nblock]
         """
         state_emb = self.mlp_firstblock(emb)
-        block_emb = self.mlp_block(blocks)
+        block_emb = self.block_embedding(block)
         return state_emb @ block_emb.T
 
     def hook_unirxn(self, emb: Tensor, protocol: str):
@@ -151,7 +154,7 @@ class RxnFlow(TrajectoryBalanceModel):
     def hook_birxn(
         self,
         emb: Tensor,
-        blocks: tuple[Tensor, Tensor],
+        block: Tensor,
         protocol: str,
     ):
         """
@@ -160,7 +163,7 @@ class RxnFlow(TrajectoryBalanceModel):
         emb : Tensor
             The embedding tensor for the current states.
             shape: [Nstate, Fstate]
-        blocks : Tensor
+        block : Tensor
             The building block features.
         protocol: str
             The name of protocol.
@@ -171,5 +174,5 @@ class RxnFlow(TrajectoryBalanceModel):
             shape: [Nstate, Nblock]
         """
         state_emb = self.mlp_birxn(self.act(emb + self.emb_birxn[protocol].view(1, -1)))
-        block_emb = self.mlp_block(blocks)
+        block_emb = self.block_embedding(block)
         return state_emb @ block_emb.T
