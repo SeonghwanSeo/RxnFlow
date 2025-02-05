@@ -34,7 +34,7 @@ python scripts/b_create_env.py -b `SMI-FILE` -o ./envs/`ENV` -t ./templates/real
 
 All data used in the paper can be accessed in [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
 
-Download data at `experiments/`.
+Place data at `experiments/`.
 
 ### LIT-PCBA optimization
 
@@ -67,5 +67,5 @@ From https://github.com/gnina/models/tree/master/data/CrossDocked2020
 (15,201 training pockets + 100 test pockets.)
 
 ```bash
-python scripts/d_create_crossdoced_db.py
+python scripts/d_create_crossdocked_db.py
 ```

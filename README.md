@@ -34,8 +34,7 @@ pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu
 pip install -e '.[pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 ```
 
-<details>
-<summary><h3 style="display:inline-block">Data Preparation</h3></summary>
+### Data Preparation
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
 We provide two reaction template set:
@@ -43,29 +42,7 @@ We provide two reaction template set:
 - We provide the 107-size reaction template set [templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
 - The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](data/template/hb_edited.txt).
 
-The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog).
-We used the "Comprehensive Catalog" released at 2024.06.10.
-
-1. Refine Building Blocks
-
-```bash
-# Enamine Comprehensive Catalog
-python scripts/a_enamine_catalog_to_smi.py -b `CATALOG_SDF` -o envs/enamine_catalog.smi --cpu `CPU`
-
-# Enamine Stock
-python scripts/a_enamine_stock_to_smi.py -b `STOCK_SDF` -o envs/enamine_stock.smi --cpu `CPU`
-
-# Custom smiles
-python scripts/a_refine_smi.py -b `CUSTOM_SMI` -o envs/custom_block.smi --cpu `CPU`
-```
-
-2. Create Environment
-
-```bash
-python scripts/b_create_env.py -b `SMI-FILE` -o ./envs/`ENV` -t ./templates/real.txt --cpu `CPU`
-```
-
-</details>
+To construct datas, please follow the process in [data/](data/).
 
 ## Experiments
 
