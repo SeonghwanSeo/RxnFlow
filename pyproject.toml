@@ -23,7 +23,7 @@ dependencies = [
     "tensorboard",
     "gitpython",
     "botorch",
-    "ruff>=0.9.3",
+    "ruff",
 ]
 
 [project.optional-dependencies]
@@ -44,7 +44,7 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "B", "UP", "T203",]
 ignore = ["E501"]
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "__init__.py" = [
     "F401", # imported but unused
     "E402", # Module level import not at top of file
@@ -53,13 +53,5 @@ ignore = ["E501"]
 [tool.basedpyright]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
-diagnosticMode = "openFilesOnly"
-reportImplicitStringConcatenation = false
-reportGeneralTypeIssues = "warning"
-reportDeprecated = "warning"
-reportUnusedVariable = false
-reportUnusedImport = false
-venvPath = '.'
-venv = '.venv'
 include = ["src/"]
-exclude = [".venv/", ".git/", ".ruff_cache", "**/__pycache__/**", "**/*.pyc", "data/", "logs/", "experiments/", "unidock_*", "wandb/", ]
+# exclude = [".venv", ".git", "**/__pycache__/**", "**/*.egg-info", "data/", "result/", "logs/", "wandb/"]

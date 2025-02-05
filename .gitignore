@@ -5,6 +5,8 @@ data/experiments/
 logs/
 weights/
 wandb*
+slurm-*
+**/result/
 
 # UV
 uv.lock

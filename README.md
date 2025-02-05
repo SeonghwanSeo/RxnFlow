@@ -23,46 +23,54 @@ This repository was developed for research. The code for real-world drug discove
 ### Install
 
 ```bash
-# python>=3.10, torch>=2.3.1
-pip install -e . --find-links https://data.pyg.org/whl/torch-2.3.1+cu121.html
+# python>=3.10,<3.13, torch>=2.3.1
+pip install -e . --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
 # For UniDock
 conda install unidock
-pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.3.1+cu121.html
+pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
+
+# For Pocket Conditional Generation
+pip install -e '.[pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 ```
 
-### Data
+<details>
+<summary><h3 style="display:inline-block">Data Preparation</h3></summary>
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
 We provide two reaction template set:
 
-- We provide the reaction template set [data/templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
-- The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [data/templates/hb_edited.txt](data/template/hb_edited.txt).
+- We provide the 107-size reaction template set [templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
+- The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](data/template/hb_edited.txt).
 
-The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10.
+The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog).
+We used the "Comprehensive Catalog" released at 2024.06.10.
 
-- Use Comprehensive Catalog
+1. Refine Building Blocks
 
-  ```bash
-  cd data
-  # case1: single-step
-  python scripts/a_sdf_to_env.py -b <CATALOG_SDF> -d envs/enamine_all --cpu <CPU>
+```bash
+# Enamine Comprehensive Catalog
+python scripts/a_enamine_catalog_to_smi.py -b `CATALOG_SDF` -o envs/enamine_catalog.smi --cpu `CPU`
 
-  # case2: two-step
-  python scripts/b1_sdf_to_smi.py -b <CATALOG_SDF> -o building_blocks/blocks.smi --cpu <CPU>
-  python scripts/b2_smi_to_env.py -b building_blocks/blocks.smi -d envs/enamine_all --cpu <CPU> --skip_sanitize
-  python scripts/b2_smi_to_env.py -b building_blocks/blocks.smi -d envs/real -t tesmplates/real.txt --cpu <CPU> --skip_sanitize
-  ```
+# Enamine Stock
+python scripts/a_enamine_stock_to_smi.py -b `STOCK_SDF` -o envs/enamine_stock.smi --cpu `CPU`
 
-- Use custom SMILES file (`.smi`)
+# Custom smiles
+python scripts/a_refine_smi.py -b `CUSTOM_SMI` -o envs/custom_block.smi --cpu `CPU`
+```
 
-  ```bash
-  python scripts/b2_smi_to_env.py -b <SMILES-FILE> -d ./envs/<ENV> -t ./templates/<RXN> --cpu <CPU>
-  ```
+2. Create Environment
+
+```bash
+python scripts/b_create_env.py -b `SMI-FILE` -o ./envs/`ENV` -t ./templates/real.txt --cpu `CPU`
+```
+
+</details>
 
 ## Experiments
 
-### Docking optimization with GPU-accelerated UniDock
+<details>
+<summary><h3 style="display:inline-block"> Docking optimization with GPU-accelerated UniDock</h3></summary>
 
 You can optimize the docking score with GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
 
@@ -103,17 +111,18 @@ python script/opt_unidock_moo.py \
 
   ```bash
   python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
-  python script/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
   ```
 
 - Use center of the reference ligand
 
   ```bash
-  python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
   python script/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
   ```
 
-### Zero-shot sampling with Pharmacophore-based QuickVina Proxy
+</details>
+
+<details>
+<summary><h3 style="display:inline-block"> Zero-shot sampling with Pharmacophore-based QuickVina Proxy</h3></summary>
 
 _Not Implemented yet_
 
@@ -147,7 +156,10 @@ python script/sampling_zeroshot.py \
   python script/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
   ```
 
-### Custom optimization
+</details>
+
+<details>
+<summary><h3 style="display:inline-block">Custom optimization</h3></summary>
 
 If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
 
@@ -173,6 +185,8 @@ If you want to train RxnFlow with your custom reward function, you can use the b
       def setup_task(self):
           self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
   ```
+
+</details>
 
 ### Reproducing experimental results
 

@@ -32,7 +32,7 @@ def parse_args():
 def run(args):
     import wandb
     from omegaconf import OmegaConf
-    from rxnflow.tasks.multi_pocket import RxnFlowTrainer_MP
+    from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
     from rxnflow.config import Config, init_empty
 
     config = init_empty(Config())
@@ -51,7 +51,7 @@ def run(args):
         config.overwrite_existing_exp = True
         config.print_every = 1
 
-    trainer = RxnFlowTrainer_MP(config)
+    trainer = ProxyTrainer_MultiPocket(config)
 
     if args.wandb:
         wandb.init()

@@ -37,7 +37,7 @@ class RxnFlow_PocketConditional(RxnFlow):
         self.pocket_embed = None
 
 
-class RxnFlow_MP(RxnFlow_PocketConditional):
+class RxnFlow_MultiPocket(RxnFlow_PocketConditional):
     """
     Model which can be trained on multiple pocket conditions,
     For Zero-shot sampling
@@ -57,7 +57,7 @@ class RxnFlow_MP(RxnFlow_PocketConditional):
         return self._logZ(cond_cat)
 
 
-class RxnFlow_SP(RxnFlow_PocketConditional):
+class RxnFlow_SinglePocket(RxnFlow_PocketConditional):
     """
     Model which can be trained on single pocket conditions
     For Inference or Few-shot training
@@ -85,14 +85,14 @@ class RxnFlow_SP(RxnFlow_PocketConditional):
                 param.requires_grad = False
 
         if freeze_action_embedding:
-            for param in self.block_mlp.parameters():
+            for param in self.mlp_block.parameters():
                 param.requires_grad = False
 
     def forward(self, g: gd.Batch, cond: Tensor) -> tuple[RxnActionCategorical, Tensor]:
         if self.freeze_pocket_embedding:
             self.pocket_encoder.eval()
         if self.freeze_action_embedding:
-            self.block_mlp.eval()
+            self.mlp_block.eval()
 
         self.pocket_embed = self.get_pocket_embed()
         pocket_embed = self.pocket_embed.view(1, -1).repeat(g.num_graphs, 1)
@@ -124,6 +124,10 @@ class RxnFlow_SP(RxnFlow_PocketConditional):
         if self.freeze_pocket_embedding:
             self.pocket_encoder.eval()
         if self.freeze_action_embedding:
-            self.block_mlp.eval()
+            self.mlp_block.eval()
 
         return self
+
+    def clear_cache(self, force=False):
+        if force or (not self.freeze_pocket_embedding):
+            self.pocket_embed = None

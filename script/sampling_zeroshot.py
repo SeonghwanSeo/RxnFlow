@@ -28,6 +28,7 @@ def parse_args():
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.01)",
     )
     run_cfg.add_argument("--cuda", action="store_true", help="CUDA Acceleration")
+    run_cfg.add_argument("--seed", type=int, help="seed", defualt=1)
     return parser.parse_args()
 
 
@@ -42,27 +43,26 @@ def get_center(ligand_path: str) -> tuple[float, float, float]:
 
 
 def run(args):
-    from gflownet.config import Config, init_empty
-    from gflownet.tasks.sbdd_synthesis import SBDDSampler
+    from rxnflow.config import Config, init_empty
+    from rxnflow.tasks.multi_pocket import ProxySampler
 
     ckpt_path = Path(args.model_path)
 
     config = init_empty(Config())
+    config.seed = args.seed
     config.env_dir = args.env_dir
     config.algo.global_batch_size = 100
-    config.algo.action_sampling.sampling_ratio_reactbi = args.subsampling_ratio
+    config.algo.action_subsampling.sampling_ratio_reactbi = args.subsampling_ratio
     config.cond.temperature.dist_params = [32, 64]
 
     device = "cuda" if args.cuda else "cpu"
     save_reward = os.path.splitext(args.out_path)[1] == ".csv"
 
     # NOTE: Run
-    sampler = SBDDSampler(config, ckpt_path, device)
+    sampler = ProxySampler(config, ckpt_path, device)
+    tick = time.time()
     sampler.set_pocket(args.protein, args.center)
-    if save_reward:  # Run Pharmacophore Modeling & Setup Proxy
-        tick = time.time()
-        sampler.task._update_proxy()
-        print(f"Pharmacophore Modeling: {time.time() - tick:.3f} sec")
+    print(f"Pharmacophore Modeling: {time.time() - tick:.3f} sec")
 
     tick = time.time()
     res = sampler.sample(args.num_samples, calc_reward=save_reward)

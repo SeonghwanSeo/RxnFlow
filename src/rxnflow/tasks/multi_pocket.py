@@ -1,7 +1,7 @@
 from pathlib import Path
+from typing import Any
 import torch
 import torch.nn as nn
-from omegaconf import OmegaConf
 
 from collections.abc import Callable
 from rdkit.Chem import Mol as RDMol
@@ -10,74 +10,86 @@ from torch import Tensor
 from pmnet_appl import get_docking_proxy, BaseProxy
 
 from gflownet import ObjectProperties
-from gflownet.data.replay_buffer import ReplayBuffer
-from gflownet.data.data_source import DataSource
-from gflownet.utils.misc import get_worker_rng
 
 from rxnflow.config import Config
-from rxnflow.base import BaseTask, RxnFlowTrainer
-from rxnflow.appl.pocket_conditional.model import RxnFlow_SP, RxnFlow_MP
+from rxnflow.base import RxnFlowSampler
+from rxnflow.appl.pocket_conditional.model import RxnFlow_SinglePocket
 from rxnflow.appl.pocket_conditional.utils import PocketDB
-from rxnflow.appl.pocket_conditional.pocket.data import generate_protein_data
 from rxnflow.appl.pocket_conditional.reward_function import get_reward_function
+from rxnflow.appl.pocket_conditional.trainer import (
+    PocketConditionalTask,
+    PocketConditionalTrainer_SinglePocket,
+    PocketConditionalTrainer_MultiPocket,
+)
 
 """
 Summary
 - ProxyTask: Base Class
-- ProxyTask_MP & RxnFlowTrainer_MP: Train Pocket-Conditioned RxnFlow. (w/ a custom TB algorithm)
-- ProxyTask_SP & RxnFlowTrainer_SP: Train Pocket-Conditioned RxnFlow on single target (Few-shot).
+- ProxyTask_MultiPocket & ProxyTrainer_MultiPocket: Train Pocket-Conditioned RxnFlow.
+- ProxyTask_SinglePocket & ProxyTrainer_SinglePocket: Train Pocket-Conditioned RxnFlow on single target (Few-shot).
 """
 
 
-class ProxyTask(BaseTask):
-    """Sets up a task where the reward is computed using a Proxy, QED."""
-
+class ProxyTask(PocketConditionalTask):
     def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
         super().__init__(cfg, wrap_model)
-        self.objectives = cfg.task.moo.objectives
-        self.pocket_db: PocketDB
-        self.setup_pocket_db()
         self.proxy: BaseProxy = self.models["proxy"]
         self.reward_function = get_reward_function(self.proxy, self.objectives)
         self.last_reward: dict[str, Tensor] = {}  # For Logging
 
-    @property
-    def num_pockets(self) -> int:
-        return len(self.pocket_db)
-
-    def setup_pocket_db(self):
-        raise NotImplementedError
-
     def _load_task_models(self) -> dict[str, nn.Module]:
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.pocket_conditional.proxy
-        self.proxy_model = proxy_model
         proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, None, self.cfg.device)
         return {"proxy": proxy}
 
+    def update_proxy(self):
+        """add proxy cache for reward calculation"""
+        cache = self.proxy.get_cache(self.protein_path, center=self.center)
+        self.proxy.put_cache(self.protein_key, cache)
 
-class ProxyTask_MP(ProxyTask):
-    """For multi-pocket environments"""
+
+# TODO: check the task works well
+class ProxyTask_SinglePocket(ProxyTask):
+    """Single Pocket Opt (Few-shot training & sampling)"""
+
+    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
+        super().__init__(cfg, wrap_model)
+        self.proxy: BaseProxy = self.models["proxy"]
+        self.reward_function = get_reward_function(self.proxy, self.objectives)
+        self.last_reward: dict[str, Tensor] = {}  # For Logging
+
+        self.update_proxy()
+        del self.proxy.pmnet  # remove unused file
+
+    def setup_pocket_db(self):
+        self.set_protein(self.cfg.task.docking.protein_path, self.cfg.task.docking.center)
+
+    def compute_obj_properties(self, objs: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
+        is_valid_t = torch.ones(len(objs), dtype=torch.bool)
+        _, info = self.reward_function(objs, self.protein_key)
+        self.last_reward.update(info)
+        flat_rewards = torch.stack([info[obj] for obj in self.objectives], dim=-1)
+        assert flat_rewards.shape[0] == len(objs)
+        return ObjectProperties(flat_rewards), is_valid_t
+
+
+class ProxyTask_MultiPocket(ProxyTask):
+    """For multi-pocket environments (Pre-training)"""
+
+    task: ProxyTask
 
     def setup_pocket_db(self):
         cfg = self.cfg.task.pocket_conditional
         self.pocket_db = PocketDB(torch.load(cfg.pocket_db, map_location="cpu"))
 
-    def compute_obj_properties(self, objs: list[RDMol], batch_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
+    def compute_obj_properties(self, objs: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
         is_valid_t = torch.ones(len(objs), dtype=torch.bool)
-        pocket_keys = [self.pocket_db.batch_keys[idx] for idx in batch_idcs]
+        pocket_keys = [self.pocket_db.batch_keys[idx] for idx in sample_idcs]
         r, info = self.reward_function(objs, pocket_keys)
         self.last_reward.update(info)
         flat_rewards = r.view(-1, 1)
         assert flat_rewards.shape[0] == len(objs)
         return ObjectProperties(flat_rewards), is_valid_t
-
-    def sample_conditional_information(self, n: int, train_it: int) -> dict[str, Tensor]:
-        rng = get_worker_rng()
-        pocket_indices = rng.choice(len(self.pocket_db), n).tolist()
-        self.pocket_db.set_batch_idcs(pocket_indices)
-        cond_info = super().sample_conditional_information(n, train_it)
-        cond_info["pocket_global_idx"] = torch.LongTensor(pocket_indices)
-        return cond_info
 
     def _load_task_models(self) -> dict[str, nn.Module]:
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.pocket_conditional.proxy
@@ -85,7 +97,28 @@ class ProxyTask_MP(ProxyTask):
         return {"proxy": proxy}
 
 
-class RxnFlowTrainer_MP(RxnFlowTrainer):
+class ProxyTrainer_SinglePocket(PocketConditionalTrainer_SinglePocket):
+    task: ProxyTask_SinglePocket
+
+    def set_default_hps(self, base: Config):
+        super().set_default_hps(base)
+        base.desc = "Proxy-QED optimization for a single target"
+        base.validate_every = 0
+        base.task.moo.objectives = ["vina", "qed"]
+        base.num_training_steps = 10_000
+
+    def setup_task(self):
+        self.task = ProxyTask_SinglePocket_Fewshot(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+
+    def log(self, info, index, key):
+        for obj in self.task.objectives:
+            info[f"sampled_{obj}_avg"] = self.task.last_reward[obj].mean().item()
+        super().log(info, index, key)
+
+
+class ProxyTrainer_MultiPocket(PocketConditionalTrainer_MultiPocket):
+    task: ProxyTask_MultiPocket
+
     def set_default_hps(self, base: Config):
         super().set_default_hps(base)
         base.desc = "Proxy-QED optimization for multiple targets"
@@ -98,112 +131,63 @@ class RxnFlowTrainer_MP(RxnFlowTrainer):
         base.cond.temperature.dist_params = [0, 64]
 
     def setup_task(self):
-        self.task: ProxyTask_MP = ProxyTask_MP(cfg=self.cfg, wrap_model=self._wrap_for_mp)
-
-    def setup_model(self):
-        self.model: RxnFlow_MP = RxnFlow_MP(
-            self.ctx,
-            self.cfg,
-            do_bck=self.cfg.algo.tb.do_parameterize_p_b,
-            num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
-        )
+        self.task = ProxyTask_MultiPocket(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
     def log(self, info, index, key):
         for obj in self.task.objectives:
             info[f"sampled_{obj}_avg"] = self.task.last_reward[obj].mean().item()
         super().log(info, index, key)
 
-    def step(self, loss: Tensor):
-        self.model.clear_cache()
-        self.sampling_model.clear_cache()
-        return super().step(loss)
 
-    def create_data_source(self, replay_buffer: ReplayBuffer | None = None, is_algo_eval: bool = False):
-        return _DataSource_MP(self.cfg, self.ctx, self.algo, self.task, replay_buffer, is_algo_eval)
+class ProxySampler(RxnFlowSampler):
+    model: RxnFlow_SinglePocket
+    task: ProxyTask_SinglePocket
 
-
-class _DataSource_MP(DataSource):
-    task: ProxyTask_MP
-
-    def compute_properties(self, trajs, mark_as_online=False):
-        """Sets trajs' obj_props and is_valid keys by querying the task."""
-        valid_idcs = torch.tensor([i for i in range(len(trajs)) if trajs[i].get("is_valid", True)]).long()
-        objs = [self.ctx.graph_to_obj(trajs[i]["result"]) for i in valid_idcs]
-
-        obj_props, m_is_valid = self.task.compute_obj_properties(
-            objs, valid_idcs.tolist()
-        )  # NOTE: This is only the different part
-        assert obj_props.ndim == 2, "FlatRewards should be (mbsize, n_objectives), even if n_objectives is 1"
-        # The task may decide some of the objs are invalid, we have to again filter those
-        valid_idcs = valid_idcs[m_is_valid]
-        all_fr = torch.zeros((len(trajs), obj_props.shape[1]))
-        all_fr[valid_idcs] = obj_props
-        for i in range(len(trajs)):
-            trajs[i]["obj_props"] = all_fr[i]
-            trajs[i]["is_online"] = mark_as_online
-        # Override the is_valid key in case the task made some objs invalid
-        for i in valid_idcs:
-            trajs[i]["is_valid"] = True
-
-
-class ProxyTask_SP(ProxyTask):
-    """Single Target Opt (Zero-shot sampling, Few-shot training)"""
-
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        super().__init__(cfg, wrap_model)
-        self.models["proxy"].setup_pmnet()
-
-    def setup_pocket_db(self):
-        opt_cfg = self.cfg.task.docking
-        if not OmegaConf.is_missing(opt_cfg, "protein_path"):
-            self.set_protein(opt_cfg.protein_path, opt_cfg.center)
-
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        self._update_proxy()
-        is_valid_t = torch.ones(len(objs), dtype=torch.bool)
-        _, info = self.reward_function(objs, self.protein_key)
-        self.last_reward.update(info)
-        flat_rewards = torch.stack([info[obj] for obj in self.objectives], dim=-1)
-        assert flat_rewards.shape[0] == len(objs)
-        return ObjectProperties(flat_rewards), is_valid_t
-
-    def set_protein(self, protein_path: str, center: tuple[float, float, float]):
-        self.protein_path: str = protein_path
-        self.protein_key: str = Path(self.protein_path).stem
-        self.center: tuple[float, float, float] = center
-        self.pocket_db = PocketDB({self.protein_key: generate_protein_data(self.protein_path, self.center)})
-        self.pocket_db.set_batch_idcs([0])
-        self.require_update: bool = True  # NOTE: lazy update
-
-    def _update_proxy(self):
-        if self.require_update:
-            cache = self.proxy.get_cache(self.protein_path, center=self.center)
-            self.proxy.put_cache(self.protein_key, cache)
-            self.require_update = False
-
-
-class RxnFlowTrainer_SP(RxnFlowTrainer):
-    def set_default_hps(self, base: Config):
-        super().set_default_hps(base)
-        base.desc = "Proxy-QED optimization for a single target"
-        base.validate_every = 0
-        base.task.moo.objectives = ["vina", "qed"]
-        base.num_training_steps = 10_000
+    def setup_model(self):
+        self.model = RxnFlow_SinglePocket(self.ctx, self.cfg, num_graph_out=self.cfg.algo.tb.do_predict_n + 1)
 
     def setup_task(self):
-        self.task: ProxyTask_SP = ProxyTask_SP(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = ProxyTask_SinglePocket(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
-    def setup_model(self):
-        self.model = RxnFlow_SP(
-            self.ctx,
-            self.cfg,
-            do_bck=self.cfg.algo.tb.do_parameterize_p_b,
-            num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
-            freeze_pocket_embedding=True,
-            freeze_action_embedding=True,
-        )
+    def calc_reward(self, samples: list[Any]) -> list[Any]:
+        samples = super().calc_reward(samples)
+        for idx, sample in enumerate(samples):
+            for obj in self.task.objectives:
+                sample["info"][f"reward_{obj}"] = self.task.last_reward[obj][idx]
+        return samples
 
-    def log(self, info, index, key):
-        for obj in self.task.objectives:
-            info[f"sampled_{obj}_avg"] = self.task.last_reward[obj].mean().item()
-        super().log(info, index, key)
+    @torch.no_grad()
+    def set_pocket(self, protein_path: str | Path, center: tuple[float, float, float]):
+        self.sampling_model.clear_cache()
+        self.model.clear_cache()
+        self.task.set_protein(str(protein_path), center)
+
+    @torch.no_grad()
+    def sample_against_pocket(
+        self,
+        protein_path: str | Path,
+        center: tuple[float, float, float],
+        n: int,
+        calc_reward: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        samples = sampler.sample_against_pocket(<pocket_file>, <center>, <n>, calc_reward = False)
+        samples[0] = {'smiles': <smiles>, 'traj': <traj>, 'info': <info>}
+        samples[0]['traj'] = [
+            (('StartingBlock',), smiles1),        # None    -> smiles1
+            (('UniMolecularReaction', template), smiles2),  # smiles1 -> smiles2
+            ...                                 # smiles2 -> ...
+        ]
+        samples[0]['info'] = {'beta': <beta>, ...}
+
+
+        samples = sampler.sample_against_pocket(..., calc_reward = True)
+        samples[0]['info'] = {
+            'beta': <beta>,
+            'reward': <reward>,
+            'reward_qed': <qed>,
+            'reward_docking': <proxy>,
+        }
+        """
+        self.set_pocket(protein_path, center)
+        return self.sample(n, calc_reward)

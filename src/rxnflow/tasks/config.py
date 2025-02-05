@@ -46,7 +46,7 @@ class PocketConditionalConfig:
 
 @dataclass
 class DockingTaskConfig:
-    """Config for SBDDConfig
+    """Config for Docking
 
     Attributes
     ----------

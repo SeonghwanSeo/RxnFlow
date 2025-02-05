@@ -240,10 +240,60 @@ class SyntheticPathSampler(GraphSampler):
         data: list[Dict]
            A list of trajectories. Each trajectory is a dict with keys
            - trajs: list[Tuple[Chem.Mol, RxnAction]], the list of states and actions
-           - fwd_logprob: P_F(tau)
            - is_valid: is the generated graph valid according to the env & ctx
         """
-        raise NotImplementedError
+        # This will be returned
+        data = [{"traj": [], "reward_pred": None, "is_valid": True, "is_sink": []} for _ in range(n)]
+        # Let's also keep track of trajectory statistics according to the model
+        fwd_a: list[list[RxnAction]] = [[] for _ in range(n)]
+
+        graphs: list[MolGraph] = [self.env.new() for _ in range(n)]
+        done: list[bool] = [False] * n
+
+        def not_done(lst) -> list[int]:
+            return [e for i, e in enumerate(lst) if not done[i]]
+
+        for traj_idx in range(self.max_len):
+            # Label the state is last or not
+            for i in not_done(range(n)):
+                graphs[i].graph.update({"allow_stop": (traj_idx >= self.min_len), "sample_idx": i})
+
+            # Construct graphs for the trajectories that aren't yet done
+            torch_graphs = [self.ctx.graph_to_Data(graphs[i]) for i in not_done(range(n))]
+            not_done_mask = [not v for v in done]
+
+            # NOTE: forward transition probability (forward policy) estimation
+            fwd_cat: RxnActionCategorical = self._estimate_policy(model, torch_graphs, cond_info, not_done_mask)
+            actions: list[ActionIndex] = self._sample_action(torch_graphs, fwd_cat, 0)
+            reaction_actions: list[RxnAction] = [
+                self.ctx.ActionIndex_to_GraphAction(g, a) for g, a in zip(torch_graphs, actions, strict=True)
+            ]
+
+            # NOTE: Step each trajectory, and accumulate statistics
+            for i, j in zip(not_done(range(n)), range(n), strict=False):
+                data[i]["traj"].append((graphs[i], reaction_actions[j]))
+                fwd_a[i].append(reaction_actions[j])
+                if reaction_actions[j].action is RxnActionType.Stop:
+                    done[i] = True
+                    data[i]["is_sink"].append(1)
+                    continue
+                try:
+                    gp = self.env.step(graphs[i], reaction_actions[j])
+                    assert gp.mol is not None
+                except AssertionError:
+                    done[i] = True
+                    data[i]["is_valid"] = False
+                    data[i]["is_sink"].append(1)
+                    continue
+                if traj_idx == self.max_len - 1:
+                    done[i] = True
+                data[i]["is_sink"].append(0)
+                graphs[i] = gp
+            if all(done):
+                break
+        for i in range(n):
+            data[i]["result"] = graphs[i]
+        return data
 
     def sample_backward_from_graphs(self, graphs: list[Graph], model: RxnFlow | None, cond_info: Tensor):
         raise NotImplementedError()

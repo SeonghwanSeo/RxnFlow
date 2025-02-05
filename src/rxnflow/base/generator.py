@@ -1,5 +1,3 @@
-import functools
-
 import numpy as np
 import torch
 from omegaconf import OmegaConf
@@ -7,18 +5,17 @@ from omegaconf import OmegaConf
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
-from rdkit import Chem, RDLogger
 from torch import Tensor
 
-from gflownet.utils.misc import set_main_process_device, set_worker_rng_seed
+from gflownet.utils.misc import set_main_process_device, set_worker_rng_seed, get_worker_rng
+from gflownet.utils.transforms import thermometer
+
 from rxnflow.config import Config
 from rxnflow.utils.misc import set_worker_env
 from rxnflow.algo.trajectory_balance import SynthesisTB
 from rxnflow.envs import SynthesisEnv, SynthesisEnvContext
 from rxnflow.models.gfn import RxnFlow
 from rxnflow.base.task import BaseTask
-
-RDLogger.DisableLog("rdApp.*")
 
 """
 config = init_empty(Config())
@@ -44,7 +41,13 @@ class RxnFlowSampler:
     task: BaseTask
     algo: SynthesisTB
 
-    def __init__(self, config: Config, checkpoint_path: str | Path, device: str):
+    def __init__(
+        self,
+        config: Config,
+        checkpoint_path: str | Path,
+        device: str,
+        use_ema: bool = False,
+    ):
         """Sampler for RxnFlow
 
         Parameters
@@ -56,10 +59,11 @@ class RxnFlowSampler:
         device: str
             'cuda' | 'cpu'
         """
-        state = torch.load(checkpoint_path, map_location=device)
+        state = torch.load(checkpoint_path, map_location=device, weights_only=False)
         self.default_cfg: Config = state["cfg"]
         self.update_default_cfg(self.default_cfg)
         self.cfg: Config = OmegaConf.merge(self.default_cfg, config)
+        self.check_gfn_condition()
         self.cfg.device = device
 
         self.device = torch.device(device)
@@ -69,6 +73,32 @@ class RxnFlowSampler:
         else:
             self.sampling_model.load_state_dict(state["models_state_dict"][0])
         del state
+
+        self.sample_dist = self.default_cfg.cond.temperature.sample_dist
+        self.dist_params = self.default_cfg.cond.temperature.dist_params
+
+    @torch.no_grad()
+    def check_gfn_condition(self):
+        assert (
+            self.default_cfg.cond.temperature.sample_dist == self.cfg.cond.temperature.sample_dist
+        ), "It is not permitted to use different condition"
+        assert (
+            self.default_cfg.cond.temperature.dist_params == self.cfg.cond.temperature.dist_params
+        ), "It is not permitted to use different condition"
+        assert (
+            self.default_cfg.cond.focus_region.focus_type == self.cfg.cond.focus_region.focus_type
+        ), "It is not permitted to use different condition"
+        assert (
+            self.default_cfg.cond.weighted_prefs.preference_type == self.cfg.cond.weighted_prefs.preference_type
+        ), "It is not permitted to use different condition"
+
+    @torch.no_grad()
+    def update_temperature(self, sample_dist: str, dist_params: list[float]):
+        """only the way to update temperature"""
+        assert self.sample_dist != "constant", "The model is trained on constant setting"
+        assert sample_dist != "constant", "Constant sampled dist is not allowed"
+        self.sample_dist = sample_dist
+        self.dist_params = dist_params
 
     @torch.no_grad()
     def sample(self, n: int, calc_reward: bool = True) -> list[dict[str, Any]]:
@@ -101,12 +131,7 @@ class RxnFlowSampler:
         self.env = SynthesisEnv(self.cfg.env_dir)
 
     def setup_env_context(self):
-        self.ctx = SynthesisEnvContext(
-            self.env,
-            num_cond_dim=self.task.num_cond_dim,
-            fp_radius_building_block=self.cfg.model.fp_radius_building_block,
-            fp_nbits_building_block=self.cfg.model.fp_nbits_building_block,
-        )
+        self.ctx = SynthesisEnvContext(self.env, num_cond_dim=self.task.num_cond_dim)
 
     def setup_model(self):
         self.model = RxnFlow(self.ctx, self.cfg, do_bck=False, num_graph_out=self.cfg.algo.tb.do_predict_n + 1)
@@ -141,7 +166,7 @@ class RxnFlowSampler:
             samples = self.step(it, batch_size, calc_reward)
             for sample in samples:
                 out = {
-                    "smiles": Chem.MolToSmiles(sample["result_rdmol"]),
+                    "smiles": self.ctx.object_to_log_repr(sample["result"]),
                     "traj": self.ctx.read_traj(sample["traj"]),
                     "info": sample["info"],
                 }
@@ -155,7 +180,8 @@ class RxnFlowSampler:
 
     @torch.no_grad()
     def step(self, it: int = 0, batch_size: int = 64, calc_reward: bool = True):
-        cond_info = self.task.sample_conditional_information(batch_size, it)
+        cond_info = self.sample_conditional_information(batch_size, it)
+        cond_info["encoding"] = cond_info["encoding"].to(self.device)
         samples = self.algo.graph_sampler.sample_inference(self.sampling_model, batch_size, cond_info["encoding"])
         for i, sample in enumerate(samples):
             sample["info"] = {k: self.to_item(v[i]) for k, v in cond_info.items() if k != "encoding"}
@@ -163,16 +189,70 @@ class RxnFlowSampler:
         valid_idcs = [i for i, sample in enumerate(samples) if sample["is_valid"]]
         samples = [samples[i] for i in valid_idcs]
         if calc_reward:
-            samples = self.calc_reward(samples, valid_idcs)
+            samples = self.calc_reward(samples)
         return samples
 
-    def calc_reward(self, samples: list[Any], valid_idcs: list[int]) -> list[Any]:
+    def calc_reward(self, samples: list[Any]) -> list[Any]:
         mols = [sample["result_rdmol"] for sample in samples]
         flat_r, m_is_valid = self.task.compute_obj_properties(mols)
         samples = [sample for sample, is_valid in zip(samples, m_is_valid, strict=True) if is_valid]
         for i, sample in enumerate(samples):
             sample["info"]["reward"] = self.to_item(flat_r[i])
+
+        if self.task.is_moo:
+            for sample in samples:
+                for obj, r in zip(self.task.objectives, sample["info"]["reward"], strict=True):
+                    sample["info"][f"reward_{obj}"] = r
         return samples
+
+    def sample_conditional_information(self, n: int, train_it: int) -> dict[str, Tensor]:
+        temp_conditional = self.task.temperature_conditional
+        num_thermometer_dim = self.cfg.cond.temperature.num_thermometer_dim
+
+        org_sample_dist = self.cfg.cond.temperature.sample_dist
+        org_dist_params = self.cfg.cond.temperature.dist_params
+        sample_dist = self.sample_dist
+        dist_params = self.dist_params
+        if org_sample_dist == "constant":
+            beta = np.array(org_dist_params[0]).repeat(n).astype(np.float32)
+            beta_enc = torch.zeros((n, num_thermometer_dim))
+        else:
+            rng = get_worker_rng()
+            if sample_dist == "constant":
+                beta = np.array(dist_params[0]).repeat(n).astype(np.float32)
+            else:
+                if sample_dist == "gamma":
+                    loc, scale = dist_params
+                    beta = rng.gamma(loc, scale, n).astype(np.float32)
+                elif sample_dist == "uniform":
+                    a, b = float(dist_params[0]), float(self.dist_params[1])
+                    beta = rng.uniform(a, b, n).astype(np.float32)
+                elif sample_dist == "loguniform":
+                    low, high = np.log(dist_params)
+                    beta = np.exp(rng.uniform(low, high, n).astype(np.float32))
+                elif sample_dist == "beta":
+                    a, b = float(dist_params[0]), float(self.dist_params[1])
+                    beta = rng.beta(a, b, n).astype(np.float32)
+                else:
+                    raise ValueError(sample_dist)
+                assert len(beta.shape) == 1, f"beta should be a 1D array, got {beta.shape}"
+            beta_enc = thermometer(torch.tensor(beta), num_thermometer_dim, 0, float(temp_conditional.upper_bound))
+        cond_info = {"beta": torch.tensor(beta), "encoding": beta_enc}
+
+        if self.task.is_moo:
+            pref_ci = self.task.pref_cond.sample(n)
+            focus_ci = (
+                self.task.focus_cond.sample(n, train_it)
+                if self.task.focus_cond is not None
+                else {"encoding": torch.zeros(n, 0)}
+            )
+            cond_info = {
+                **cond_info,
+                **pref_ci,
+                **focus_ci,
+                "encoding": torch.cat([cond_info["encoding"], pref_ci["encoding"], focus_ci["encoding"]], dim=1),
+            }
+        return cond_info
 
     def _wrap_for_mp(self, obj, send_to_device=False):
         if send_to_device:
@@ -186,18 +266,3 @@ class RxnFlowSampler:
             return t.item()
         else:
             return tuple(t.tolist())
-
-
-def moo_sampler(cls: type[RxnFlowSampler]):
-    original_calc_reward = cls.calc_reward
-
-    @functools.wraps(original_calc_reward)
-    def new_calc_reward(self, samples: list[Any], valid_idcs: list[int]) -> list[Any]:
-        samples = original_calc_reward(self, samples, valid_idcs)
-        for sample in samples:
-            for obj, r in zip(self.task.objectives, sample["info"]["reward"], strict=True):
-                sample["info"][f"reward_{obj}"] = r
-        return samples
-
-    cls.calc_reward = new_calc_reward
-    return cls
