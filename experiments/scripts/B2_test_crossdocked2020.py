@@ -76,7 +76,8 @@ class TestSampler(RxnFlowSampler):
 
 
 if __name__ == "__main__":
-    MODEL_PATH = "../logs/sbdd-0204/model_state_17000.pt"
+    MODEL_PATH = "../logs/sbdd-0204/model_state.pt"
+    # MODEL_PATH = "./logs/pocket_conditional_qvina_crossdocked2020/model_state.pt"
     ROOT_DIR = "./data/experiments/CrossDocked2020/"
     TEST_POCKET_DIR = os.path.join(ROOT_DIR, "protein/test/")
     TEST_POCKET_CENTER_INFO: dict[str, tuple[float, float, float]] = {}
@@ -91,11 +92,13 @@ if __name__ == "__main__":
     device = "cuda"
     ckpt_path = MODEL_PATH
     sampler = TestSampler(config, ckpt_path, device)
+    sampler.update_temperature("uniform", [16, 64])
 
     # NOTE: Run
-    save_path = Path("./exp2/")
+    save_path = Path("./result/crossdocked/")
     save_path.mkdir(exist_ok=True)
     runtime = []
+
     for pocket_file in tqdm(sorted(list(Path(TEST_POCKET_DIR).iterdir()))):
         set_seed(1)
         key = pocket_file.stem

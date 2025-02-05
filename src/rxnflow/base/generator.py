@@ -97,6 +97,15 @@ class RxnFlowSampler:
         """only the way to update temperature"""
         assert self.sample_dist != "constant", "The model is trained on constant setting"
         assert sample_dist != "constant", "Constant sampled dist is not allowed"
+        if sample_dist != self.sample_dist:
+            assert self.sample_dist in (
+                "loguniform",
+                "uniform",
+            ), f"Only `loguniform` and `uniform` are compatible with each other. (current: {self.sample_dist})"
+            assert sample_dist in (
+                "loguniform",
+                "uniform",
+            ), f"Only `loguniform` and `uniform` are compatible with each other. (input: {sample_dist})"
         self.sample_dist = sample_dist
         self.dist_params = dist_params
 
@@ -193,7 +202,7 @@ class RxnFlowSampler:
         return samples
 
     def calc_reward(self, samples: list[Any]) -> list[Any]:
-        mols = [sample["result_rdmol"] for sample in samples]
+        mols = [self.ctx.graph_to_obj(sample["result"]) for sample in samples]
         flat_r, m_is_valid = self.task.compute_obj_properties(mols)
         samples = [sample for sample, is_valid in zip(samples, m_is_valid, strict=True) if is_valid]
         for i, sample in enumerate(samples):

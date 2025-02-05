@@ -12,8 +12,8 @@ from gflownet import ObjectProperties
 
 from rxnflow.config import Config
 from rxnflow.base import BaseTask, RxnFlowTrainer
-from rxnflow.utils.chem_metrics import mol2qed
 from rxnflow.tasks.unidock import UniDockTask, UniDockTrainer
+from rxnflow.tasks.utils.chem_metrics import mol2qed
 
 
 aux_tasks = {"qed": mol2qed}
@@ -96,14 +96,16 @@ class UniDockMOOTrainer(UniDockTrainer):
         super().set_default_hps(base)
         base.validate_every = 0
         base.task.moo.objectives = ["docking", "qed"]
+        base.task.constraint.rule = None
         base.num_training_steps = 1000
 
         # NOTE: Different to paper
-        base.cond.temperature.dist_params = [16, 64]  # Different to Paper!
+        base.cond.temperature.sample_dist = "uniform"
+        base.cond.temperature.dist_params = [1, 64]
+        base.algo.train_random_action_prob = 0.01
         base.replay.use = True
         base.replay.capacity = 6_400
         base.replay.warmup = 128
-        base.algo.train_random_action_prob = 0.02
 
     def setup_task(self):
         self.task = UniDockMOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
@@ -111,9 +113,9 @@ class UniDockMOOTrainer(UniDockTrainer):
     def log(self, info, index, key):
         for obj, v in self.task.avg_reward_info:
             info[f"sampled_{obj}_avg"] = v
-        if len(self.task.best_molecules) > 0:
-            info["top100_n"] = len(self.task.best_molecules)
-            info["top100_docking"] = np.mean([score for score, _ in self.task.best_molecules])
+        info["topn"] = len(self.task.best_molecules)
+        for n in (10, 100, 1000):
+            info[f"top{n}_docking"] = np.mean([score for score, _ in self.task.best_molecules[:n]])
         super().log(info, index, key)
 
 

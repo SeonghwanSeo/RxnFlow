@@ -140,34 +140,70 @@ python script/sampling_zeroshot.py \
 
 If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
 
+Example codes are provided in `./examples/`.
+
 - Example (QED)
 
   ```python
   import torch
-  from rdkit.Chem import Mol as RDMol, QED
+  from rdkit.Chem import Mol, QED
   from gflownet import ObjectProperties
   from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
 
   class QEDTask(BaseTask):
-      def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, torch.Tensor]:
-          fr = torch.tensor([QED.qed(mol) for mol in mols], dtype=torch.float).reshape(-1, 1)
+      def compute_obj_properties(self, objs: list[Chem.Mol]) -> tuple[ObjectProperties, torch.Tensor]:
+          fr = torch.tensor([QED.qed(mol) for mol in mols], dtype=torch.float)
+          fr = fr.reshape(-1, 1) # reward dimension should be [Nobj, Nprop]
           is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
           return ObjectProperties(fr), is_valid_t
 
   class QEDTrainer(RxnFlowTrainer):  # For online training
       def setup_task(self):
-          self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+          self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
   class QEDSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
       def setup_task(self):
-          self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+          self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+  ```
+
+- Example (Multi-objective optimization)
+  The example scripts will be provided soon!
+
+  ```python
+  import torch
+  from rdkit.Chem import Mol as RDMol
+  from gflownet import ObjectProperties
+  from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
+
+  class MOOTask(BaseTask):
+      is_moo=True
+      def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, torch.Tensor]:
+          fr1 = torch.tensor([reward1(mol) for mol in mols], dtype=torch.float)
+          fr2 = torch.tensor([reward2(mol) for mol in mols], dtype=torch.float)
+          fr = torch.stack([fr1, fr2], dim=-1)
+          is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
+          return ObjectProperties(fr), is_valid_t
+
+  class MOOTrainer(RxnFlowTrainer):  # For online training
+      def set_default_hps(self, base: Config):
+          super().set_default_hps(base)
+          base.task.moo.objectives = ["obj1", "obj2"] # set the objective names
+
+      def setup_task(self):
+          self.task = MOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+
+  class MOOSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
+      def setup_task(self):
+          self.task = MOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
   ```
 
 </details>
 
 ### Reproducing experimental results
 
-Current version do not provide the reproducing code. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
+The training/sampling scripts are provided in `./experiments/`.
+
+**_NOTE_**: Current version do not fully reproduce the paper result. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
 
 ## Citation
 
@@ -179,23 +215,6 @@ If you use our code in your research, we kindly ask that you consider citing our
   author={Seo, Seonghwan and Kim, Minsu and Shen, Tony and Ester, Martin and Park, Jinkyoo and Ahn, Sungsoo and Kim, Woo Youn},
   journal={arXiv preprint arXiv:2410.04542},
   year={2024}
-}
-@article{shen2024tacogfn,
-  title={TacoGFN: Target Conditioned GFlowNet for Structure-Based Drug Design},
-  author={Shen, Tony and Seo, Seonghwan and Lee, Grayson and Pandey, Mohit and Smith, Jason R and Cherkasov, Artem and Kim, Woo Youn and Ester, Martin},
-  journal={arXiv preprint arXiv:2310.03223},
-  year={2024},
-  note={Published in Transactions on Machine Learning Research(TMLR)}
-}
-@article{seo2023molecular,
-  title={Molecular generative model via retrosynthetically prepared chemical building block assembly},
-  author={Seo, Seonghwan and Lim, Jaechang and Kim, Woo Youn},
-  journal={Advanced Science},
-  volume={10},
-  number={8},
-  pages={2206674},
-  year={2023},
-  publisher={Wiley Online Library}
 }
 
 ```

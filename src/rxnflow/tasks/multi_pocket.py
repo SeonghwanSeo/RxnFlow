@@ -105,7 +105,8 @@ class ProxyTrainer_SinglePocket(PocketConditionalTrainer_SinglePocket):
         base.desc = "Proxy-QED optimization for a single target"
         base.validate_every = 0
         base.task.moo.objectives = ["vina", "qed"]
-        base.num_training_steps = 10_000
+        base.num_training_steps = 40_000
+        base.algo.train_random_action_prob = 0.1
 
     def setup_task(self):
         self.task = ProxyTask_SinglePocket_Fewshot(cfg=self.cfg, wrap_model=self._wrap_for_mp)

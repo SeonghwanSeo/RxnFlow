@@ -22,11 +22,10 @@ class UniDockTask(BaseTask):
         self.protein_path: Path = Path(cfg.task.docking.protein_path)
         self.center: tuple[float, float, float] = cfg.task.docking.center
         self.size: tuple[float, float, float] = cfg.task.docking.size
-        self.threshold: float = cfg.task.docking.threshold
-        self.filter: str = cfg.task.constraint.rule
+        self.filter: str | None = cfg.task.constraint.rule
         self.ff_optimization: None | str = None  # None, UFF, MMFF
         self.search_mode: str = "balance"  # fast, balance, detail
-        assert self.filter in ["null", "lipinski", "veber"]
+        assert self.filter in [None, "lipinski", "veber"]
 
         self.last_molecules: list[tuple[float, str]] = []
         self.best_molecules: list[tuple[float, str]] = []
@@ -47,7 +46,7 @@ class UniDockTask(BaseTask):
         return ObjectProperties(fr.reshape(-1, 1)), is_valid_t
 
     def constraint(self, mol: RDMol) -> bool:
-        if self.filter == "null":
+        if self.filter is None:
             pass
         elif self.filter in ("lipinski", "veber"):
             if rdMolDescriptors.CalcExactMolWt(mol) > 500:
@@ -68,7 +67,7 @@ class UniDockTask(BaseTask):
         return True
 
     def convert_docking_score(self, scores: torch.Tensor):
-        return self.threshold - scores
+        return -scores
 
     def run_docking(self, mols: list[RDMol]) -> Tensor:
         out_path = self.save_dir / f"oracle{self.oracle_idx}.sdf"
@@ -125,9 +124,9 @@ class UniDockTrainer(RxnFlowTrainer):
             info["pass_constraint"] = len(self.task.last_molecules) / self.cfg.algo.num_from_policy
         if len(self.task.last_molecules) > 0:
             info["sample_docking_avg"] = np.mean([score for score, _ in self.task.last_molecules])
-        if len(self.task.best_molecules) > 0:
-            info["top100_n"] = len(self.task.best_molecules)
-            info["top100_docking"] = np.mean([score for score, _ in self.task.best_molecules])
+        info["topn"] = len(self.task.best_molecules)
+        for n in (10, 100, 1000):
+            info[f"top{n}_docking"] = np.mean([score for score, _ in self.task.best_molecules[:n]])
 
 
 # NOTE: Sampling with pre-trained GFlowNet

@@ -33,7 +33,6 @@ python scripts/b_create_env.py -b `SMI-FILE` -o ./envs/`ENV` -t ./templates/real
 ## Experimental Dataset
 
 All data used in the paper can be accessed in [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
-
 Place data at `experiments/`.
 
 ### LIT-PCBA optimization

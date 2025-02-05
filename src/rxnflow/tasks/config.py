@@ -71,12 +71,12 @@ class DrugFilter:
     ----------
     rule: str (path)
         DrugFilter Rule
-            - null
+            - None
             - lipinski
             - veber
     """
 
-    rule: str = "null"
+    rule: str | None = None
 
 
 @dataclass

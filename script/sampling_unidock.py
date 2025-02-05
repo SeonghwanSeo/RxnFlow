@@ -4,6 +4,10 @@ from argparse import ArgumentParser
 from pathlib import Path
 import time
 
+from rxnflow.config import Config, init_empty
+from rxnflow.tasks.unidock import UniDockSampler
+from utils import get_center
+
 
 def parse_args():
     parser = ArgumentParser("RxnFlow", description="Inference Sampling with RxnFlow")
@@ -38,26 +42,12 @@ def parse_args():
     return parser.parse_args()
 
 
-def get_center(ligand_path: str) -> tuple[float, float, float]:
-    from openbabel import pybel
-    import numpy as np
-
-    extension = os.path.splitext(ligand_path)[-1][1:]
-    pbmol: pybel.Molecule = next(pybel.readfile(extension, ligand_path))
-    x, y, z = np.mean([atom.coords for atom in pbmol.atoms], axis=0).tolist()
-    return round(x, 3), round(y, 3), round(z, 3)
-
-
 def run(args):
-    from rxnflow.config import Config, init_empty
-    from rxnflow.tasks.unidock import UniDockSampler
-
     ckpt_path = Path(args.model_path)
 
     config = init_empty(Config())
     config.algo.num_from_policy = 100
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
-    config.task.docking.threshold = 0.0
     if args.env_dir is not None:
         config.env_dir = args.env_dir
     if args.protein is not None:

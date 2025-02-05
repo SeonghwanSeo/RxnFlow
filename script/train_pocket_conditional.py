@@ -1,4 +1,8 @@
 from argparse import ArgumentParser
+import wandb
+from omegaconf import OmegaConf
+from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
+from rxnflow.config import Config, init_empty
 
 
 def parse_args():
@@ -30,11 +34,6 @@ def parse_args():
 
 
 def run(args):
-    import wandb
-    from omegaconf import OmegaConf
-    from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
-    from rxnflow.config import Config, init_empty
-
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.task.pocket_conditional.pocket_db = args.db

@@ -31,4 +31,5 @@ def create_logger(name="logger", loglevel=logging.INFO, logfile=None, streamHand
         handler.setFormatter(formatter)
         logger.addHandler(handler)
 
+    logger.propagate = False
     return logger

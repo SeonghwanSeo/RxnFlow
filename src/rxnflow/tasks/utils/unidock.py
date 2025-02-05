@@ -5,12 +5,13 @@ from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem import Mol as RDMol
 
+from unidock_tools.application.proteinprep import pdb2pdbqt
 from unidock_tools.application.unidock_pipeline import UniDock
 
 
 def unidock_scores(
     rdmol_list: list[RDMol],
-    pocket_file: str | Path,
+    protein_file: str | Path,
     center: tuple[float, float, float],
     out_path: Path | str,
     size: float | tuple[float, float, float] = 22.5,
@@ -24,6 +25,12 @@ def unidock_scores(
     if isinstance(size, int | float):
         size = (size, size, size)
     docking_scores: list[float] = [0.0] * len(rdmol_list)
+
+    protein_file = Path(protein_file)
+    protein_pdbqt_file = protein_file.parent / (protein_file.stem + ".pdbqt")
+    if not protein_pdbqt_file.exists():
+        pdb2pdbqt(protein_file, protein_pdbqt_file)
+
     with tempfile.TemporaryDirectory() as tempdir:
         root_dir = Path(tempdir)
         etkdg_dir = root_dir / "etkdg"
@@ -42,7 +49,7 @@ def unidock_scores(
             cx, cy, cz = center
             sx, sy, sz = size
             # NOTE: run docking
-            runner = UniDock(Path(pocket_file), sdf_list, cx, cy, cz, sx, sy, sz, workdir=root_dir)
+            runner = UniDock(protein_pdbqt_file, sdf_list, cx, cy, cz, sx, sy, sz, workdir=root_dir)
             runner.docking(unidock_dir, search_mode=search_mode, num_modes=1, seed=seed)
 
         # NOTE: save
