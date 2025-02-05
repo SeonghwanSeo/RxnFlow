@@ -272,7 +272,7 @@ class GFNTrainer:
             # the memory fragmentation or allocation keeps growing, how often should we clean up?
             # is changing the allocation strategy helpful?
 
-            if it % 1024 == 0:
+            if it % 128 == 0:
                 gc.collect()
                 torch.cuda.empty_cache()
             epoch_idx = it // epoch_length

@@ -45,6 +45,7 @@ def run(args):
     config.print_every = 10
     config.checkpoint_every = 1_000
     config.store_all_checkpoints = True
+    config.num_workers_retrosynthesis = 8
 
     if args.debug:
         config.overwrite_existing_exp = True

@@ -89,7 +89,7 @@ class RxnFlowTrainer_MP(RxnFlowTrainer):
     def set_default_hps(self, base: Config):
         super().set_default_hps(base)
         base.desc = "Proxy-QED optimization for multiple targets"
-        base.task.moo.objectives = ["docking", "qed"]
+        base.task.moo.objectives = ["vina", "qed"]
         base.validate_every = 0
         base.num_training_steps = 50_000
         base.algo.train_random_action_prob = 0.1
@@ -187,7 +187,7 @@ class RxnFlowTrainer_SP(RxnFlowTrainer):
         super().set_default_hps(base)
         base.desc = "Proxy-QED optimization for a single target"
         base.validate_every = 0
-        base.task.moo.objectives = ["docking", "qed"]
+        base.task.moo.objectives = ["vina", "qed"]
         base.num_training_steps = 10_000
 
     def setup_task(self):

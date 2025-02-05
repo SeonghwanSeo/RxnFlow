@@ -40,7 +40,7 @@ class TacoGFNRewardFunction(RewardFunction):
 
     def __init__(self, proxy: BaseProxy, objectives: list[str]):
         super().__init__(proxy, objectives)
-        assert set(self.objectives) < {"docking", "qed", "sa"}
+        assert set(self.objectives) < {"vina", "qed", "sa"}
 
     def _run(self, mols: list[RDMol], pocket_key: str | list[str]) -> tuple[Tensor, dict[str, Tensor]]:
         """TacoGFN Reward Function
@@ -61,7 +61,7 @@ class TacoGFNRewardFunction(RewardFunction):
         """
 
         info = {}
-        affinity = info["docking"] = self.mol2proxy(mols, pocket_key)
+        affinity = info["vina"] = self.mol2proxy(mols, pocket_key)
         r_aff = -1 * (0.2 * (affinity + 8).clip(-5, 0) + 0.04 * affinity.clip(min=-8))
         if "qed" in self.objectives:
             info["qed"] = qed = chem_metrics.mol2qed(mols)

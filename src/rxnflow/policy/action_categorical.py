@@ -105,16 +105,17 @@ class RxnActionCategorical(GraphActionCategorical):
         for i, action in enumerate(actions):
             protocol_idx, block_type_idx, block_idx = action
             protocol = self.ctx.protocols[protocol_idx]
+            emb = self.emb[i].view(1, -1)
             if protocol.action is RxnActionType.Stop:
-                logit = self._masked_logits[protocol_idx][i, 0]
+                logit = self.model.hook_stop(emb).view(-1)
             elif protocol.action is RxnActionType.FirstBlock:
                 block_data = self.ctx.get_block_data(block_idx).to(self.dev)
-                logit = self.model.hook_firstblock(self.emb[i], block_data).view(-1)
+                logit = self.model.hook_firstblock(emb, block_data).view(-1)
+            elif protocol.action is RxnActionType.UniRxn:
+                logit = self.model.hook_unirxn(emb, protocol.name).view(-1)
             elif protocol.action is RxnActionType.BiRxn:
                 block_data = self.ctx.get_block_data(block_idx).to(self.dev)
-                logit = self.model.hook_firstblock(self.emb[i], block_data).view(-1)
-            elif protocol.action is RxnActionType.UniRxn:
-                logit = self._masked_logits[protocol_idx][i, 0]
+                logit = self.model.hook_birxn(emb, block_data, protocol.name).view(-1)
             else:
                 raise ValueError(protocol.action)
             action_logits[i] = logit
