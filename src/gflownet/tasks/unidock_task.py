@@ -27,6 +27,7 @@ class UniDockTask(BaseTask):
         super().__init__(cfg, rng, wrap_model)
         self.protein_path: str = cfg.task.docking.protein_path
         self.center: tuple[float, float, float] = cfg.task.docking.center
+        self.last_molecules: list[tuple[float, str]] = []
         self.best_molecules: list[tuple[float, str]] = []
         self.save_dir: Path = Path(cfg.log_dir) / "unidock"
         self.oracle_idx = 0
@@ -45,6 +46,7 @@ class UniDockTask(BaseTask):
             (score, Chem.MolToSmiles(mol)) for score, mol in zip(scores, mols, strict=True) if self.constraint(mol)
         ]
         score_smiles = [(score, smi) for score, smi in score_smiles if smi not in best_smi]
+        self.last_molecules = score_smiles
         self.best_molecules = sorted(self.best_molecules + score_smiles, reverse=False)[:100]
 
     def run_vina(self, mols: list[RDMol]) -> Tensor:

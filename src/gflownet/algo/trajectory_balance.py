@@ -466,7 +466,7 @@ class TrajectoryBalance(GFNAlgorithm):
             log_p_B = torch.roll(log_p_B, -1, 0) * (1 - batch.is_sink)
         else:
             log_p_B = batch.log_p_B
-        assert log_p_F.shape == log_p_B.shape
+        assert log_p_F.shape == log_p_B.shape, f"{log_p_F.shape}, {log_p_B.shape}"
 
         # This is the log probability of each trajectory
         traj_log_p_F = scatter(log_p_F, batch_idx, dim=0, dim_size=num_trajs, reduce="sum")

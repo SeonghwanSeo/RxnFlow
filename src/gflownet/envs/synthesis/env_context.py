@@ -297,6 +297,9 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             )
         return g
 
+    def mol_to_graph_list(self, mols: list[Chem.Mol]) -> list[Graph]:
+        return [self.mol_to_graph(mol) for mol in mols]
+
     def graph_to_mol(self, g: Graph) -> Chem.Mol:
         """Convert a Graph to an RDKit Mol"""
         mp = Chem.RWMol()

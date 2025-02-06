@@ -116,8 +116,9 @@ class SynthesisSampler:
             reaction_actions: list[ReactionAction] = [self.ctx.aidx_to_GraphAction(a) for a in actions]
             log_probs = fwd_cat.log_prob_after_sampling(actions)
             for i, next_rt in self.retro_analyzer.result():
-                bck_logprob[i].append(self.cal_bck_logprob(retro_tree[i], next_rt))
-                retro_tree[i] = next_rt
+                if not done[i]:
+                    bck_logprob[i].append(self.cal_bck_logprob(retro_tree[i], next_rt))
+                    retro_tree[i] = next_rt
             # Step each trajectory, and accumulate statistics
             for i, j in zip(not_done(range(n)), range(n)):
                 i: int
@@ -143,12 +144,24 @@ class SynthesisSampler:
                     self.retro_analyzer.submit(i, next_rdmol, traj_idx + 1, [(bck_a[i][-1], retro_tree[i])])
                     data[i]["is_sink"].append(0)
                     rdmols[i] = next_rdmol
-                    graphs[i] = self.ctx.mol_to_graph(next_rdmol)
+                    # graphs[i] = self.ctx.mol_to_graph(next_rdmol)
             if all(done):
                 break
+            next_rdmol_list = [rdmols[i] for i in not_done(range(n))]
+            next_graph_list = self.ctx.mol_to_graph_list(next_rdmol_list)
+            for i, g in zip(not_done(range(n)), next_graph_list, strict=True):
+                if g is None:
+                    done[i] = True
+                    bck_logprob[i].append(0.0)
+                    fwd_a[i][-1] = bck_a[i][-1] = ReactionAction(ReactionActionType.Stop)
+                    data[i]["is_sink"][-1] = 1
+                else:
+                    graphs[i] = g
+
         for i, next_rt in self.retro_analyzer.result():
-            bck_logprob[i].append(self.cal_bck_logprob(retro_tree[i], next_rt))
-            retro_tree[i] = next_rt
+            if not done[i]:
+                bck_logprob[i].append(self.cal_bck_logprob(retro_tree[i], next_rt))
+                retro_tree[i] = next_rt
 
         # is_sink indicates to a GFN algorithm that P_B(s) must be 1
         for i in range(n):

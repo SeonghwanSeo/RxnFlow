@@ -6,7 +6,6 @@ from gflownet.config import Config, init_empty
 
 from gflownet.base.base_trainer import FragmentTrainer, MOOTrainer
 from gflownet.tasks.unidock_task import UniDockMOOTask
-from gflownet.tasks.unidock_moo_synthesis import calc_diversity
 
 
 class UniDockMOOFragTrainer(MOOTrainer, FragmentTrainer):
@@ -24,8 +23,6 @@ class UniDockMOOFragTrainer(MOOTrainer, FragmentTrainer):
         if len(self.task.best_molecules) > 0:
             info["top100_n"] = len(self.task.best_molecules)
             info["top100_vina"] = np.mean([score for score, _ in self.task.best_molecules])
-            if len(self.task.best_molecules) > 1:
-                info["top100_div"] = calc_diversity([smi for _, smi in self.task.best_molecules])
         super().log(info, index, key)
 
 

@@ -26,13 +26,14 @@ def generate_protein_data(
     protein_path: str | Path,
     center: tuple[float, float, float],
     pocket_radius: float = 20,
+    top_k: int = 30,
 ) -> dict[str, torch.Tensor]:
     center_t = torch.as_tensor(center).reshape(1, 3)
     parser = PDBParser(QUIET=True)
     s = parser.get_structure("protein", protein_path)
     res_list = list(s.get_residues())
     clean_res_list = get_clean_res_list(res_list, ensure_ca_exist=True)
-    coords, seq, node_s, node_v, edge_index, edge_s, edge_v = get_protein_feature(clean_res_list)
+    coords, seq, node_s, node_v, edge_index, edge_s, edge_v = get_protein_feature(clean_res_list, top_k)
     distance = (coords - center_t).norm(dim=-1)
     node_mask = distance < pocket_radius
     masked_edge_index, masked_edge_s, masked_edge_v = get_protein_edge_features_and_index(
@@ -130,7 +131,7 @@ letter_to_num = {
 num_to_letter = {v: k for k, v in letter_to_num.items()}
 
 
-def get_protein_feature(res_list):
+def get_protein_feature(res_list, top_k=30):
     res_list = [res for res in res_list if (("N" in res) and ("CA" in res) and ("C" in res) and ("O" in res))]
     structure = {}
     structure["name"] = "placeholder"
@@ -143,7 +144,7 @@ def get_protein_feature(res_list):
         coords.append(res_coords)
     structure["coords"] = coords
     torch.set_num_threads(1)  # this reduce the overhead, and speed up the process for me.
-    protein = featurize_as_graph(structure)
+    protein = featurize_as_graph(structure, top_k=top_k)
     x = (
         protein.x,
         protein.seq,
