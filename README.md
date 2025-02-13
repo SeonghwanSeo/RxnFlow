@@ -10,7 +10,7 @@ Official implementation of **_Generative Flows on Synthetic Pathway for Drug Des
 
 RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space.
 
-- RxnFlow can operate on large synthetic action spaces comprising 1.2M building blocks and 117 reaction templates without compute overhead
+- RxnFlow can operate on large synthetic action spaces comprising 1M building blocks and 100 reaction templates without compute overhead
 - RxnFlow can explore broader chemical space within less reaction steps, resulting in higher diversity, higher potency, and lower synthetic complexity of generated molecules.
 - RxnFlow can generate molecules with expanded or modified building block libaries without retraining.
 
@@ -18,9 +18,7 @@ This project is based on gflownet, and `src/gflownet/` is a clone of [recursionp
 
 This repository was developed for research. The code for real-world drug discovery will be released later.
 
-## Setup
-
-### Install
+## Installation
 
 ```bash
 # python>=3.10,<3.13, torch>=2.3.1
@@ -34,15 +32,23 @@ pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu
 pip install -e '.[pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 ```
 
-### Data Preparation
+## Data Preparation
 
-To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
-We provide two reaction template set:
+To construct datas, please follow the process in [data/README.md](data/README.md).
 
-- We provide the 107-size reaction template set [templates/real.txt](data/templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
-- The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](data/template/hb_edited.txt).
+### Reaction Template
 
-To construct datas, please follow the process in [data/](data/).
+We provide the two reaction template sets:
+
+- We provide the 109-size reaction template set [templates/real.txt](templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
+- The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](template/hb_edited.txt).
+
+### Building Block Library
+
+We support two building block libraries.
+
+- **ZINCFrag:** For reproducible benchmark study, we propose a public building block library, which is a subset of ZINC22 fragment set. All fragments are included in AiZynthFinder's built-in ZINC stock.
+- **Enamine:** We support the Enamine building block library, which is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10 in the paper.
 
 ## Experiments
 

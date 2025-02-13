@@ -25,6 +25,7 @@ We support two building block libraries.
 ```bash
 # ZINCFrag
 cd building_blocks
+gdown 1CHFACwJ_bqJEXxjWI-B7zryTMO52R43V # if it fails, gdown --id 1CHFACwJ_bqJEXxjWI-B7zryTMO52R43V
 gzip -d zincfrag.smi.gz
 
 # Enamine Comprehensive Catalog
