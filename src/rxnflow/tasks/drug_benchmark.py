@@ -109,7 +109,7 @@ class BenchmarkTrainer(RxnFlowTrainer):
         """GFlowNet hyperparameters for benchmark study
         To reduce the effects from hparam tuning, most settings are equal to `seh_frag`.
         I hope that future GFN studies will follow these settings as possible."""
-        # equal to seh_frag hparams
+        # Equal to seh_frag hparams
         base.hostname = socket.gethostname()
         base.opt.weight_decay = 1e-8
         base.opt.momentum = 0.9
@@ -122,34 +122,37 @@ class BenchmarkTrainer(RxnFlowTrainer):
         base.algo.tb.epsilon = None
         base.algo.tb.bootstrap_own_reward = False
 
-        base.model.num_emb = 128
-        base.model.graph_transformer.num_layers = 4  # This is same to base.model.num_layers in seh_frag; maybe typo
+        base.model.num_emb = 128  # <=128 is allowed
+        base.model.graph_transformer.num_layers = 4  # <=4 is allowed. This is model.num_layers in seh_frag
 
-        # Benchmark study setting
-        ## online training
-        base.print_every = 1  # this is just logging interval (not hparam)
-        base.num_training_steps = 1000 - 10  # -10 is for warmup (1 step = 64 molecules)
+        # Benchmark Setting
+        ## online training w/o validation
+        base.print_every = 1
+        base.num_training_steps = 1000 - 10  # -10 is for warmup (1 step = 64 mols)
         base.algo.num_from_policy = 64
-        base.validate_every = 0  # we skip validation & final generation
+        base.validate_every = 0
         base.algo.valid_num_from_policy = 0
         base.num_final_gen_steps = 0
 
-        ### replay buffer
+        ## replay buffer
+        ## it is allowed to disable replay buffer and set num_training_steps to 1000.
         base.replay.use = True
         base.replay.warmup = 640  # recap: minus 10 from num_training_steps.
         base.replay.capacity = 6_400  # previous 100 steps
 
-        ### temperature-conditional GFlowNets (logit-gfn), beta ~ U(0,64)
+        ## temperature-conditional GFlowNets (logit-gfn), beta ~ U(0,64)
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0.0, 64.0]
 
+        ########################################
         # list of hparams that are allowed to be tuned (optional, {} is default (seh_frag))
-        # For RxnFlow, I used the default values for all hyperparameters.
+        # RxnFlow used the default values for all hyperparameters.
         base.opt.learning_rate = 1e-4  # [1e-2, 1e-3, {1e-4}]
         base.opt.lr_decay = 20_000  # [1_000, 2_000, 10_000, {20_000}, 50_000]
-        base.algo.sampling_tau = 0.90  # [0, {0.9}, 0.95, 0.99]
         base.algo.tb.Z_learning_rate = 1e-3  # [1e-2, {1e-3}, 1e-4]
         base.algo.tb.Z_lr_decay = 50_000  # [1_000, 2_000, 10_000, 20_000, {50_000}]
+        base.algo.sampling_tau = 0.90  # [0, {0.9}, 0.95, 0.99]
+        ########################################
 
         # For RxnFlow (change these hparams to fit your model)
         base.num_workers = 0
