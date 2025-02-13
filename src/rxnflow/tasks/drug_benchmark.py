@@ -108,11 +108,9 @@ class BenchmarkTrainer(RxnFlowTrainer):
     def set_default_hps(self, base: Config):
         """GFlowNet hyperparameters for benchmark study
         To reduce the effects from hparam tuning, most settings are equal to `seh_frag`.
-        I hope that future GFN studies will follow these settings as well."""
+        I hope that future GFN studies will follow these settings as possible."""
         # equal to seh_frag hparams
         base.hostname = socket.gethostname()
-        base.opt.learning_rate = 1e-4
-        base.opt.lr_decay = 20_000
         base.opt.weight_decay = 1e-8
         base.opt.momentum = 0.9
         base.opt.clip_grad_type = "norm"
@@ -120,22 +118,19 @@ class BenchmarkTrainer(RxnFlowTrainer):
         base.opt.adam_eps = 1e-8
 
         base.algo.method = "TB"
-        base.algo.sampling_tau = 0.90
         base.algo.illegal_action_logreward = -75
         base.algo.tb.epsilon = None
         base.algo.tb.bootstrap_own_reward = False
-        base.algo.tb.Z_learning_rate = 1e-3
-        base.algo.tb.Z_lr_decay = 50_000
 
         base.model.num_emb = 128
         base.model.graph_transformer.num_layers = 4  # This is same to base.model.num_layers in seh_frag; maybe typo
 
-        # Benchmark Setting
-        ## online training setting
+        # Benchmark study setting
+        ## online training
         base.print_every = 1  # this is just logging interval (not hparam)
         base.num_training_steps = 1000 - 10  # -10 is for warmup (1 step = 64 molecules)
         base.algo.num_from_policy = 64
-        base.validate_every = 0  # we skip validation
+        base.validate_every = 0  # we skip validation & final generation
         base.algo.valid_num_from_policy = 0
         base.num_final_gen_steps = 0
 
@@ -148,16 +143,27 @@ class BenchmarkTrainer(RxnFlowTrainer):
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0.0, 64.0]
 
+        # list of hparams that are allowed to be tuned (optional, {} is default (seh_frag))
+        # For RxnFlow, I used the default values for all hyperparameters.
+        base.opt.learning_rate = 1e-4  # [1e-2, 1e-3, {1e-4}]
+        base.opt.lr_decay = 20_000  # [1_000, 2_000, 10_000, {20_000}, 50_000]
+        base.algo.sampling_tau = 0.90  # [0, {0.9}, 0.95, 0.99]
+        base.algo.tb.Z_learning_rate = 1e-3  # [1e-2, {1e-3}, 1e-4]
+        base.algo.tb.Z_lr_decay = 50_000  # [1_000, 2_000, 10_000, 20_000, {50_000}]
+
         # For RxnFlow (change these hparams to fit your model)
         base.num_workers = 0
+        # Enamine REAL Space: using 2-3 reactions.
         base.algo.max_len = 3
+        # memory usage = 4-5GB. Memory-variance trade-off
+        base.algo.action_subsampling.sampling_ratio = 0.02
+        # required for non-hierarchical MDP (uniform sampling of reaction template when random action selection)
         base.algo.train_random_action_prob = 0.05
-        base.algo.action_subsampling.sampling_ratio = 0.02  # 30~40% on rtx 3080ti(12GB Mem)
-        # rxnflow uses custom fixed policy instead of uniform one
+        # rxnflow uses custom fixed backward policy (PB) instead of uniform one
         base.algo.tb.do_parameterize_p_b = False
         base.algo.tb.backward_policy = Backward.Free
 
-        # for non-synthesis-based models, you might want to add SA or aizynthfinder (not implemented in this work).
+        # for non-synthesis-based models, you might want to add SA or aizynthfinder (not implemented in this work)
         base.task.moo.objectives = ["vina", "qed"]
 
     def setup_task(self):
