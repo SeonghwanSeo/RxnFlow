@@ -21,7 +21,7 @@ def get_block_features(mol: str | Chem.Mol) -> tuple[NDArray[np.bool_], NDArray[
     maccs_fp = np.array(MACCSkeys.GenMACCSKeys(mol), dtype=np.bool_)[:166]
     mg = GetMorganGenerator(FP_RADIUS, fpSize=FP_NBITS)
     morgan_fp = mg.GetFingerprintAsNumPy(mol).astype(np.bool_)
-    fp_out = np.concatenate([maccs_fp, morgan_fp])
+    fp_out = np.concatenate([maccs_fp, morgan_fp], dtype=np.bool_)
 
     # NOTE: Common RDKit Descriptors
     feature = []

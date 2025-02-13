@@ -54,4 +54,3 @@ ignore = ["E501"]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
 include = ["src/"]
-# exclude = [".venv", ".git", "**/__pycache__/**", "**/*.egg-info", "data/", "result/", "logs/", "wandb/"]

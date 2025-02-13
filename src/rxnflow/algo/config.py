@@ -20,7 +20,7 @@ class SubsamplingConfig(StrictDataClass):
 
     sampling_ratio: float = 1.0
     min_sampling: int = 100
-    importance_temp: float = 0.0
+    importance_temp: float = 1.0
 
 
 @dataclass

@@ -20,7 +20,7 @@ if __name__ == "__main__":
         default="./templates/real.txt",
     )
     parser.add_argument(
-        "-d",
+        "-o",
         "--save_directory",
         type=str,
         help="Path to environment directory",

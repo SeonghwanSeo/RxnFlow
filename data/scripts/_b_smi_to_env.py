@@ -68,8 +68,8 @@ def get_block_data(block_path: str, template_path: str, save_directory_path: str
     desc_list = []
     fp_list = []
     with open(save_block_path, "w") as w:
-        for idx in tqdm(range(0, len(smi_id_list), 10000)):
-            chunk = smi_id_list[idx : idx + 10000]
+        for idx in tqdm(range(0, len(smi_id_list), 100000)):
+            chunk = smi_id_list[idx : idx + 100000]
             with multiprocessing.Pool(num_cpus) as pool:
                 results = pool.map(func, chunk)
             for res in results:

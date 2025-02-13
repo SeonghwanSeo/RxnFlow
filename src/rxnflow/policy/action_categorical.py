@@ -181,8 +181,6 @@ class RxnActionCategorical(GraphActionCategorical):
     def importance_weighting(self, alpha: float = 1.0) -> list[Tensor]:
         if alpha == 0.0:
             return self.logits
-        elif alpha == 1.0:
-            return [logits + w for logits, w in zip(self.logits, self._weights, strict=True)]
         else:
             return [logits + alpha * w for logits, w in zip(self.logits, self._weights, strict=True)]
 

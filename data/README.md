@@ -1,19 +1,32 @@
 # Data processing
 
+All data used in the paper except for Enamine building block library can be accessed in [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
+
 ## Library Processing
 
 To construct the synthetic action space, RxnFlow requires the reaction template set and the building block library.
-We provide two reaction template set:
 
-- We provide the 107-size reaction template set [templates/real.txt](templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
+### Reaction Template
+
+We provide the two reaction template sets:
+
+- We provide the 109-size reaction template set [templates/real.txt](templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
 - The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](template/hb_edited.txt).
 
-The Enamine building block library is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog).
-We used the "Comprehensive Catalog" released at 2024.06.10.
+### Building Block Library
+
+We support two building block libraries.
+
+- **ZINCFrag:** For reproducible benchmark study, we propose a public building block library, which is a subset of ZINC22 fragment set. All fragments are included in AiZynthFinder's built-in ZINC stock.
+- **Enamine:** We support the Enamine building block library, which is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog). We used the "Comprehensive Catalog" released at 2024.06.10 in the paper.
 
 1. Refine Building Blocks
 
 ```bash
+# ZINCFrag
+cd building_blocks
+gzip -d zincfrag.smi.gz
+
 # Enamine Comprehensive Catalog
 python scripts/a_enamine_catalog_to_smi.py -b `CATALOG_SDF` -o envs/enamine_catalog.smi --cpu `CPU`
 
@@ -32,8 +45,8 @@ python scripts/b_create_env.py -b `SMI-FILE` -o ./envs/`ENV` -t ./templates/real
 
 ## Experimental Dataset
 
-All data used in the paper can be accessed in [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
-Place data at `experiments/`.
+You can download files from [Google Drive](https://drive.google.com/drive/folders/1e5pPZaTRGhvEMky3K2OKQ9-jV_NweK-a?usp=sharing).
+Place them at `experiments/`.
 
 ### LIT-PCBA optimization
 

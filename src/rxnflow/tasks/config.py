@@ -47,19 +47,25 @@ class PocketConditionalConfig:
 @dataclass
 class DockingTaskConfig:
     """Config for Docking
+    protein_path: required
+    center | ref_ligand_path: required
+    size: 22.5 (default)
 
     Attributes
     ----------
     protein_path: str (path)
         Protein Path
-    center: tuple[float, float, float]
+    center: tuple[float, float, float] (optional)
         Pocket Center
+    ref_ligand_path: str (path; optional)
+        Reference ligand to identy pocket center
     size: tuple[float, float, float]
         Pocket Box Size
     """
 
     protein_path: str = MISSING
-    center: tuple[float, float, float] = MISSING
+    center: tuple[float, float, float] | None = None
+    ref_ligand_path: str | None = None
     size: tuple[float, float, float] = (22.5, 22.5, 22.5)  # unidock default
 
 

@@ -27,7 +27,7 @@ class ModelConfig(StrictDataClass):
         The number of dimensions of the action embedding
     """
 
-    num_mlp_layers: int = 2
+    num_mlp_layers: int = 1
     num_emb: int = 128
     dropout: float = 0
     num_mlp_layers_block: int = 1
