@@ -41,13 +41,13 @@ class VinaReward:
 
         self.history: dict[str, float] = {}
 
-    def run_smiles(self, smiles_list: list[str], save_path: str | Path | None) -> list[float]:
+    def run_smiles(self, smiles_list: list[str], save_path: str | Path | None = None) -> list[float]:
         scores = [self.history.get(smi, 1) for smi in smiles_list]
         unique_indices = [i for i, v in enumerate(scores) if v > 0]
         if len(unique_indices) > 0:
-            unique_objs = [Chem.MolFromSmiles(smiles_list[i]) for i in unique_indices]
+            unique_smiles = [smiles_list[i] for i in unique_indices]
             res = docking(
-                unique_objs,
+                unique_smiles,
                 self.protein_pdb_path,
                 self.center,
                 size=self.size,
@@ -65,7 +65,7 @@ class VinaReward:
                             w.write(mol)
         return scores
 
-    def run_mols(self, mol_list: list[RDMol], save_path: str | Path | None) -> list[float]:
+    def run_mols(self, mol_list: list[RDMol], save_path: str | Path | None = None) -> list[float]:
         smiles_list = [Chem.MolToSmiles(mol) for mol in mol_list]
         return self.run_smiles(smiles_list, save_path)
 
@@ -79,14 +79,15 @@ class VinaReward:
 
 
 def docking(
-    rdmols: list[RDMol],
+    smiles_list: list[str],
     protein_pdb_path: str | Path,
     center: tuple[float, float, float],
     seed: int = 1,
-    size: float | tuple[float, float, float] = 22.5,
+    size: tuple[float, float, float] = (22.5, 22.5, 22.5),
     search_mode: str = "fast",
     num_workers: int = 4,
 ) -> list[tuple[None, float] | tuple[RDMol, float]]:
+    num_mols = len(smiles_list)
 
     # create pdbqt file
     protein_pdb_path = Path(protein_pdb_path)
@@ -94,17 +95,19 @@ def docking(
     if not protein_pdbqt_path.exists():
         pdb2pdbqt(protein_pdb_path, protein_pdbqt_path)
 
-    if isinstance(size, float | int):
-        size = (size, size, size)
-
     with tempfile.TemporaryDirectory() as out_dir:
         out_dir = Path(out_dir)
         sdf_list = []
 
-        args = [(mol, out_dir / f"{i}.sdf") for i, mol in enumerate(rdmols)]
+        # etkdg
+        etkdg_dir = out_dir / "etkdg"
+        etkdg_dir.mkdir(parents=True)
+        args = [(smi, etkdg_dir / f"{i}.sdf") for i, smi in enumerate(smiles_list)]
         with multiprocessing.Pool(num_workers) as pool:
             sdf_list = pool.map(run_etkdg_func, args)
         sdf_list = [file for file in sdf_list if file is not None]
+
+        # unidock
         if len(sdf_list) > 0:
             runner = UniDock(
                 protein_pdbqt_path,
@@ -125,7 +128,7 @@ def docking(
             )
 
         res: list[tuple[None, float] | tuple[RDMol, float]] = []
-        for i in range(len(rdmols)):
+        for i in range(num_mols):
             try:
                 docked_file = out_dir / "savedir" / f"{i}.sdf"
                 docked_rdmol = list(Chem.SDMolSupplier(str(docked_file)))[0]
@@ -137,16 +140,17 @@ def docking(
     return res
 
 
-def run_etkdg_func(args: tuple[Chem.Mol, Path]) -> Path | None:
+def run_etkdg_func(args: tuple[str, Path]) -> Path | None:
     # etkdg parameters
     param = srETKDGv3()
     param.randomSeed = 1
     param.timeout = 1  # prevent stucking
 
-    mol, sdf_path = args
-    if mol.GetNumAtoms() == 0 or mol is None:
-        return None
+    smi, sdf_path = args
     try:
+        mol = Chem.MolFromSmiles(smi)
+        if mol.GetNumAtoms() == 0 or mol is None:
+            return None
         mol = Chem.AddHs(mol)
         EmbedMolecule(mol, param)
         assert mol.GetNumConformers() > 0

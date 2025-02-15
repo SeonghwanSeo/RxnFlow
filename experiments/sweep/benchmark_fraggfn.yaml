@@ -1,0 +1,31 @@
+project: "litpcba-benchmark"
+program: ./scripts/A2_benchmark_zincfrag_fraggfn.py
+name: "fraggfn"
+
+command:
+  - ${env}
+  - python
+  - ${program}
+  - fraggfn # prefix
+
+method: grid
+parameters:
+  target:
+    values:
+      - ADRB2
+      - ALDH1
+      - ESR_ago
+      - ESR_antago
+      - FEN1
+      - GBA
+      - IDH1
+      - KAT2A
+      - MAPK1
+      - MTORC1
+      - OPRK1
+      - PKM2
+      - PPARG
+      - TP53
+      - VDR
+  seed:
+    values: [0, 1, 2]

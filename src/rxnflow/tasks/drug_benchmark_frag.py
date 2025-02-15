@@ -11,12 +11,13 @@ from rdkit import Chem
 from rdkit.Chem import Mol as RDMol, QED
 
 from gflownet import ObjectProperties
-from gflownet.algo.config import Backward
+from gflownet.models import bengio2021flow
+from gflownet.config import Config, init_empty
+from gflownet.online_trainer import StandardOnlineTrainer
+from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext
+from gflownet.utils.misc import create_logger
 
-from rxnflow.config import Config, init_empty
-from rxnflow.base import BaseTask, RxnFlowTrainer
-from rxnflow.utils.misc import create_logger
-
+from rxnflow.base import BaseTask
 from rxnflow.tasks.utils.unidock import VinaReward
 from rxnflow.tasks.utils.chem_metrics import mol2qed, mol2sascore
 
@@ -102,7 +103,7 @@ class BenchmarkTask(BaseTask):
         self.topn_vina = OrderedDict(topn)
 
 
-class BenchmarkTrainer(RxnFlowTrainer):
+class BenchmarkTrainer(StandardOnlineTrainer):
     task: BenchmarkTask
 
     def set_default_hps(self, base: Config):
@@ -123,7 +124,7 @@ class BenchmarkTrainer(RxnFlowTrainer):
         base.algo.tb.bootstrap_own_reward = False
 
         base.model.num_emb = 128  # <=128 is allowed
-        base.model.graph_transformer.num_layers = 4  # <=4 is allowed. This is model.num_layers in seh_frag
+        base.model.num_layers = 4  # <=4 is allowed
 
         # Benchmark Setting
         ## online training w/o validation
@@ -135,7 +136,7 @@ class BenchmarkTrainer(RxnFlowTrainer):
         base.num_final_gen_steps = 0
 
         ## replay buffer
-        ## it is allowed to disable replay buffer
+        ## it is allowed to disable replay buffer.
         base.replay.use = True
         base.replay.warmup = 640
         base.replay.capacity = 6_400  # previous 100 steps
@@ -154,23 +155,23 @@ class BenchmarkTrainer(RxnFlowTrainer):
         base.algo.sampling_tau = 0.90  # [0, {0.9}, 0.95, 0.99]
         ########################################
 
-        # For RxnFlow (change these hparams to fit your model)
+        # For FragGFN
         base.num_workers = 0
-        # Enamine REAL Space: using 2-3 reactions.
-        base.algo.max_len = 3
-        # memory usage = 4-5GB. Memory-variance trade-off
-        base.algo.action_subsampling.sampling_ratio = 0.02
-        # required for non-hierarchical MDP (uniform sampling of reaction template when random action selection)
-        base.algo.train_random_action_prob = 0.05
-        # rxnflow uses custom fixed backward policy (PB) instead of uniform one
-        base.algo.tb.do_parameterize_p_b = False
-        base.algo.tb.backward_policy = Backward.Free
+        base.algo.max_len = 128
+        base.algo.max_nodes = 9
 
-        # for non-synthesis-based models, you might want to add SA or aizynthfinder (not implemented in this work)
-        base.task.moo.objectives = ["vina", "qed"]
+        # for non-synthesis-based models, you might want to add SA or aizynthfinder(not implemented in this work)
+        base.task.moo.objectives = ["vina", "qed", "sa"]
 
     def setup_task(self):
         self.task = BenchmarkTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+
+    def setup_env_context(self):
+        self.ctx = FragMolBuildingEnvContext(
+            max_frags=self.cfg.algo.max_nodes,
+            num_cond_dim=self.task.num_cond_dim,
+            fragments=bengio2021flow.FRAGMENTS_18 if self.cfg.task.seh.reduced_frag else bengio2021flow.FRAGMENTS,
+        )
 
     def log(self, info, index, key):
         self.add_extra_info(info)
@@ -193,7 +194,6 @@ if __name__ == "__main__":
     config.print_every = 1
     config.num_training_steps = 100
     config.log_dir = "./logs/debug-benchmark/"
-    config.env_dir = "./data/envs/zincfrag"
     config.overwrite_existing_exp = True
 
     config.task.docking.protein_path = "./data/examples/6oim_protein.pdb"
