@@ -1,4 +1,4 @@
-project: "litpcba-benchmark"
+project: RxnFlow
 program: ./scripts/A2_benchmark_zincfrag.py
 name: "rxnflow"
 

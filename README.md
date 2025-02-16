@@ -28,7 +28,7 @@ The repository for real-world drug discovery will be released later.
 pip install -e . --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
 # For UniDock
-conda install unidock
+conda install unidock==1.1.2
 pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
 # For Pocket Conditional Generation
@@ -125,6 +125,7 @@ The trained model will be updated soon.
   ```
 
 - Sampling
+
   ```bash
   python script/sampling_zeroshot.py -h
   python script/sampling_zeroshot.py \
