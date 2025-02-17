@@ -4,36 +4,39 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxnflow"
-authors = [{name = "Seonghwan Seo", email = "shwan0106@gmail.com"}]
+authors = [{ name = "Seonghwan Seo", email = "shwan0106@gmail.com" }]
 version = "0.0.3"
 readme = "README.md"
-classifiers = ["Operating System :: OS Independent", "Programming Language :: Python", "Programming Language :: Python :: 3"]
+classifiers = [
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+]
 keywords = ["gflownet"]
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "numpy==1.26.4",
-    "torch==2.5.1",
-    "torch-geometric==2.4.0",
-    "torch-scatter==2.1.2",
-    "torch-sparse==0.6.18",
-    "torch-cluster==1.6.3",
-    "rdkit>=2023.9.6",
-    "omegaconf>=2.3",
-    "wandb",
-    "tensorboard",
-    "gitpython",
-    "botorch",
-    "ruff",
+  "numpy==1.26.4",
+  "torch==2.5.1",
+  "torch-geometric==2.4.0",
+  "torch-scatter==2.1.2",
+  "torch-sparse==0.6.18",
+  "torch-cluster==1.6.3",
+  "rdkit>=2023.9.6",
+  "omegaconf>=2.3",
+  "wandb",
+  "tensorboard",
+  "gitpython",
+  "botorch",
+  "ruff",
 ]
 
 [project.optional-dependencies]
 unidock = [
-    "openbabel-wheel",
-    "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
+  "openbabel-wheel",
+  "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
 ]
-pmnet = [
-    "pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git@openbabel-wheel",
-]
+synbench = ["synbench @ git+https://github.com/SeonghwanSeo/SynBench.git@init"]
+pmnet = ["pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git"]
 
 [tool.black]
 line-length = 120
@@ -43,12 +46,12 @@ target-version = ["py312"]
 target-version = "py312"
 line-length = 120
 [tool.ruff.lint]
-select = ["E", "F", "B", "UP", "T203",]
+select = ["E", "F", "B", "UP", "T203"]
 ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = [
-    "F401", # imported but unused
-    "E402", # Module level import not at top of file
+  "F401", # imported but unused
+  "E402", # Module level import not at top of file
 ]
 
 [tool.basedpyright]
