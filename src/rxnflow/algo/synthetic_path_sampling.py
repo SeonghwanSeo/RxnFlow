@@ -29,7 +29,6 @@ class SyntheticPathSampler(GraphSampler):
         sample_temp: float = 1.0,
         correct_idempotent: bool = False,
         pad_with_terminal_state: bool = False,
-        num_workers: int = 4,
     ):
         """
         Parameters
@@ -55,7 +54,7 @@ class SyntheticPathSampler(GraphSampler):
         self.max_len = max_len
 
         self.action_subsampler: SubsamplingPolicy = action_subsampler
-        self.retro_analyzer = MultiRetroSyntheticAnalyzer(self.env.retro_analyzer, num_workers)
+        self.retro_analyzer: MultiRetroSyntheticAnalyzer = self.env.retro_analyzer
 
         # Experimental flags
         self.importance_temp = importance_temp
@@ -71,8 +70,9 @@ class SyntheticPathSampler(GraphSampler):
         not_done_mask: list[bool],
     ) -> RxnActionCategorical:
         dev = get_worker_device()
-        ci = cond_info[not_done_mask] if cond_info is not None else None
-        fwd_cat, *_, log_reward_preds = model(self.ctx.collate(torch_graphs).to(dev), ci)
+        g = self.ctx.collate(torch_graphs).to(dev)
+        cond_info = cond_info[not_done_mask]
+        fwd_cat, *_ = model.forward(g, cond_info)
         return fwd_cat
 
     def _sample_action(
@@ -83,9 +83,7 @@ class SyntheticPathSampler(GraphSampler):
     ) -> list[ActionIndex]:
         # NOTE: sample from forward policy (on-policy & random policy)
         sample_cat = copy.copy(fwd_cat)
-        if self.importance_temp == 1:
-            sample_cat.raw_logits = sample_cat.weighted_logits
-        elif self.importance_temp > 0:
+        if self.importance_temp > 0:
             sample_cat.raw_logits = sample_cat.importance_weighting(self.importance_temp)
         if random_action_prob > 0:
             dev = get_worker_device()
@@ -166,9 +164,11 @@ class SyntheticPathSampler(GraphSampler):
             ]
             log_probs = fwd_cat.log_prob(actions)
 
+            # NOTE: async retro analysis
             for i, analysis_res in self.retro_analyzer.result():
-                bck_logprob[i].append(self.calc_bck_logprob(bck_a[i][-1], analysis_res))
                 retro_trees[i] = analysis_res
+                bck_logprob[i].append(self.calc_bck_logprob(bck_a[i][-1], analysis_res))
+                # error handling
                 if analysis_res is None:
                     done[i] = True
                     data[i]["is_sink"][-1] = 1
@@ -193,12 +193,10 @@ class SyntheticPathSampler(GraphSampler):
                     data[i]["is_valid"] = False
                     bck_logprob[i].append(0.0)
                     data[i]["is_sink"].append(1)
-                    continue
-                if traj_idx == self.max_len - 1:
-                    done[i] = True
-                data[i]["is_sink"].append(0)
-                graphs[i] = gp
-                self.retro_analyzer.submit(i, gp.smi, traj_idx, [(bck_a[i][-1], retro_trees[i])])
+                else:
+                    graphs[i] = gp
+                    data[i]["is_sink"].append(0)
+                    self.retro_analyzer.submit(i, gp.smi, traj_idx, [(bck_a[i][-1], retro_trees[i])])
             if all(done):
                 break
 
@@ -284,11 +282,9 @@ class SyntheticPathSampler(GraphSampler):
                     done[i] = True
                     data[i]["is_valid"] = False
                     data[i]["is_sink"].append(1)
-                    continue
-                if traj_idx == self.max_len - 1:
-                    done[i] = True
-                data[i]["is_sink"].append(0)
-                graphs[i] = gp
+                else:
+                    data[i]["is_sink"].append(0)
+                    graphs[i] = gp
             if all(done):
                 break
         for i in range(n):

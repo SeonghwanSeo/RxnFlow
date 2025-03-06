@@ -1,8 +1,5 @@
-from collections.abc import Callable
-
 import numpy as np
 import torch
-import torch.nn as nn
 from torch import Tensor
 from rdkit.Chem import Mol as RDMol, QED
 
@@ -21,8 +18,8 @@ aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
 class VinaMOOTask(VinaTask):
     is_moo = True
 
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        super().__init__(cfg, wrap_model)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         assert set(self.objectives) <= {"vina", "qed", "sa"}
 
     def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
@@ -77,7 +74,7 @@ class VinaMOOTrainer(RxnFlowTrainer):
         base.replay.capacity = 6_400
 
     def setup_task(self):
-        self.task = VinaTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = VinaMOOTask(self.cfg)
 
     def log(self, info, index, key):
         self.add_extra_info(info)

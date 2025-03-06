@@ -12,7 +12,7 @@ from gflownet.config import Config
 from gflownet.envs.graph_building_env import GraphActionCategorical, GraphActionType, action_type_to_mask
 
 
-def mlp(n_in, n_hid, n_out, n_layer, act=nn.LeakyReLU):
+def mlp(n_in: int, n_hid: int, n_out: int, n_layer: int, act: type[nn.Module] = nn.LeakyReLU):
     """Creates a fully-connected network with no activation after the last layer.
     If `n_layer` is 0 then this corresponds to `nn.Linear(n_in, n_out)`.
     """
@@ -78,17 +78,25 @@ class GraphTransformer(nn.Module):
                     [
                         gnn.GENConv(num_emb, num_emb, num_layers=1, aggr="add", norm=None),
                         gnn.TransformerConv(num_emb * 2, n_att // num_heads, edge_dim=num_emb, heads=num_heads),
-                        nn.Linear(n_att, num_emb),
+                        gnn.Linear(n_att, num_emb),
                         gnn.LayerNorm(num_emb, affine=False),
                         mlp(num_emb, num_emb * 4, num_emb, 1),
                         gnn.LayerNorm(num_emb, affine=False),
-                        nn.Linear(num_emb, num_emb * 2),
+                        gnn.Linear(num_emb, num_emb * 2),
                     ]
                     for i in range(self.num_layers)
                 ],
                 [],
             )
         )
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_uniform_(m.weight, mode="fan_in", nonlinearity="leaky_relu", a=0.01)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, g: gd.Batch, cond: Optional[torch.Tensor]):
         """Forward pass

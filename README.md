@@ -10,7 +10,7 @@ Official implementation of **_Generative Flows on Synthetic Pathway for Drug Des
 
 RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space.
 
-- RxnFlow can operate on large synthetic action spaces comprising 1M building blocks and 100 reaction templates without compute overhead
+- RxnFlow can operate on massive synthetic action spaces comprising **1M building blocks and 100 reaction templates without compute overhead**
 - RxnFlow can explore broader chemical space within less reaction steps, resulting in higher diversity, higher potency, and lower synthetic complexity of generated molecules.
 - RxnFlow can generate molecules with expanded or modified building block libaries without retraining.
 
@@ -25,6 +25,7 @@ The repository for real-world drug discovery will be released later.
 
 ```bash
 # python>=3.10,<3.13, torch>=2.3.1
+pip install torch==2.5.1
 pip install -e . --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
 # For UniDock
@@ -33,6 +34,9 @@ pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu
 
 # For Pocket Conditional Generation
 pip install -e '.[pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
+
+# Install all dependencies
+pip install -e '.[unidock,pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 ```
 
 ## Data Preparation
@@ -125,6 +129,7 @@ The trained model will be updated soon.
   ```
 
 - Sampling
+
   ```bash
   python script/sampling_zeroshot.py -h
   python script/sampling_zeroshot.py \
@@ -179,14 +184,14 @@ Example codes are provided in `./examples/`.
 
   class QEDTrainer(RxnFlowTrainer):  # For online training
       def setup_task(self):
-          self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+          self.task = QEDTask(self.cfg)
 
   class QEDSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
       def setup_task(self):
-          self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+          self.task = QEDTask(self.cfg)
   ```
 
-- Example (Multi-objective optimization)
+- Example (Multi-objective GFlowNets (MO-GFN))
   The example scripts will be provided soon!
 
   ```python
@@ -210,11 +215,11 @@ Example codes are provided in `./examples/`.
           base.task.moo.objectives = ["obj1", "obj2"] # set the objective names
 
       def setup_task(self):
-          self.task = MOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+          self.task = MOOTask(self.cfg)
 
   class MOOSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
       def setup_task(self):
-          self.task = MOOTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+          self.task = MOOTask(self.cfg)
   ```
 
 </details>
@@ -239,7 +244,6 @@ If you use our code in your research, we kindly ask that you consider citing our
   journal={arXiv preprint arXiv:2410.04542},
   year={2024}
 }
-
 ```
 
 ## Related Works

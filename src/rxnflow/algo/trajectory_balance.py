@@ -42,7 +42,6 @@ class SynthesisTB(CustomTB):
             sample_temp=self.sample_temp,
             correct_idempotent=self.cfg.do_correct_idempotent,
             pad_with_terminal_state=self.cfg.do_parameterize_p_b,
-            num_workers=self.global_cfg.num_workers_retrosynthesis,
         )
 
     def create_training_data_from_graphs(

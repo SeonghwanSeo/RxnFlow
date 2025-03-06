@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-from collections.abc import Callable
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
@@ -19,10 +18,8 @@ class BaseTask(GFNTask):
 
     is_moo: bool = False
 
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        self._wrap_model: Callable[[nn.Module], nn.Module] = wrap_model
+    def __init__(self, cfg: Config):
         self.cfg: Config = cfg
-        self.models: dict[str, nn.Module] = self._load_task_models()
         self.temperature_conditional: TemperatureConditional = TemperatureConditional(cfg)
         self.num_cond_dim: int = self.temperature_conditional.encoding_size()
         if self.is_moo:
@@ -30,9 +27,6 @@ class BaseTask(GFNTask):
 
     def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
         raise NotImplementedError
-
-    def _load_task_models(self) -> dict[str, nn.Module]:
-        return {}
 
     def setup_moo(self):
         mcfg = self.cfg.task.moo

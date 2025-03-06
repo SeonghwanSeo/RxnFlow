@@ -48,6 +48,7 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         base.algo.tb.Z_learning_rate = 1e-3
         base.algo.tb.Z_lr_decay = 50_000
 
+        # RxnFlow model
         base.model.num_emb = 128
         base.model.graph_transformer.num_layers = 4
         base.model.num_mlp_layers = 1
@@ -67,7 +68,7 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         base.validate_every = 0
         base.algo.num_from_policy = 64
         base.algo.valid_num_from_policy = 0
-        base.algo.train_random_action_prob = 0.05  # suggest to set positive value
+        base.algo.train_random_action_prob = 0.1  # suggest to set positive value
 
     def setup(self):
         self.cfg.cond.moo.num_objectives = len(self.cfg.task.moo.objectives)
@@ -94,7 +95,7 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         set_worker_env("task", self.task)
 
     def setup_env(self):
-        self.env = SynthesisEnv(self.cfg.env_dir)
+        self.env = SynthesisEnv(self.cfg.env_dir, self.cfg.num_workers_retrosynthesis)
 
     def setup_env_context(self):
         self.ctx = SynthesisEnvContext(self.env, num_cond_dim=self.task.num_cond_dim)
@@ -110,6 +111,10 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
             do_bck=self.cfg.algo.tb.do_parameterize_p_b,
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
+
+    def terminate(self):
+        super().terminate()
+        self.env.retro_analyzer.pool.shutdown(wait=True, cancel_futures=True)
 
     def load_checkpoint(self, checkpoint_path: str | Path):
         state = torch.load(checkpoint_path, map_location="cpu")

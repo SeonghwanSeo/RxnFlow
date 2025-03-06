@@ -1,10 +1,8 @@
 from pathlib import Path
 from collections import OrderedDict
-from collections.abc import Callable
 
 import numpy as np
 import torch
-import torch.nn as nn
 from torch import Tensor
 from rdkit import Chem
 from rdkit.Chem import rdMolDescriptors, Crippen
@@ -19,8 +17,8 @@ from rxnflow.tasks.utils.unidock import VinaReward
 
 
 class VinaTask(BaseTask):
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        super().__init__(cfg, wrap_model)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         self.oracle_idx = 0
         self.filter = cfg.task.constraint.rule
 
@@ -107,7 +105,7 @@ class VinaTrainer(RxnFlowTrainer):
         base.replay.warmup = 0
 
     def setup_task(self):
-        self.task = VinaTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = VinaTask(cfg=self.cfg)
 
     def log(self, info, index, key):
         self.add_extra_info(info)
@@ -127,7 +125,7 @@ class VinaTrainer(RxnFlowTrainer):
 # NOTE: Sampling with pre-trained GFlowNet
 class VinaSampler(RxnFlowSampler):
     def setup_task(self):
-        self.task: VinaTask = VinaTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task: VinaTask = VinaTask(self.cfg)
 
 
 if __name__ == "__main__":

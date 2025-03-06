@@ -52,6 +52,23 @@ class Reaction:
             assert len(rs) > 0, "ChemicalReaction did not yield any reactants."
         return rs
 
+    def forward_smi(self, *reactants: RDMol, strict: bool = False) -> list[tuple[str, ...]]:
+        """Perform in-silico reactions"""
+        assert (
+            len(reactants) == self.num_reactants
+        ), f"number of inputs should be same to the number of reactants ({len(reactants)} vs {self.num_reactants})"
+        ps = _run_reaction_smi(self._rxn_forward, reactants, self.num_reactants, self.num_products)
+        if strict:
+            assert len(ps) > 0, "ChemicalReaction did not yield any products."
+        return ps
+
+    def reverse_smi(self, product: RDMol, strict: bool = False) -> list[tuple[str, ...]]:
+        """Perform in-silico reactions"""
+        rs = _run_reaction_smi(self._rxn_reverse, (product,), self.num_products, self.num_reactants)
+        if strict:
+            assert len(rs) > 0, "ChemicalReaction did not yield any reactants."
+        return rs
+
 
 class UniReaction(Reaction):
     def __init__(self, template: str):
@@ -96,20 +113,20 @@ def _run_reaction(
     assert len(reactants) == num_reactants
     ps: list[list[RDMol]] = reaction.RunReactants(reactants, 5)
 
+    # refine products
     refine_ps: list[tuple[RDMol, ...]] = []
     for p in ps:
         if not len(p) == num_products:
             continue
         _ps = []
         for mol in p:
-            try:
-                mol = _refine_mol(mol)
-                assert mol is not None
-            except Exception as e:
+            mol = _refine_mol(mol)
+            if mol is None:
                 break
             _ps.append(mol)
         if len(_ps) == num_products:
             refine_ps.append(tuple(_ps))
+
     # remove redundant products
     unique_ps = []
     _storage = set()
@@ -121,9 +138,38 @@ def _run_reaction(
     return unique_ps
 
 
+def _run_reaction_smi(
+    reaction: ChemicalReaction,
+    reactants: tuple[RDMol, ...],
+    num_reactants: int,
+    num_products: int,
+) -> list[tuple[str, ...]]:
+    """Perform in-silico reactions"""
+    assert len(reactants) == num_reactants
+    ps: list[list[RDMol]] = reaction.RunReactants(reactants, 5)
+
+    # refine products
+    refine_ps: list[tuple[str, ...]] = []
+    for p in ps:
+        if not len(p) == num_products:
+            continue
+        _ps = []
+        for mol in p:
+            try:
+                mol = Chem.RemoveHs(mol, updateExplicitCount=True)
+                smi = Chem.MolToSmiles(mol)
+                smi = smi.replace("[C]", "C").replace("[N]", "N").replace("[CH]", "C")
+            except:
+                break
+            _ps.append(smi)
+        if len(_ps) == num_products:
+            refine_ps.append(tuple(_ps))
+    return list(set(refine_ps))
+
+
 def _refine_mol(mol: RDMol) -> RDMol | None:
     try:
-        # mol = Chem.RemoveHs(mol)
+        mol = Chem.RemoveHs(mol, updateExplicitCount=True)
         smi = Chem.MolToSmiles(mol)
         mol = Chem.MolFromSmiles(smi, replacements={"[C]": "C", "[N]": "N", "[CH]": "C"})
     except Exception:

@@ -44,12 +44,17 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         # NOTE: Building Block
         self.blocks: list[str] = env.blocks
         self.num_blocks: int = len(self.blocks)
-        self.block_features: tuple[Tensor, Tensor] = (torch.from_numpy(env.block_fp), torch.from_numpy(env.block_desc))
+        self.block_fp: Tensor = torch.from_numpy(env.block_fp)
+        self.block_prop: Tensor = torch.from_numpy(env.block_prop)
+        self.block_fp_dim = self.block_fp.shape[-1]
+        self.block_prop_dim = self.block_prop.shape[-1]
+
+        # NOTE: For PB
         self.birxn_block_indices: dict[str, np.ndarray] = env.birxn_block_indices
-        self.num_block_features = self.block_features[0].shape[-1] + self.block_features[1].shape[-1]
         self.num_total_actions = (
             1 + len(self.unirxn_list) + sum(indices.shape[0] for indices in self.birxn_block_indices.values())
         )
+
         # NOTE: For Molecular Graph
         self.atom_attr_values = {
             "v": DEFAULT_ATOMS,
@@ -84,25 +89,38 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             RxnActionType.BckFirstBlock,
         ]
 
-    def get_block_data(self, block_indices: Tensor | int) -> Tensor:
+    def get_block_data(
+        self,
+        block_indices: Tensor | int,
+        device: str | torch.device | None = None,
+    ) -> tuple[Tensor, Tensor]:
         """Get the block features for the given type and indices
 
         Parameters
         ----------
         block_indices : Tensor | int
             Block indices for the given block type
+        device: torch.device | None
+            torch device
 
         Returns
         -------
-        block_info: Tensor
-            descs: molecular feature of blocks
-            fp: molecular fingerprints of blocks
+        fp: Tensor
+            molecular fingerprints of blocks
+        prop: Tensor
+            molecular properties of blocks
         """
-        desc, fp = self.block_features
-        desc, fp = desc[block_indices], fp[block_indices]
+        prop = self.block_prop[block_indices]
+        fp = self.block_fp[block_indices]
         if fp.dim() == 1:
-            desc, fp = desc.view(1, -1), fp.view(1, -1)
-        return torch.cat([desc, fp.to(torch.float32)], dim=-1)
+            prop, fp = prop.view(1, -1), fp.view(1, -1)
+        if device is None:
+            return fp.to(torch.float32), prop
+        else:
+            return (
+                fp.to(dtype=torch.float32, device=device),
+                prop.to(device),
+            )
 
     def graph_to_Data(self, g: MolGraph) -> gd.Data:
         """Convert a networkx Graph to a torch geometric Data instance"""

@@ -17,9 +17,9 @@ class QEDTask(BaseTask):
 
 class QEDTrainer(RxnFlowTrainer):  # For online training
     def setup_task(self):
-        self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task: QEDTask = QEDTask(self.cfg)
 
 
 class QEDSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
     def setup_task(self):
-        self.task: QEDTask = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task: QEDTask = QEDTask(self.cfg)
