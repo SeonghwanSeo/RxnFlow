@@ -1,5 +1,5 @@
-project: "litpcba-benchmark"
-program: ./scripts/A2_benchmark_zincfrag.py
+project: RxnFlow
+program: ./scripts/B1_benchmark_zincfrag.py
 name: "rxnflow"
 
 command:

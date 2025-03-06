@@ -17,77 +17,38 @@ from rxnflow.config import Config, init_empty
 from rxnflow.base import BaseTask, RxnFlowTrainer
 from rxnflow.utils.misc import create_logger
 
-from rxnflow.tasks.utils.unidock import VinaReward
-from rxnflow.tasks.utils.chem_metrics import mol2qed, mol2sascore
-
-aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
+from synbench import RewardModule
 
 
 class BenchmarkTask(BaseTask):
     def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
         super().__init__(cfg, wrap_model)
         self.objectives: list[str] = cfg.task.moo.objectives
-        assert set(self.objectives) <= {"vina", "qed", "sa"}
-        assert cfg.task.docking.size == (22.5, 22.5, 22.5)
-        self.oracle_idx = 0
+        assert "vina" in self.objectives
 
-        self.vina = VinaReward(
-            cfg.task.docking.protein_path,
-            cfg.task.docking.center,
-            cfg.task.docking.ref_ligand_path,
-            cfg.task.docking.size,
-            search_mode="fast",
-            num_workers=4,
+        self.module = RewardModule(
+            objectives=self.objectives,
+            log_dir=Path(cfg.log_dir) / "synbench/",
+            protein_pdb_path=cfg.task.docking.protein_path,
+            center=cfg.task.docking.center,
+            ref_ligand_path=cfg.task.docking.ref_ligand_path,
         )
 
         self.topn_vina: OrderedDict[str, float] = OrderedDict()
         self.batch_vina: list[float] = []
 
-        self.save_dir: Path = Path(cfg.log_dir) / "docking"
-        self.save_dir.mkdir()
-
-        self.log_path: Path = Path(cfg.log_dir) / "reward.csv"
-        with open(self.log_path, "w") as w:
-            w.write("oracle_idx,sample_idx,smiles," + ",".join(self.objectives) + "\n")
-
     def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
         is_valid_t = torch.ones(len(objs), dtype=torch.bool)
 
         smiles_list = [Chem.MolToSmiles(obj) for obj in objs]
-        reward_list: list[tuple[str, list[float]]] = [(smi, []) for smi in smiles_list]
 
-        flat_r: list[Tensor] = []
-        self.avg_reward_info = []
-        for prop in self.objectives:
-            if prop == "vina":
-                docking_scores = self.mol2vina(objs)
-                fr = docking_scores * -0.1  # normalization
-            else:
-                fr = aux_tasks[prop](objs)
-            flat_r.append(fr)
-            self.avg_reward_info.append((prop, fr.mean().item()))
-            for i, v in enumerate(fr.tolist()):
-                reward_list[i][1].append(v)
+        fr, reward_dict = self.module.run(smiles_list)
+        self.batch_reward_dict = reward_dict
+        self.update_storage(objs, reward_dict["vina"])
 
-        # log reward
-        with open(self.log_path, "a") as w:
-            for i, (smi, rs) in enumerate(reward_list):
-                log = f"{self.oracle_idx},{i},{smi}"
-                for r in rs:
-                    log += f",{r:.3f}"
-                log += "\n"
-                w.write(log)
-
-        flat_rewards = torch.stack(flat_r, dim=1).prod(-1, keepdim=True).clip(min=0)
+        flat_rewards = torch.tensor(fr).view(-1, 1)
         assert flat_rewards.shape[0] == len(objs)
-        self.oracle_idx += 1
         return ObjectProperties(flat_rewards), is_valid_t
-
-    def mol2vina(self, mols: list[RDMol]) -> torch.Tensor:
-        out_path = self.save_dir / f"oracle{self.oracle_idx}.sdf"
-        vina_scores = self.vina.run_mols(mols, out_path)
-        self.update_storage(mols, vina_scores)
-        return torch.tensor(vina_scores, dtype=torch.float32)
 
     def update_storage(self, objs: list[RDMol], vina_scores: list[float]):
         """only consider QED > 0.5"""
@@ -177,8 +138,8 @@ class BenchmarkTrainer(RxnFlowTrainer):
         super().log(info, index, key)
 
     def add_extra_info(self, info):
-        for obj, v in self.task.avg_reward_info:
-            info[f"sampled_{obj}_avg"] = v
+        for obj, v in self.task.batch_reward_dict.items():
+            info[f"sampled_{obj}_avg"] = np.mean(v)
         if len(self.task.batch_vina) > 0:
             info["sampled_vina_avg"] = np.mean(self.task.batch_vina)
         best_vinas = list(self.task.topn_vina.values())
