@@ -9,12 +9,12 @@ from rxnflow.policy.action_space_subsampling import SubsamplingPolicy
 from rxnflow.utils.misc import get_worker_env
 
 
-def placeholder(size: tuple[int, ...], device: torch.device) -> Tensor:
-    return torch.empty(size, dtype=torch.float32, device=device)
+def placeholder(size: tuple[int, ...], device: torch.device, **kwargs) -> Tensor:
+    return torch.empty(size, dtype=torch.float32, device=device, **kwargs)
 
 
-def neginf(size: tuple[int, ...], device: torch.device) -> Tensor:
-    return torch.full(size, -torch.inf, dtype=torch.float32, device=device)
+def neginf(size: tuple[int, ...], device: torch.device, **kwargs) -> Tensor:
+    return torch.full(size, -torch.inf, dtype=torch.float32, device=device, **kwargs)
 
 
 class RxnActionCategorical(GraphActionCategorical):
@@ -38,51 +38,41 @@ class RxnActionCategorical(GraphActionCategorical):
         self.dev = dev = self.emb.device
 
         # NOTE: action subsampling
-        sampler: SubsamplingPolicy = get_worker_env("action_subsampler")
-        self.subsamples: list[Tensor] = []
-        self.subsample_size: list[int] = []
-        self._weights: list[float] = []  # importance weight
-        for protocol in self.ctx.protocols:
-            if protocol.action in (RxnActionType.FirstBlock, RxnActionType.BiRxn):
-                # subsampling
-                subsample, importance_weight = sampler.sampling(protocol.name)
-            else:
-                subsample, importance_weight = torch.tensor([torch.inf]), 0.0
-            self.subsamples.append(subsample)
-            self.subsample_size.append(subsample.shape[0])
-            self._weights.append(importance_weight)
+        subsampler: SubsamplingPolicy = get_worker_env("action_subsampler")
+        self.subsamples: list[Tensor] = subsampler.sampling()
+        self._importance_weights: list[float] = subsampler.protocol_weights  # importance weight
 
         self._masked_logits: list[Tensor] = self._calculate_logits()
         self.raw_logits: list[Tensor] = self._masked_logits
 
-        self.batch = [torch.arange(self.num_graphs, device=dev)] * self.ctx.num_protocols
-        self.slice = [torch.arange(self.num_graphs + 1, device=dev)] * self.ctx.num_protocols
+        # self.batch = [torch.arange(self.num_graphs, device=dev)] * self.ctx.num_protocols
+        # self.slice = [torch.arange(self.num_graphs + 1, device=dev)] * self.ctx.num_protocols
 
     def _calculate_logits(self) -> list[Tensor]:
         # TODO: add descriptors
         # PERF: optimized for performance but bad readability
-        # logits: [Nstate, Naction]
         masked_logits: list[Tensor] = []
+        # logits: [Nstate, Naction]
         for protocol_idx, protocol in enumerate(self.ctx.protocols):
-            subsample_idcs = self.subsamples[protocol_idx]
-            num_actions = self.subsample_size[protocol_idx]
             protocol_mask = self._protocol_masks[protocol_idx]
+            subsample_idcs = self.subsamples[protocol_idx]
+            num_actions = len(subsample_idcs)
             if num_actions == 0:
-                # TODO: is it fine to set 0 instead of 1?
                 logits = neginf((self.num_graphs, 1), device=self.dev)
+            elif protocol_mask.all():
+                # calculate logit then perform logit-scaling (Logit-GFN)
+                logits = self.model_hook(protocol, self.emb, subsample_idcs)
+                logits = logits * self.logit_scale.view(-1, 1)  # [Nstate, Naction]
             elif protocol_mask.any():
+                # calculate logit
                 emb_allowed = self.emb[protocol_mask]  # [Nstate', Fstate]
-                allowed_logit_scale = self.logit_scale[protocol_mask].view(-1, 1)  # [Nstate', 1]
                 allowed_logits = self.model_hook(protocol, emb_allowed, subsample_idcs)
                 # logit-scaling (Logit-GFN)
+                allowed_logit_scale = self.logit_scale[protocol_mask].view(-1, 1)  # [Nstate', 1]
                 allowed_logits = allowed_logits * allowed_logit_scale
-                if protocol_mask.all():
-                    # directly use the calculate logit
-                    logits = allowed_logits
-                else:
-                    # create placeholder first and then insert the calculated.
-                    logits = neginf((self.num_graphs, num_actions), device=self.dev)
-                    logits[protocol_mask] = allowed_logits
+                # create placeholder first and then insert the calculated.
+                logits = neginf((self.num_graphs, num_actions), device=self.dev)
+                logits[protocol_mask] = allowed_logits
             else:
                 # set 1 instead of `num_actions` to reduce overhead
                 logits = neginf((self.num_graphs, 1), device=self.dev)
@@ -97,8 +87,8 @@ class RxnActionCategorical(GraphActionCategorical):
             protocol = self.ctx.protocols[protocol_idx]
             emb = self.emb[i].view(1, -1)
             logit = self.model_hook(protocol, emb, subsampled_idcs=block_idx)
-            logit_scale = self.logit_scale[i]  # logit-gfn
-            action_logits[i] = logit.view(1) * logit_scale.view(1)
+            action_logits[i] = logit
+        action_logits = action_logits * self.logit_scale.view(-1)
         return action_logits
 
     def model_hook(
@@ -178,20 +168,21 @@ class RxnActionCategorical(GraphActionCategorical):
         return action_logprobs
 
     def calc_logZ(self) -> Tensor:
-        """calculate logZ when graph-wise prediction is only performed"""
+        """calculate logZ"""
         # importance weighting
         logits = self.importance_weighting(alpha=1.0)
-        maxl = self._compute_batchwise_max(logits).values  # [Ngraph,]
+        maxl = self._compute_batchwise_max_opt(logits).values  # [Ngraph,]
         corr_logits: list[Tensor] = [(i - maxl.unsqueeze(1)) for i in logits]
-        exp_logits: list[Tensor] = [i.exp().clamp(self._epsilon) for i in corr_logits]
-        logZ = sum([i.sum(1) for i in exp_logits]).log()
+        exp_logits: list[Tensor] = [i.exp() for i in corr_logits]
+        logZ = sum([i.sum(1).clamp(self._epsilon) for i in exp_logits]).log()
         return logZ + maxl
 
     def importance_weighting(self, alpha: float = 1.0) -> list[Tensor]:
+        """importance weighting; calibrate logits with the action subsampling ratio"""
         if alpha == 0.0:
             return self.logits
         else:
-            return [logits + alpha * w for logits, w in zip(self.logits, self._weights, strict=True)]
+            return [logits + alpha * w for logits, w in zip(self.logits, self._importance_weights, strict=True)]
 
     def _apply_action_masks(self):
         self._masked_logits = [
@@ -225,6 +216,11 @@ class RxnActionCategorical(GraphActionCategorical):
         return argmaxes
 
     # NOTE: same but faster (optimized for graph-wise predictions)
+    def _compute_batchwise_max_opt(self, x: list[Tensor]):
+        x = [i.detach() for i in x]
+        return torch.cat(x, dim=1).max(1)
+
+    # NOTE: unused (replaced to ***_opt())
     def _compute_batchwise_max(
         self,
         x: list[Tensor],

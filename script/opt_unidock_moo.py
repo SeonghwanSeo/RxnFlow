@@ -3,7 +3,7 @@ import wandb
 from omegaconf import OmegaConf
 
 from rxnflow.config import Config, init_empty
-from rxnflow.tasks.unidock_moo import UniDockMOOTrainer
+from rxnflow.tasks.unidock_vina_moo import VinaMOOTrainer
 from rxnflow.utils.misc import create_logger
 from utils import get_center
 
@@ -52,7 +52,7 @@ def run(args):
     if args.debug:
         config.overwrite_existing_exp = True
 
-    trainer = UniDockMOOTrainer(config)
+    trainer = VinaMOOTrainer(config)
     logger = create_logger()  # non-propagate version
 
     if args.wandb is not None:
@@ -61,7 +61,7 @@ def run(args):
         trainer.run(logger)
         wandb.finish()
     else:
-        trainer.run()
+        trainer.run(logger)
 
 
 if __name__ == "__main__":

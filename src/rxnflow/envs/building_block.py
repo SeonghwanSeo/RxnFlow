@@ -9,7 +9,7 @@ FP_RADIUS = 2
 FP_NBITS = 1024
 BLOCK_FP_DIM = 1024 + 166
 BLOCK_PROPERTY_DIM = 8
-NUM_BLOCK_FEATURES = BLOCK_FP_DIM + BLOCK_PROPERTY_DIM
+MOL_PROPERTY_DIM = 8
 
 
 def get_block_features(mol: str | Chem.Mol) -> tuple[NDArray[np.bool_], NDArray[np.float32]]:
@@ -36,3 +36,22 @@ def get_block_features(mol: str | Chem.Mol) -> tuple[NDArray[np.bool_], NDArray[
     feature_out = np.array(feature, dtype=np.float32)
 
     return fp_out, feature_out
+
+
+def get_mol_features(mol: str | Chem.Mol) -> NDArray[np.float32]:
+    """Setup Molecular Features"""
+    if isinstance(mol, str):
+        mol = Chem.MolFromSmiles(mol)
+
+    # NOTE: Common RDKit Descriptors
+    feature = []
+    feature.append(rdMolDescriptors.CalcExactMolWt(mol) / 100)
+    feature.append(rdMolDescriptors.CalcNumHeavyAtoms(mol) / 10)
+    feature.append(rdMolDescriptors.CalcNumHBA(mol) / 10)
+    feature.append(rdMolDescriptors.CalcNumHBD(mol) / 10)
+    feature.append(rdMolDescriptors.CalcNumAromaticRings(mol) / 10)
+    feature.append(rdMolDescriptors.CalcNumAliphaticRings(mol) / 10)
+    feature.append(rdMolDescriptors.CalcTPSA(mol) / 100)
+    feature.append(Crippen.MolLogP(mol) / 10)
+    feature_out = np.array(feature, dtype=np.float32)
+    return feature_out

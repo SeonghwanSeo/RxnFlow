@@ -7,6 +7,7 @@ import torch_geometric.data as gd
 from rdkit.Chem import BondType, ChiralType, Mol as RDMol
 
 from gflownet.envs.graph_building_env import GraphBuildingEnvContext, ActionIndex
+from rxnflow.envs.building_block import MOL_PROPERTY_DIM, get_mol_features
 from .action import RxnAction, RxnActionType, Protocol
 from .env import SynthesisEnv, MolGraph
 
@@ -40,6 +41,12 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.firstblock_list: list[Protocol] = env.firstblock_list
         self.unirxn_list: list[Protocol] = env.unirxn_list
         self.birxn_list: list[Protocol] = env.birxn_list
+        self.protocol_type_dict: dict[RxnActionType, list[Protocol]] = {
+            RxnActionType.Stop: self.stop_list,
+            RxnActionType.FirstBlock: self.firstblock_list,
+            RxnActionType.UniRxn: self.unirxn_list,
+            RxnActionType.BiRxn: self.birxn_list,
+        }
 
         # NOTE: Building Block
         self.blocks: list[str] = env.blocks
@@ -73,6 +80,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         self.num_node_dim = sum(len(v) for v in self.atom_attr_values.values())
         self.num_edge_dim = sum(len(v) for v in self.bond_attr_values.values())
         self.num_cond_dim = num_cond_dim
+        self.num_graph_dim = MOL_PROPERTY_DIM
 
         # NOTE: Action Type Order
         self.action_type_order: list[RxnActionType] = [
@@ -92,7 +100,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
     def get_block_data(
         self,
         block_indices: Tensor | int,
-        device: str | torch.device | None = None,
+        device: str | torch.device | None = "cpu",
     ) -> tuple[Tensor, Tensor]:
         """Get the block features for the given type and indices
 
@@ -113,14 +121,10 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
         prop = self.block_prop[block_indices]
         fp = self.block_fp[block_indices]
         if fp.dim() == 1:
-            prop, fp = prop.view(1, -1), fp.view(1, -1)
-        if device is None:
-            return fp.to(torch.float32), prop
-        else:
-            return (
-                fp.to(dtype=torch.float32, device=device),
-                prop.to(device),
-            )
+            prop, fp = prop.unsqueeze(0), fp.unsqueeze(0)
+        fp = fp.to(dtype=torch.float32, device=device, non_blocking=True)
+        prop = prop.to(dtype=torch.float32, device=device, non_blocking=True)
+        return fp, prop
 
     def graph_to_Data(self, g: MolGraph) -> gd.Data:
         """Convert a networkx Graph to a torch geometric Data instance"""
@@ -135,6 +139,8 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
             x[0, -1] = 1
             edge_attr = torch.zeros((0, self.num_edge_dim))
             edge_index = torch.zeros((2, 0), dtype=torch.long)
+            graph_attr = torch.zeros((self.num_graph_dim,))
+
         else:
             x = torch.zeros((len(g.nodes), self.num_node_dim))
             for i, n in enumerate(g.nodes):
@@ -154,11 +160,13 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                     edge_attr[i * 2, sl + idx] = 1
                     edge_attr[i * 2 + 1, sl + idx] = 1
             edge_index = torch.tensor([e for i, j in g.edges for e in [(i, j), (j, i)]], dtype=torch.long).view(-1, 2).T
+            graph_attr = torch.from_numpy(get_mol_features(self.graph_to_obj(g)))
 
         return dict(
             x=x,
             edge_index=edge_index,
             edge_attr=edge_attr,
+            graph_attr=graph_attr.reshape(1, -1),
             protocol_mask=self.create_masks(g).reshape(1, -1),
             sample_idx=g.graph["sample_idx"],
         )

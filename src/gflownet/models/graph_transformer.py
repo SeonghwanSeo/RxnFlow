@@ -12,7 +12,7 @@ from gflownet.config import Config
 from gflownet.envs.graph_building_env import GraphActionCategorical, GraphActionType, action_type_to_mask
 
 
-def mlp(n_in: int, n_hid: int, n_out: int, n_layer: int, act: type[nn.Module] = nn.LeakyReLU):
+def mlp(n_in: int, n_hid: int, n_out: int, n_layer: int, act: type[nn.Module] = nn.LeakyReLU) -> nn.Sequential:
     """Creates a fully-connected network with no activation after the last layer.
     If `n_layer` is 0 then this corresponds to `nn.Linear(n_in, n_out)`.
     """

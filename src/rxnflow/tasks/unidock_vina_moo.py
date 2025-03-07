@@ -9,7 +9,7 @@ from rxnflow.config import Config, init_empty
 from rxnflow.base import RxnFlowTrainer
 from rxnflow.utils.misc import create_logger
 
-from rxnflow.tasks.vina import VinaTask
+from rxnflow.tasks.unidock_vina import VinaTask
 from rxnflow.tasks.utils.chem_metrics import mol2qed, mol2sascore
 
 aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
@@ -60,18 +60,20 @@ class VinaMOOTrainer(RxnFlowTrainer):
         super().set_default_hps(base)
         base.task.moo.objectives = ["vina", "qed"]
         base.num_training_steps = 1000
-        base.print_every = 1
         base.validate_every = 0
 
-        base.algo.max_len = 3
         base.algo.train_random_action_prob = 0.05
-        base.algo.action_subsampling.sampling_ratio = 0.01
+        base.algo.action_subsampling.sampling_ratio = 0.05
 
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0.0, 64.0]
         base.replay.use = True
-        base.replay.warmup = 0
+        base.replay.warmup = 128
         base.replay.capacity = 6_400
+
+        # for training step = 1000
+        base.opt.lr_decay = 500
+        base.algo.tb.Z_lr_decay = 1000
 
     def setup_task(self):
         self.task = VinaMOOTask(self.cfg)

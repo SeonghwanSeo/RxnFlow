@@ -3,7 +3,7 @@ import wandb
 from omegaconf import OmegaConf
 
 from rxnflow.config import Config, init_empty
-from rxnflow.tasks.unidock import UniDockTrainer
+from rxnflow.tasks.unidock_vina import VinaTrainer
 from rxnflow.utils.misc import create_logger
 from utils import get_center
 
@@ -56,7 +56,7 @@ def run(args):
     if args.debug:
         config.overwrite_existing_exp = True
 
-    trainer = UniDockTrainer(config)
+    trainer = VinaTrainer(config)
     logger = create_logger()  # non-propagate version
 
     if args.wandb is not None:

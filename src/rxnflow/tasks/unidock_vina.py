@@ -94,9 +94,8 @@ class VinaTrainer(RxnFlowTrainer):
         base.num_training_steps = 1000
         base.task.constraint.rule = "lipinski"
 
-        base.algo.max_len = 3
-        base.algo.train_random_action_prob = 0.05
-        base.algo.action_subsampling.sampling_ratio = 0.01
+        base.algo.train_random_action_prob = 0.1
+        base.algo.action_subsampling.sampling_ratio = 0.05
 
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0.0, 64.0]

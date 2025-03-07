@@ -44,12 +44,13 @@ class RxnFlow(TrajectoryBalanceModel):
         self.transf = GraphTransformer(
             x_dim=env_ctx.num_node_dim,
             e_dim=env_ctx.num_edge_dim,
-            g_dim=env_ctx.num_cond_dim,
+            g_dim=env_ctx.num_cond_dim + env_ctx.num_graph_dim,
             num_emb=cfg.model.num_emb,
             num_layers=cfg.model.graph_transformer.num_layers,
             num_heads=cfg.model.graph_transformer.num_heads,
             ln_type=cfg.model.graph_transformer.ln_type,
         )
+        self.norm_state = nn.LayerNorm(num_glob_final)
 
         # NOTE: Block embedding
         self.emb_block = BlockEmbedding(
@@ -61,12 +62,12 @@ class RxnFlow(TrajectoryBalanceModel):
         )
 
         # NOTE: Markov Decision Process
-        self.mlp = nn.ModuleDict(
+        self.mlp_mdp = nn.ModuleDict(
             {
                 "stop": mlp(num_glob_final, num_emb, 1, num_mlp_layers, act=ACT_MDP),
                 "firstblock": mlp(num_glob_final, num_emb, num_emb_block, num_mlp_layers, act=ACT_MDP),
-                "unirxn": mlp(num_glob_final, num_emb, 1, num_mlp_layers, act=ACT_MDP),
                 "birxn": mlp(num_glob_final, num_emb, num_emb_block, num_mlp_layers, act=ACT_MDP),
+                "unirxn": mlp(num_glob_final, num_emb, 1, num_mlp_layers, act=ACT_MDP),
             }
         )
         # reaction embedding
@@ -76,22 +77,24 @@ class RxnFlow(TrajectoryBalanceModel):
         self.emb_birxn = nn.ParameterDict(
             {p.name: nn.Parameter(torch.randn((num_glob_final,), requires_grad=True)) for p in env_ctx.birxn_list}
         )
+        self.act_mdp = ACT_MDP()
 
         # NOTE: Etcs. (e.g., partition function)
-        self.emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, num_mlp_layers, act=ACT_TB)
+        self._emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, num_mlp_layers, act=ACT_TB)
         self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2, act=ACT_TB)
-        self._logit_scale: nn.Module = nn.Sequential(
-            mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2, act=ACT_TB),
-            nn.ELU(),  # to be (-1, inf)
-        )
+        self._logit_scale = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, num_mlp_layers, act=ACT_TB)
         self.reset_parameters()
 
+    def emb2graph_out(self, emb: Tensor) -> Tensor:
+        return self._emb2graph_out(emb)
+
     def logZ(self, cond_info: Tensor) -> Tensor:
+        """return log partition funciton"""
         return self._logZ(cond_info)
 
     def logit_scale(self, cond_info: Tensor) -> Tensor:
         """return non-negative scale"""
-        return self._logit_scale(cond_info).view(-1) + 1  # (-1, inf) -> (0, inf)
+        return nn.functional.elu(self._logit_scale(cond_info).view(-1)) + 1  # (-1, inf) -> (0, inf)
 
     def forward(self, g: gd.Batch, cond: Tensor) -> tuple[RxnActionCategorical, Tensor]:
         """
@@ -107,11 +110,12 @@ class RxnFlow(TrajectoryBalanceModel):
         -------
         RxnActionCategorical
         """
-        _, emb = self.transf(g, cond)
-        graph_out = self.emb2graph_out(emb)
+        _, emb = self.transf(g, torch.cat([cond, g.graph_attr], axis=-1))
+        emb = self.norm_state(emb)
         protocol_masks = list(torch.unbind(g.protocol_mask, dim=1))  # [Ngraph, Nprotocol]
         logit_scale = self.logit_scale(cond)
         fwd_cat = RxnActionCategorical(g, emb, logit_scale, protocol_masks, model=self)
+        graph_out = self.emb2graph_out(emb)
         if self.do_bck:
             raise NotImplementedError
         return fwd_cat, graph_out
@@ -138,7 +142,7 @@ class RxnFlow(TrajectoryBalanceModel):
             The logits of the MLP.
             shape: [Nstate, Nblock]
         """
-        state_emb = self.mlp["firstblock"](emb)
+        state_emb = self.mlp_mdp["firstblock"](emb)
         block_emb = self.emb_block(block)
         return state_emb @ block_emb.T
 
@@ -167,7 +171,8 @@ class RxnFlow(TrajectoryBalanceModel):
             The logits of the MLP.
             shape: [Nstate, Nblock]
         """
-        state_emb = self.mlp["birxn"](emb + self.emb_birxn[protocol].view(1, -1))
+        emb = emb + self.emb_birxn[protocol].view(1, -1)
+        state_emb = self.mlp_mdp["birxn"](self.act_mdp(emb))
         block_emb = self.emb_block(block)
         return state_emb @ block_emb.T
 
@@ -183,7 +188,7 @@ class RxnFlow(TrajectoryBalanceModel):
             The logits of the MLP.
             shape: [Nstate, 1]
         """
-        return self.mlp["stop"](emb)
+        return self.mlp_mdp["stop"](emb)
 
     def hook_unirxn(self, emb: Tensor, protocol: str):
         """
@@ -200,14 +205,15 @@ class RxnFlow(TrajectoryBalanceModel):
             The logits of the MLP.
             shape: [Nstate, 1]
         """
-        return self.mlp["unirxn"](emb + self.emb_unirxn[protocol].view(1, -1))
+        emb = emb + self.emb_unirxn[protocol].view(1, -1)
+        return self.mlp_mdp["unirxn"](self.act_mdp(emb))
 
     def reset_parameters(self):
-        for m in self.mlp.modules():
+        for m in self.mlp_mdp.modules():
             if isinstance(m, nn.Linear):
                 init_weight_linear(m, ACT_MDP)
 
-        for layer in [self.emb2graph_out, self._logZ, self._logit_scale]:
+        for layer in [self._emb2graph_out, self._logZ, self._logit_scale]:
             for m in layer.modules():
                 if isinstance(m, nn.Linear):
                     init_weight_linear(m, ACT_TB)
@@ -218,13 +224,13 @@ class BlockEmbedding(nn.Module):
         super().__init__()
         self.lin_fp = nn.Sequential(
             nn.Linear(fp_dim, n_hid),
-            ACT_BLOCK(),
             nn.LayerNorm(n_hid),
+            ACT_BLOCK(),
         )
         self.lin_prop = nn.Sequential(
             nn.Linear(prop_dim, n_hid),
-            ACT_BLOCK(),
             nn.LayerNorm(n_hid),
+            ACT_BLOCK(),
         )
         self.mlp = mlp(2 * n_hid, n_hid, n_out, n_layers, act=ACT_BLOCK)
         self.reset_parameters()

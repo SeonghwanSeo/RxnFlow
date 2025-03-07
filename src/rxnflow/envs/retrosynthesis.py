@@ -97,6 +97,7 @@ class RetroSyntheticAnalyzer:
         return res
 
     def block_search(self, smi: str) -> int | None:
+        assert isinstance(smi, str)
         prefix_block_set = self.__block_search.get(len(smi), None)
         if prefix_block_set is None:
             return None
@@ -133,14 +134,18 @@ class RetroSyntheticAnalyzer:
         known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
     ) -> RetroSynthesisTree | None:
         # Check state
-        mol: Chem.Mol = Chem.MolFromSmiles(smiles)
-        if (not self.check_depth(depth)) or (mol is None) or (len(smiles) == 0):
+        if (not self.check_depth(depth)) or (len(smiles) == 0):
             return None
 
         # Load cache
         is_cached, cached_tree = self.from_cache(smiles, depth)
         if is_cached:
             return cached_tree
+
+        # convert mol
+        mol: Chem.Mol = Chem.MolFromSmiles(smiles)
+        if mol is None:
+            return None
 
         if known_branches is None:
             known_branches = []
@@ -259,9 +264,7 @@ class MultiRetroSyntheticAnalyzer:
     def result(self) -> list[tuple[int, RetroSynthesisTree]]:
         try:
             done, _ = concurrent.futures.wait(self.futures, return_when=concurrent.futures.FIRST_EXCEPTION)
-            result = []
-            for future in done:
-                result.append(future.result())
+            result = [future.result() for future in done]
             self.futures = []
             return result
         except Exception as e:

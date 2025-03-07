@@ -53,6 +53,9 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         base.model.graph_transformer.num_layers = 4
         base.model.num_mlp_layers = 1
 
+        # RxnFlow max len
+        base.algo.max_len = 3
+
         # From SEHFragMOOTrainer (No effect on single objective optimization)
         base.cond.weighted_prefs.preference_type = "dirichlet"
         base.cond.focus_region.focus_type = None
@@ -73,6 +76,7 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
     def setup(self):
         self.cfg.cond.moo.num_objectives = len(self.cfg.task.moo.objectives)
         super().setup()
+
         # setup multi-objective optimization
         self.is_moo: bool = self.task.is_moo
         if self.is_moo:
