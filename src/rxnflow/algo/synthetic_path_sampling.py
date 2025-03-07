@@ -91,15 +91,13 @@ class SyntheticPathSampler(GraphSampler):
             is_random = torch.tensor(rng.uniform(size=len(torch_graphs)) < random_action_prob, device=dev)
             new_logits = []
             for protocol_idx in range(len(self.env.protocols)):
-                protocol = self.ctx.protocols[protocol_idx]
                 logit = sample_cat.raw_logits[protocol_idx]
                 subsample = sample_cat.subsamples[protocol_idx]
 
-                # calibrate so that the action type and protocol type are sampled equally.
-                num_protocols = len(self.ctx.protocol_type_dict[protocol.action])
+                # calibrate so that the protocols are sampled equally.
                 num_actions = len(subsample)
                 if num_actions > 0:
-                    logit[is_random] = 1000 - math.log(num_protocols * num_actions)
+                    logit[is_random] = 1000 - math.log(num_actions)
                 new_logits.append(logit)
             sample_cat.raw_logits = new_logits
         if self.sample_temp != 1:

@@ -14,10 +14,10 @@ from rxnflow.tasks.utils.chem_metrics import mol2qed, mol2sascore
 
 aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
 
-"""MOO Task but not MO-GFN (production-based)"""
-
 
 class VinaMOOTask(VinaTask):
+    is_moo = True
+
     def __init__(self, cfg: Config):
         super().__init__(cfg)
         assert set(self.objectives) <= {"vina", "qed", "sa"}
@@ -32,15 +32,15 @@ class VinaMOOTask(VinaTask):
             for prop in self.objectives:
                 if prop == "vina":
                     docking_scores = self.mol2vina(objs)
-                    fr = docking_scores * -1  # normalization
+                    fr = docking_scores * -0.1  # normalization
                 else:
                     fr = aux_tasks[prop](objs)
                 flat_r.append(fr)
                 self.avg_reward_info.append((prop, fr.mean().item()))
 
-            flat_rewards = torch.stack(flat_r, dim=1).prod(-1, keepdim=True)
+            flat_rewards = torch.stack(flat_r, dim=1)
         else:
-            flat_rewards = torch.zeros((0, 1), dtype=torch.float32)
+            flat_rewards = torch.zeros((0, self.num_objectives), dtype=torch.float32)
         assert flat_rewards.shape[0] == len(objs)
         self.oracle_idx += 1
         return ObjectProperties(flat_rewards), is_valid_t
@@ -72,9 +72,7 @@ class VinaMOOTrainer(RxnFlowTrainer):
         base.replay.capacity = 6_400
 
         # for training step = 1000
-        base.opt.learning_rate = 1e-4
         base.opt.lr_decay = 500
-        base.algo.tb.Z_learning_rate = 1e-2
         base.algo.tb.Z_lr_decay = 1000
 
     def setup_task(self):
