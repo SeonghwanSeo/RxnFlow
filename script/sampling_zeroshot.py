@@ -1,13 +1,13 @@
 import os
+import time
 from argparse import ArgumentParser
 from pathlib import Path
-import time
+
 import gdown
+from utils import get_center
 
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.multi_pocket import ProxySampler
-from utils import get_center
-
 
 DEFAULT_CKPT_LINK = "https://drive.google.com/uc?id=1uwvFbP0l_wNzb4riJ568Zouewhmuxvur"
 DEFAULT_CKPT_PATH = "./weights/rxnflow_crossdocked_qvina.pt"

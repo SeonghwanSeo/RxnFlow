@@ -1,16 +1,14 @@
 import torch
 import torch.nn as nn
 import torch_geometric.data as gd
-
 from torch import Tensor
 
 from gflownet.algo.trajectory_balance import TrajectoryBalanceModel
 from gflownet.models.graph_transformer import GraphTransformer
-
 from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnvContext
-from rxnflow.policy.action_categorical import RxnActionCategorical
 from rxnflow.models.nn import init_weight_linear, mlp
+from rxnflow.policy.action_categorical import RxnActionCategorical
 
 ACT_BLOCK = nn.SiLU
 ACT_MDP = nn.SiLU
@@ -33,9 +31,8 @@ class RxnFlow(TrajectoryBalanceModel):
 
         num_emb = cfg.model.num_emb
         num_glob_final = num_emb * 2  # *2 for concatenating global mean pooling & node embeddings
-        num_mlp_layers = cfg.model.num_mlp_layers
+        num_layers = cfg.model.num_mlp_layers
         num_emb_block = cfg.model.num_emb_block
-        num_mlp_layers_block = cfg.model.num_mlp_layers_block
         dropout = cfg.model.dropout
 
         # NOTE: State embedding
@@ -48,6 +45,8 @@ class RxnFlow(TrajectoryBalanceModel):
             num_heads=cfg.model.graph_transformer.num_heads,
             ln_type=cfg.model.graph_transformer.ln_type,
         )
+        # For regular GFN, normalization does not effect to model performance.
+        # However, we add normalization to match the scale with reaction embedding
         self.norm_state = nn.LayerNorm(num_glob_final)
 
         # NOTE: Block embedding
@@ -56,20 +55,21 @@ class RxnFlow(TrajectoryBalanceModel):
             env_ctx.block_prop_dim,
             num_emb_block,
             num_emb_block,
-            num_mlp_layers_block,
+            cfg.model.num_mlp_layers_block,
             ACT_BLOCK,
             dropout,
         )
 
         # NOTE: Markov Decision Process
         mlps = {
-            "stop": mlp(num_glob_final, num_emb, 1, num_mlp_layers, ACT_MDP, dropout=dropout),
-            "firstblock": mlp(num_glob_final, num_emb, num_emb_block, num_mlp_layers, ACT_MDP, dropout=dropout),
-            "birxn": mlp(num_glob_final, num_emb, num_emb_block, num_mlp_layers, ACT_MDP, dropout=dropout),
-            "unirxn": mlp(num_glob_final, num_emb, 1, num_mlp_layers, ACT_MDP, dropout=dropout),
+            "stop": mlp(num_glob_final, num_emb, 1, num_layers, ACT_MDP, dropout=dropout),
+            "firstblock": mlp(num_glob_final, num_emb, num_emb_block, num_layers, ACT_MDP, dropout=dropout),
+            "birxn": mlp(num_glob_final, num_emb, num_emb_block, num_layers, ACT_MDP, dropout=dropout),
+            "unirxn": mlp(num_glob_final, num_emb, 1, num_layers, ACT_MDP, dropout=dropout),
         }
         self.mlp_mdp = nn.ModuleDict(mlps)
-        # reaction embedding
+
+        # NOTE: reaction embedding
         self.emb_unirxn = nn.ParameterDict(
             {p.name: nn.Parameter(torch.randn((num_glob_final,), requires_grad=True)) for p in env_ctx.unirxn_list}
         )
@@ -79,9 +79,9 @@ class RxnFlow(TrajectoryBalanceModel):
         self.act_mdp = ACT_MDP()
 
         # NOTE: Etcs. (e.g., partition function)
-        self._emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, num_mlp_layers, act=ACT_TB, dropout=dropout)
-        self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2, act=ACT_TB, dropout=dropout)
-        self._logit_scale = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, num_mlp_layers, act=ACT_TB, dropout=dropout)
+        self._emb2graph_out = mlp(num_glob_final, num_emb, num_graph_out, num_layers, ACT_TB, dropout=dropout)
+        self._logZ = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2, ACT_TB, dropout=dropout)
+        self._logit_scale = mlp(env_ctx.num_cond_dim, num_emb * 2, 1, 2, ACT_TB, dropout=dropout)
         self.reset_parameters()
 
     def emb2graph_out(self, emb: Tensor) -> Tensor:
@@ -230,19 +230,20 @@ class BlockEmbedding(nn.Module):
         dropout: float,
     ):
         super().__init__()
-        self.act = act
         self.lin_fp = nn.Sequential(
             nn.Linear(fp_dim, n_hid),
             nn.LayerNorm(n_hid),
             act(),
+            nn.Dropout(dropout),
         )
         self.lin_prop = nn.Sequential(
             nn.Linear(prop_dim, n_hid),
             nn.LayerNorm(n_hid),
             act(),
+            nn.Dropout(dropout),
         )
         self.mlp = mlp(2 * n_hid, n_hid, n_out, n_layers, act=act, dropout=dropout)
-        self.reset_parameters()
+        self.reset_parameters(act)
 
     def forward(self, block_data: tuple[Tensor, Tensor]):
         fp, prop = block_data
@@ -251,7 +252,7 @@ class BlockEmbedding(nn.Module):
         x = torch.cat([x_fp, x_prop], dim=-1)
         return self.mlp(x)
 
-    def reset_parameters(self):
+    def reset_parameters(self, act):
         for m in self.modules():
             if isinstance(m, nn.Linear):
-                init_weight_linear(m, self.act)
+                init_weight_linear(m, act)

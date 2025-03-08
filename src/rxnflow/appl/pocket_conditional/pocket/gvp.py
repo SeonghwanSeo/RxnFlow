@@ -1,9 +1,10 @@
-import torch
 import functools
-from torch import nn
+
+import torch
 import torch.nn.functional as F
-from torch_geometric.nn import MessagePassing
 import torch_geometric.data as gd
+from torch import nn
+from torch_geometric.nn import MessagePassing
 from torch_scatter import scatter_add, scatter_mean
 
 
@@ -102,7 +103,7 @@ def tuple_sum(*args):
     """
     Sums any number of tuples (s, V) elementwise.
     """
-    return tuple(map(sum, zip(*args)))
+    return tuple(map(sum, zip(*args, strict=False)))
 
 
 def tuple_cat(*args, dim=-1):
@@ -115,7 +116,7 @@ def tuple_cat(*args, dim=-1):
                 `dim=-2` for the vector-channel tensors.
     """
     dim %= len(args[0][0].shape)
-    s_args, v_args = list(zip(*args))
+    s_args, v_args = list(zip(*args, strict=False))
     return torch.cat(s_args, dim=dim), torch.cat(v_args, dim=dim)
 
 
@@ -190,7 +191,7 @@ class GVP(nn.Module):
     """
 
     def __init__(self, in_dims, out_dims, h_dim=None, activations=(F.relu, torch.sigmoid), vector_gate=False):
-        super(GVP, self).__init__()
+        super().__init__()
         self.si, self.vi = in_dims
         self.so, self.vo = out_dims
         self.vector_gate = vector_gate
@@ -249,7 +250,7 @@ class _VDropout(nn.Module):
     """
 
     def __init__(self, drop_rate):
-        super(_VDropout, self).__init__()
+        super().__init__()
         self.drop_rate = drop_rate
         self.dummy_param = nn.Parameter(torch.empty(0))
 
@@ -272,7 +273,7 @@ class Dropout(nn.Module):
     """
 
     def __init__(self, drop_rate):
-        super(Dropout, self).__init__()
+        super().__init__()
         self.sdropout = nn.Dropout(drop_rate)
         self.vdropout = _VDropout(drop_rate)
 
@@ -295,7 +296,7 @@ class LayerNorm(nn.Module):
     """
 
     def __init__(self, dims):
-        super(LayerNorm, self).__init__()
+        super().__init__()
         self.s, self.v = dims
         self.scalar_norm = nn.LayerNorm(self.s)
 
@@ -345,7 +346,7 @@ class GVPConv(MessagePassing):
         activations=(F.relu, torch.sigmoid),
         vector_gate=False,
     ):
-        super(GVPConv, self).__init__(aggr=aggr)
+        super().__init__(aggr=aggr)
         self.si, self.vi = in_dims
         self.so, self.vo = out_dims
         self.se, self.ve = edge_dims
@@ -360,7 +361,7 @@ class GVPConv(MessagePassing):
                 )
             else:
                 module_list.append(GVP_((2 * self.si + self.se, 2 * self.vi + self.ve), out_dims))
-                for i in range(n_layers - 2):
+                for _ in range(n_layers - 2):
                     module_list.append(GVP_(out_dims, out_dims))
                 module_list.append(GVP_(out_dims, out_dims, activations=(None, None)))
         self.message_func = nn.Sequential(*module_list)
@@ -416,7 +417,7 @@ class GVPConvLayer(nn.Module):
         activations=(F.relu, torch.sigmoid),
         vector_gate=False,
     ):
-        super(GVPConvLayer, self).__init__()
+        super().__init__()
         self.conv = GVPConv(
             node_dims,
             node_dims,
@@ -436,7 +437,7 @@ class GVPConvLayer(nn.Module):
         else:
             hid_dims = 4 * node_dims[0], 2 * node_dims[1]
             ff_func.append(GVP_(node_dims, hid_dims))
-            for i in range(n_feedforward - 2):
+            for _ in range(n_feedforward - 2):
                 ff_func.append(GVP_(hid_dims, hid_dims))
             ff_func.append(GVP_(hid_dims, node_dims, activations=(None, None)))
         self.ff_func = nn.Sequential(*ff_func)

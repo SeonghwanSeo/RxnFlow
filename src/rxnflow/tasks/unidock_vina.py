@@ -1,18 +1,17 @@
-from pathlib import Path
 from collections import OrderedDict
+from pathlib import Path
 
 import numpy as np
 import torch
-from torch import Tensor
 from rdkit import Chem
-from rdkit.Chem import rdMolDescriptors, Crippen
+from rdkit.Chem import Crippen, rdMolDescriptors
 from rdkit.Chem import Mol as RDMol
+from torch import Tensor
 
 from gflownet import ObjectProperties
-
+from gflownet.utils.misc import create_logger
+from rxnflow.base import BaseTask, RxnFlowSampler, RxnFlowTrainer
 from rxnflow.config import Config, init_empty
-from rxnflow.base import BaseTask, RxnFlowTrainer, RxnFlowSampler
-from rxnflow.utils.misc import create_logger
 from rxnflow.tasks.utils.unidock import VinaReward
 
 
@@ -89,19 +88,30 @@ class VinaTrainer(RxnFlowTrainer):
 
     def set_default_hps(self, base: Config):
         super().set_default_hps(base)
-        base.print_every = 1
-        base.validate_every = 0
+        base.task.constraint.rule = None
         base.num_training_steps = 1000
-        base.task.constraint.rule = "lipinski"
+        base.validate_every = 0
 
         base.algo.train_random_action_prob = 0.1
-        base.algo.action_subsampling.sampling_ratio = 0.05
+        base.algo.action_subsampling.sampling_ratio = 0.02
 
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0.0, 64.0]
         base.replay.use = True
-        base.replay.capacity = 6_400
+        base.replay.capacity = 64 * 100
         base.replay.warmup = 0
+
+        # for training step = 1000
+        base.opt.learning_rate = 1e-4
+        base.opt.lr_decay = 500
+        base.algo.tb.Z_learning_rate = 1e-2
+        base.algo.tb.Z_lr_decay = 1000
+
+    def run(self, logger=None):
+        if logger is None:
+            logger = create_logger()
+            logger.propagate = False  # turn-off propagate to unidock logger
+        super().run(logger)
 
     def setup_task(self):
         self.task = VinaTask(cfg=self.cfg)
@@ -135,13 +145,12 @@ if __name__ == "__main__":
     config.log_dir = "./logs/debug-vina/"
     config.env_dir = "./data/envs/stock"
     config.overwrite_existing_exp = True
-    config.algo.max_len = 2
+    config.algo.max_len = 3
     config.task.constraint.rule = "lipinski"
 
     config.task.docking.protein_path = "./data/examples/6oim_protein.pdb"
+    # config.task.docking.ref_ligand_path = "./data/examples/6oim_ligand.pdb"
     config.task.docking.center = (1.872, -8.260, -1.361)
 
-    # to prevent redundant logging due to unidock
-    logger = create_logger()
     trial = VinaTrainer(config)
-    trial.run(logger)
+    trial.run()

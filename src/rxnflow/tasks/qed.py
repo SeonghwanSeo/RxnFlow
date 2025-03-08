@@ -1,11 +1,9 @@
 import torch
-
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
 from gflownet import ObjectProperties
-
-from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
+from rxnflow.base import BaseTask, RxnFlowSampler, RxnFlowTrainer
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.utils.chem_metrics import mol2qed
 

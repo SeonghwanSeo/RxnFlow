@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
-from gflownet.utils.misc import StrictDataClass
 from gflownet.algo.config import TBConfig
+from gflownet.utils.misc import StrictDataClass
 
 
 @dataclass

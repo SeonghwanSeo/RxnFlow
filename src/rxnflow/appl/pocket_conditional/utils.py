@@ -1,5 +1,5 @@
-from torch import Tensor
 import torch_geometric.data as gd
+from torch import Tensor
 
 
 class PocketDB:

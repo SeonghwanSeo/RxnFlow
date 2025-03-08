@@ -1,26 +1,24 @@
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+
 import torch
 import torch.nn as nn
-
-from collections.abc import Callable
+from pmnet_appl import BaseProxy, get_docking_proxy
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
-from pmnet_appl import get_docking_proxy, BaseProxy
-
 from gflownet import ObjectProperties
-
-from rxnflow.config import Config
-from rxnflow.base import RxnFlowSampler
 from rxnflow.appl.pocket_conditional.model import RxnFlow_SinglePocket
-from rxnflow.appl.pocket_conditional.utils import PocketDB
 from rxnflow.appl.pocket_conditional.reward_function import get_reward_function
 from rxnflow.appl.pocket_conditional.trainer import (
     PocketConditionalTask,
-    PocketConditionalTrainer_SinglePocket,
     PocketConditionalTrainer_MultiPocket,
+    PocketConditionalTrainer_SinglePocket,
 )
+from rxnflow.appl.pocket_conditional.utils import PocketDB
+from rxnflow.base import RxnFlowSampler
+from rxnflow.config import Config
 
 """
 Summary
@@ -109,7 +107,7 @@ class ProxyTrainer_SinglePocket(PocketConditionalTrainer_SinglePocket):
         base.algo.train_random_action_prob = 0.1
 
     def setup_task(self):
-        self.task = ProxyTask_SinglePocket_Fewshot(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = ProxyTask_SinglePocket(cfg=self.cfg, wrap_model=self._wrap_for_mp)
 
     def log(self, info, index, key):
         for obj in self.task.objectives:

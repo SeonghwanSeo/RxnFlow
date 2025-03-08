@@ -1,14 +1,14 @@
 import functools
-from pathlib import Path
+import multiprocessing
 import os
+from pathlib import Path
 
 import numpy as np
-from tqdm import tqdm
-import multiprocessing
-
 from rdkit import Chem
-from rxnflow.envs.reaction import Reaction
+from tqdm import tqdm
+
 from rxnflow.envs.building_block import get_block_features
+from rxnflow.envs.reaction import Reaction
 
 
 def run(args, reactions: list[Reaction]):

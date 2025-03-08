@@ -1,9 +1,10 @@
 import math
+
 import numpy as np
 import torch
 from torch import Tensor
 
-from gflownet.utils.misc import get_worker_device, get_worker_rng
+from gflownet.utils.misc import get_worker_rng
 from rxnflow.config import Config
 from rxnflow.envs.action import RxnActionType
 from rxnflow.envs.env import SynthesisEnv

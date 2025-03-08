@@ -1,11 +1,10 @@
-from dataclasses import field, dataclass
+from dataclasses import dataclass, field
 
 from omegaconf import MISSING
 
 from gflownet import config
 from gflownet.data.config import ReplayConfig
 from gflownet.utils.config import ConditionalsConfig
-
 from rxnflow.algo.config import AlgoConfig
 from rxnflow.models.config import ModelConfig
 from rxnflow.tasks.config import TasksConfig

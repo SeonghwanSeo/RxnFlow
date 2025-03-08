@@ -2,24 +2,23 @@ import copy
 import os
 import pathlib
 import shutil
-
-import torch
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard.writer import SummaryWriter
-from omegaconf import OmegaConf
-from rdkit import RDLogger
-import git
-import wandb
-
 from collections.abc import Callable
 
+import git
+import torch
+from omegaconf import OmegaConf
+from rdkit import RDLogger
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard.writer import SummaryWriter
+
+import wandb
 from gflownet.config import Config
 from gflownet.data.data_source import DataSource
-from gflownet.trainer import Closable
-from gflownet.online_trainer import StandardOnlineTrainer, AvgRewardHook
-from gflownet.utils.misc import set_main_process_device, set_worker_rng_seed
-from gflownet.envs.graph_building_env import GraphBuildingEnv
 from gflownet.data.replay_buffer import ReplayBuffer
+from gflownet.envs.graph_building_env import GraphBuildingEnv
+from gflownet.online_trainer import AvgRewardHook, StandardOnlineTrainer
+from gflownet.trainer import Closable
+from gflownet.utils.misc import set_main_process_device, set_worker_rng_seed
 
 from .sqlite_log import CustomSQLiteLogHook
 

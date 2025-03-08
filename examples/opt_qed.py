@@ -1,10 +1,11 @@
 import torch
+from rdkit.Chem import QED
+from rdkit.Chem import Mol as RDMol
 from torch import Tensor
-from rdkit.Chem import QED, Mol as RDMol
 
 from gflownet import ObjectProperties
+from rxnflow.base import BaseTask, RxnFlowTrainer
 from rxnflow.config import Config, init_empty
-from rxnflow.base import RxnFlowTrainer, BaseTask
 
 
 class QEDTask(BaseTask):

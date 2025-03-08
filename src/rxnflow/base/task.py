@@ -1,15 +1,16 @@
 import torch
 import torch.nn as nn
-
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
-from gflownet import ObjectProperties, LogScalar, GFNTask
+from gflownet import GFNTask, LogScalar, ObjectProperties
 from gflownet.utils import metrics
-from gflownet.utils.conditioning import TemperatureConditional
+from gflownet.utils.conditioning import (
+    FocusRegionConditional,
+    MultiObjectiveWeightedPreferences,
+    TemperatureConditional,
+)
 from gflownet.utils.transforms import to_logreward
-from gflownet.utils.conditioning import FocusRegionConditional, MultiObjectiveWeightedPreferences
-
 from rxnflow.config import Config
 
 

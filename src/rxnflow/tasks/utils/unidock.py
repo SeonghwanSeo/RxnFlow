@@ -1,15 +1,15 @@
-import os
 import multiprocessing
-from pathlib import Path
+import os
 import tempfile
+import warnings
+from pathlib import Path
 
 import numpy as np
-from rdkit import Chem
-from rdkit.Chem.rdDistGeom import srETKDGv3, EmbedMolecule
-from rdkit.Chem import Mol as RDMol, SDWriter
 from openbabel import pybel
-import warnings
-
+from rdkit import Chem
+from rdkit.Chem import Mol as RDMol
+from rdkit.Chem import SDWriter
+from rdkit.Chem.rdDistGeom import EmbedMolecule, srETKDGv3
 from unidock_tools.application.proteinprep import pdb2pdbqt
 from unidock_tools.application.unidock_pipeline import UniDock
 
@@ -30,7 +30,9 @@ class VinaReward:
             self.center = self.get_mol_center(ref_ligand_path)
         else:
             if ref_ligand_path is not None:
-                warnings.warn("Both `center` and `ref_ligand_path` are given, so the reference ligand is ignored")
+                warnings.warn(
+                    "Both `center` and `ref_ligand_path` are given, so the reference ligand is ignored", stacklevel=2
+                )
             self.center = center
         self.size = size
         self.search_mode = search_mode

@@ -1,14 +1,16 @@
 from functools import cached_property
 from pathlib import Path
+
 import numpy as np
 from numpy.typing import NDArray
 from rdkit import Chem, RDLogger
 from rdkit.Chem import Mol as RDMol
 
 from gflownet.envs.graph_building_env import Graph, GraphBuildingEnv
+
+from .action import Protocol, RxnAction, RxnActionType
 from .reaction import BiReaction, Reaction, UniReaction
-from .action import RxnAction, RxnActionType, Protocol
-from .retrosynthesis import RetroSyntheticAnalyzer, MultiRetroSyntheticAnalyzer
+from .retrosynthesis import MultiRetroSyntheticAnalyzer
 
 logger = RDLogger.logger()
 RDLogger.DisableLog("rdApp.*")

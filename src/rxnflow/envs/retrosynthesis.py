@@ -1,11 +1,12 @@
-import copy
 import concurrent.futures
+import copy
+from collections.abc import Iterable
 from concurrent.futures import ProcessPoolExecutor
 from typing import Self
-from rdkit import Chem
-from collections.abc import Iterable
 
-from rxnflow.envs.action import Protocol, RxnActionType, RxnAction
+from rdkit import Chem
+
+from rxnflow.envs.action import Protocol, RxnAction, RxnActionType
 
 
 class RetroSynthesisTree:

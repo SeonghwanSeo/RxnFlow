@@ -2,7 +2,7 @@ import torch
 import torch_geometric.data as gd
 from torch import Tensor
 
-from gflownet.envs.graph_building_env import GraphActionCategorical, ActionIndex
+from gflownet.envs.graph_building_env import ActionIndex, GraphActionCategorical
 from rxnflow.envs.action import Protocol, RxnActionType
 from rxnflow.envs.env_context import SynthesisEnvContext
 from rxnflow.policy.action_space_subsampling import SubsamplingPolicy
@@ -35,7 +35,7 @@ class RxnActionCategorical(GraphActionCategorical):
         self.emb: Tensor = emb
         self.logit_scale: Tensor = logit_scale
         self._protocol_masks: list[Tensor] = protocol_masks
-        self.dev = dev = self.emb.device
+        self.dev = self.emb.device
 
         # NOTE: action subsampling
         subsampler: SubsamplingPolicy = get_worker_env("action_subsampler")

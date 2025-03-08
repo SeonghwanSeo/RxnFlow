@@ -1,10 +1,9 @@
 import time
 
-from rxnflow.config import Config, init_empty
-from rxnflow.base import RxnFlowSampler
-
 from opt_qed import QEDTask
 
+from rxnflow.base import RxnFlowSampler
+from rxnflow.config import Config, init_empty
 
 # NOTE: example setting
 NUM_SAMPLES = 200

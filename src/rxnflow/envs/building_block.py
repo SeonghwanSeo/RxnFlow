@@ -1,6 +1,5 @@
 import numpy as np
 from numpy.typing import NDArray
-
 from rdkit import Chem
 from rdkit.Chem import Crippen, MACCSkeys, rdMolDescriptors
 from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator

@@ -1,21 +1,20 @@
+from collections.abc import Callable
 from pathlib import Path
+
 import torch
 import torch.nn as nn
-
-from collections.abc import Callable
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
 from gflownet import ObjectProperties
-from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.data.data_source import DataSource
+from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.utils.misc import get_worker_rng
-
-from rxnflow.config import Config
-from rxnflow.base import BaseTask, RxnFlowTrainer
-from rxnflow.appl.pocket_conditional.model import RxnFlow_PocketConditional, RxnFlow_SinglePocket, RxnFlow_MultiPocket
-from rxnflow.appl.pocket_conditional.utils import PocketDB
+from rxnflow.appl.pocket_conditional.model import RxnFlow_MultiPocket, RxnFlow_PocketConditional, RxnFlow_SinglePocket
 from rxnflow.appl.pocket_conditional.pocket.data import generate_protein_data
+from rxnflow.appl.pocket_conditional.utils import PocketDB
+from rxnflow.base import BaseTask, RxnFlowTrainer
+from rxnflow.config import Config
 
 
 class PocketConditionalTask(BaseTask):

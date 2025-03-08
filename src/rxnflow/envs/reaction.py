@@ -1,7 +1,6 @@
 from rdkit import Chem
-from rdkit.Chem.rdChemReactions import ChemicalReaction, ReactionFromSmarts
-
 from rdkit.Chem import Mol as RDMol
+from rdkit.Chem.rdChemReactions import ChemicalReaction, ReactionFromSmarts
 
 
 class Reaction:
@@ -158,9 +157,9 @@ def _run_reaction_smi(
             try:
                 mol = Chem.RemoveHs(mol, updateExplicitCount=True)
                 smi = Chem.MolToSmiles(mol)
-                smi = smi.replace("[C]", "C").replace("[N]", "N").replace("[CH]", "C")
-            except:
+            except Exception:
                 break
+            smi = smi.replace("[C]", "C").replace("[N]", "N").replace("[CH]", "C")
             _ps.append(smi)
         if len(_ps) == num_products:
             refine_ps.append(tuple(_ps))

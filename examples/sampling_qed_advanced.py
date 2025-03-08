@@ -1,7 +1,7 @@
 import numpy as np
+from sampling_qed import QEDSampler
 
 from rxnflow.config import Config, init_empty
-from sampling_qed import QEDSampler
 
 # NOTE: example setting
 NUM_SAMPLES = 128

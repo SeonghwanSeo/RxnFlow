@@ -1,16 +1,14 @@
 import numpy as np
 import torch
+from rdkit.Chem import QED
+from rdkit.Chem import Mol as RDMol
 from torch import Tensor
-from rdkit.Chem import Mol as RDMol, QED
 
 from gflownet import ObjectProperties
-
 from rxnflow.config import Config, init_empty
-from rxnflow.base import RxnFlowTrainer
-from rxnflow.utils.misc import create_logger
-
 from rxnflow.tasks.unidock_vina import VinaTask
 from rxnflow.tasks.utils.chem_metrics import mol2qed, mol2sascore
+from script.opt_unidock import VinaTrainer
 
 aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
 
@@ -53,23 +51,24 @@ class VinaMOOTask(VinaTask):
         super().update_storage(pass_objs, pass_vina_scores)
 
 
-class VinaMOOTrainer(RxnFlowTrainer):
+class VinaMOOTrainer(VinaTrainer):
     task: VinaMOOTask
 
     def set_default_hps(self, base: Config):
         super().set_default_hps(base)
         base.task.moo.objectives = ["vina", "qed"]
+        base.task.constraint.rule = None
         base.num_training_steps = 1000
         base.validate_every = 0
 
         base.algo.train_random_action_prob = 0.05
-        base.algo.action_subsampling.sampling_ratio = 0.05
+        base.algo.action_subsampling.sampling_ratio = 0.02
 
         base.cond.temperature.sample_dist = "uniform"
         base.cond.temperature.dist_params = [0.0, 64.0]
         base.replay.use = True
-        base.replay.warmup = 128
-        base.replay.capacity = 6_400
+        base.replay.capacity = 64 * 100
+        base.replay.warmup = 64 * 5
 
         # for training step = 1000
         base.opt.learning_rate = 1e-4
@@ -79,10 +78,6 @@ class VinaMOOTrainer(RxnFlowTrainer):
 
     def setup_task(self):
         self.task = VinaMOOTask(self.cfg)
-
-    def log(self, info, index, key):
-        self.add_extra_info(info)
-        super().log(info, index, key)
 
     def add_extra_info(self, info):
         for obj, v in self.task.avg_reward_info:
@@ -100,7 +95,7 @@ if __name__ == "__main__":
     config = init_empty(Config())
     config.print_every = 1
     config.num_training_steps = 100
-    config.log_dir = "./logs/debug-vina/"
+    config.log_dir = "./logs/debug-vina-moo/"
     config.env_dir = "./data/envs/stock"
     config.overwrite_existing_exp = True
 
@@ -109,7 +104,4 @@ if __name__ == "__main__":
     config.task.docking.center = (1.872, -8.260, -1.361)
 
     trial = VinaMOOTrainer(config)
-
-    # to prevent unidock double logging
-    logger = create_logger()
-    trial.run(logger)
+    trial.run()

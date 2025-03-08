@@ -1,13 +1,13 @@
 from collections.abc import Callable
+
 import torch
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor, nn
 
 from gflownet import ObjectProperties
 from gflownet.models import bengio2021flow
-from rxnflow.config import Config, init_empty
-
 from gflownet.tasks.seh_frag_moo import aux_tasks
+from rxnflow.config import Config, init_empty
 from rxnflow.tasks.seh import SEHTask, SEHTrainer
 
 

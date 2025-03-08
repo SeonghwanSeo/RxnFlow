@@ -1,11 +1,11 @@
 from __future__ import annotations
-import torch
-from rdkit import Chem
-from torch import Tensor
-from rdkit.Chem import Mol as RDMol
 
+import torch
 from pmnet_appl.base import BaseProxy
 from pmnet_appl.tacogfn_reward import TacoGFN_Proxy
+from rdkit import Chem
+from rdkit.Chem import Mol as RDMol
+from torch import Tensor
 
 from rxnflow.tasks.utils import chem_metrics
 

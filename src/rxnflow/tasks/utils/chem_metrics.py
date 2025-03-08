@@ -1,9 +1,7 @@
 import numpy as np
 import torch
-
 from rdkit import Chem, DataStructs
 from rdkit.Chem import QED
-
 from rdkit.Chem import Mol as RDMol
 
 from gflownet.utils import sascore

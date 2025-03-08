@@ -1,21 +1,20 @@
-import numpy as np
-import torch
-from omegaconf import OmegaConf
-
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
+
+import numpy as np
+import torch
+from omegaconf import OmegaConf
 from torch import Tensor
 
-from gflownet.utils.misc import set_main_process_device, set_worker_rng_seed, get_worker_rng
+from gflownet.utils.misc import get_worker_rng, set_main_process_device, set_worker_rng_seed
 from gflownet.utils.transforms import thermometer
-
-from rxnflow.config import Config
-from rxnflow.utils.misc import set_worker_env
 from rxnflow.algo.trajectory_balance import SynthesisTB
+from rxnflow.base.task import BaseTask
+from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnv, SynthesisEnvContext
 from rxnflow.models.gfn import RxnFlow
-from rxnflow.base.task import BaseTask
+from rxnflow.utils.misc import set_worker_env
 
 """
 config = init_empty(Config())

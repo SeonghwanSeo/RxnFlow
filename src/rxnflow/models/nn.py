@@ -34,7 +34,6 @@ def mlp(
         if norm:
             layers.append(nn.LayerNorm(d_out))
         layers.append(act())
-        if dropout > 0:
-            layers.append(nn.Dropout(dropout))
+        layers.append(nn.Dropout(dropout))
     layers.append(nn.Linear(n_hid, n_out))
     return nn.Sequential(*layers)

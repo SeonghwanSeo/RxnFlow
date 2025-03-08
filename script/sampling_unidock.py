@@ -1,12 +1,13 @@
-import tempfile
 import os
+import tempfile
+import time
 from argparse import ArgumentParser
 from pathlib import Path
-import time
+
+from _utils import get_center
 
 from rxnflow.config import Config, init_empty
-from rxnflow.tasks.unidock import UniDockSampler
-from utils import get_center
+from rxnflow.tasks.unidock_vina import VinaSampler
 
 
 def parse_args():
@@ -63,7 +64,7 @@ def run(args):
     # NOTE: Run
     with tempfile.TemporaryDirectory() as tempdir:
         config.log_dir = tempdir
-        sampler = UniDockSampler(config, ckpt_path, device)
+        sampler = VinaSampler(config, ckpt_path, device)
         tick_st = time.time()
         res = sampler.sample(args.num_samples, calc_reward=save_reward)
         tick_end = time.time()

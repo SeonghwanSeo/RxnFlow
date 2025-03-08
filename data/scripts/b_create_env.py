@@ -2,7 +2,6 @@ import argparse
 
 from _b_smi_to_env import get_block_data
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Subsample building blocks")
     parser.add_argument(

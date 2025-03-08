@@ -29,7 +29,7 @@ class ModelConfig(StrictDataClass):
 
     num_mlp_layers: int = 2
     num_emb: int = 128
-    dropout: float = 0.1
     num_mlp_layers_block: int = 1
     num_emb_block: int = 64
+    dropout: float = 0.0
     graph_transformer: GraphTransformerConfig = field(default_factory=GraphTransformerConfig)

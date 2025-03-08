@@ -1,9 +1,9 @@
-import torch
 from pathlib import Path
+
+import torch
 from tqdm import tqdm
 
 from rxnflow.appl.pocket_conditional.pocket.data import generate_protein_data
-
 
 ROOT_DIR = Path("./experiments/CrossDocked2020/")
 

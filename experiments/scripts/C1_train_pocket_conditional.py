@@ -1,7 +1,8 @@
-import wandb
 from omegaconf import OmegaConf
-from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
+
+import wandb
 from rxnflow.config import Config, init_empty
+from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
 
 if __name__ == "__main__":
 

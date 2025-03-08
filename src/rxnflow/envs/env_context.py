@@ -1,16 +1,18 @@
 import json
 from collections import OrderedDict
+
 import numpy as np
 import torch
-from torch import Tensor
 import torch_geometric.data as gd
-from rdkit.Chem import BondType, ChiralType, Mol as RDMol
+from rdkit.Chem import BondType, ChiralType
+from rdkit.Chem import Mol as RDMol
+from torch import Tensor
 
-from gflownet.envs.graph_building_env import GraphBuildingEnvContext, ActionIndex
+from gflownet.envs.graph_building_env import ActionIndex, GraphBuildingEnvContext
 from rxnflow.envs.building_block import MOL_PROPERTY_DIM, get_mol_features
-from .action import RxnAction, RxnActionType, Protocol
-from .env import SynthesisEnv, MolGraph
 
+from .action import Protocol, RxnAction, RxnActionType
+from .env import MolGraph, SynthesisEnv
 
 DEFAULT_ATOMS: list[str] = ["B", "C", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
 DEFAULT_ATOM_CHARGE_RANGE = [-1, 0, 1]

@@ -4,11 +4,11 @@ from _utils import get_center
 
 import wandb
 from rxnflow.config import Config, init_empty
-from rxnflow.tasks.unidock_vina import VinaTrainer
+from rxnflow.tasks.unidock_vina_mogfn import VinaMOGFNTrainer
 
 
 def parse_args():
-    parser = ArgumentParser("RxnFlow", description="Vina optimization with GPU-accelerated UniDock")
+    parser = ArgumentParser("RxnFlow", description="Vina-QED multi-objective optimization with GPU-accelerated UniDock")
     opt_cfg = parser.add_argument_group("Protein Config")
     opt_cfg.add_argument("-p", "--protein", type=str, required=True, help="Protein PDB Path")
     opt_cfg.add_argument("-c", "--center", nargs="+", type=float, help="Pocket Center (--center X Y Z)")
@@ -27,9 +27,6 @@ def parse_args():
         help="Number of Oracles (64 molecules per oracle; default: 1000)",
     )
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
-    run_cfg.add_argument(
-        "--filter", type=str, default="lipinski", help="Drug Filter", choices=["null", "lipinski", "veber"]
-    )
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
@@ -58,9 +55,9 @@ def run(args):
     if args.debug:
         config.overwrite_existing_exp = True
     if args.wandb is not None:
-        wandb.init(project="rxnflow", name=args.wandb, group="unidock")
+        wandb.init(project="rxnflow", name=args.wandb, group="unidock-mogfn")
 
-    trainer = VinaTrainer(config)
+    trainer = VinaMOGFNTrainer(config)
     trainer.run()
     trainer.terminate()
 
@@ -72,9 +69,4 @@ if __name__ == "__main__":
         args.center = get_center(args.ref_ligand)
     else:
         assert len(args.center) == 3, "--center need three values: X Y Z"
-    if args.size is not None:
-        assert len(args.size) in [1, 3], "--center need one or three values: X Y Z"
-        if len(args.size) == 1:
-            v = args.size[0]
-            args.size = [v, v, v]
     run(args)

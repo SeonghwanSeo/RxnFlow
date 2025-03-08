@@ -1,9 +1,9 @@
 import sys
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-from pathlib import Path
-from rdkit import Chem, DataStructs
-from rdkit import RDLogger
+from rdkit import Chem, DataStructs, RDLogger
 
 RDLogger.DisableLog("rdApp.*")
 

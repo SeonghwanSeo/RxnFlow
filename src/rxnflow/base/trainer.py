@@ -1,15 +1,17 @@
 import socket
 from pathlib import Path
-import torch
-import torch_geometric.data as gd
 from typing import Any
 
+import torch
+import torch_geometric.data as gd
+from omegaconf import OmegaConf
+
+import wandb
 from gflownet.algo.config import Backward
 from gflownet.utils.multiobjective_hooks import MultiObjectiveStatsHook
-
+from rxnflow.algo.trajectory_balance import SynthesisTB
 from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnv, SynthesisEnvContext
-from rxnflow.algo.trajectory_balance import SynthesisTB
 from rxnflow.models.gfn import RxnFlow
 from rxnflow.utils.misc import set_worker_env
 
@@ -116,9 +118,16 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
 
+    def run(self, logger=None):
+        if wandb.run is not None:
+            wandb.config.update({"config": OmegaConf.to_container(self.cfg)})
+        super().run(logger)
+
     def terminate(self):
         super().terminate()
         self.env.retro_analyzer.pool.shutdown(wait=True, cancel_futures=True)
+        if wandb.run is not None:
+            wandb.finish()
 
     def load_checkpoint(self, checkpoint_path: str | Path):
         state = torch.load(checkpoint_path, map_location="cpu")

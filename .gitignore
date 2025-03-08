@@ -11,6 +11,7 @@ slurm*
 **/result/
 **/unidock_20*
 typings/
+job*
 
 # UV
 uv.lock

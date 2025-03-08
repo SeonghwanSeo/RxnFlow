@@ -3,10 +3,9 @@ import torch_geometric.data as gd
 from torch import Tensor
 from torch_scatter import scatter
 
-from gflownet.algo.trajectory_balance import TrajectoryBalance, TrajectoryBalanceModel, shift_right
 from gflownet.algo.config import Backward, NLoss, TBVariant
-
 from gflownet.algo.graph_sampling import GraphSampler
+from gflownet.algo.trajectory_balance import TrajectoryBalance, TrajectoryBalanceModel, shift_right
 from gflownet.config import Config
 from gflownet.envs.graph_building_env import (
     GraphActionCategorical,
@@ -252,7 +251,7 @@ class CustomTB(TrajectoryBalance):
             # Life is pain, log_p_B is one unit too short for all trajs
 
             log_p_B_unif = torch.zeros_like(log_p_B)
-            for i, (s, e) in enumerate(zip(first_graph_idx, traj_cumlen)):
+            for i, (s, e) in enumerate(zip(first_graph_idx, traj_cumlen, strict=False)):
                 log_p_B_unif[s : e - 1] = batch.log_p_B[s - i : e - 1 - i]
 
             if self.cfg.backward_policy == Backward.Uniform:

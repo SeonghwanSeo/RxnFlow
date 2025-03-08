@@ -1,23 +1,22 @@
 import socket
-from pathlib import Path
 from collections import OrderedDict
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch import Tensor
 from rdkit import Chem
-from rdkit.Chem import Mol as RDMol, QED
+from rdkit.Chem import QED
+from rdkit.Chem import Mol as RDMol
+from synbench import RewardModule
+from torch import Tensor
 
 from gflownet import ObjectProperties
 from gflownet.algo.config import Backward
-
-from rxnflow.config import Config, init_empty
 from rxnflow.base import BaseTask, RxnFlowTrainer
+from rxnflow.config import Config, init_empty
 from rxnflow.utils.misc import create_logger
-
-from synbench import RewardModule
 
 
 class BenchmarkTask(BaseTask):

@@ -1,25 +1,25 @@
 import socket
-from pathlib import Path
 from collections import OrderedDict
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
-from torch import Tensor
 from rdkit import Chem
-from rdkit.Chem import Mol as RDMol, QED
+from rdkit.Chem import QED
+from rdkit.Chem import Mol as RDMol
+from torch import Tensor
 
 from gflownet import ObjectProperties
-from gflownet.models import bengio2021flow
 from gflownet.config import Config, init_empty
-from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.envs.frag_mol_env import FragMolBuildingEnvContext
+from gflownet.models import bengio2021flow
+from gflownet.online_trainer import StandardOnlineTrainer
 from gflownet.utils.misc import create_logger
-
 from rxnflow.base import BaseTask
-from rxnflow.tasks.utils.unidock import VinaReward
 from rxnflow.tasks.utils.chem_metrics import mol2qed, mol2sascore
+from rxnflow.tasks.utils.unidock import VinaReward
 
 aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
 

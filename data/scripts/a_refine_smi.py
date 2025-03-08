@@ -1,9 +1,9 @@
-from pathlib import Path
 import argparse
-from tqdm import tqdm
 import multiprocessing
+from pathlib import Path
 
 from _a_refine import get_clean_smiles
+from tqdm import tqdm
 
 
 def main(block_path: str, save_block_path: str, num_cpus: int):

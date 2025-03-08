@@ -5,12 +5,12 @@ from torch import Tensor
 from gflownet.utils.misc import get_worker_device
 from rxnflow.config import Config
 from rxnflow.envs import SynthesisEnvContext
-from rxnflow.policy import RxnActionCategorical
 from rxnflow.models.gfn import RxnFlow
+from rxnflow.policy import RxnActionCategorical
 from rxnflow.utils.misc import get_worker_env
 
-from .utils import PocketDB
 from .pocket.gvp import GVP_embedding
+from .utils import PocketDB
 
 
 class RxnFlow_PocketConditional(RxnFlow):

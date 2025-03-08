@@ -1,8 +1,10 @@
 from argparse import ArgumentParser
-import wandb
+
 from omegaconf import OmegaConf
-from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
+
+import wandb
 from rxnflow.config import Config, init_empty
+from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
 
 
 def parse_args():
@@ -53,7 +55,7 @@ def run(args):
     trainer = ProxyTrainer_MultiPocket(config)
 
     if args.wandb:
-        wandb.init()
+        wandb.init(project="rxnflow", name=args.wandb, group="pocket-conditional")
         wandb.config.update({"config": OmegaConf.to_container(trainer.cfg)})
         trainer.run()
         wandb.finish()

@@ -1,11 +1,10 @@
 from argparse import ArgumentParser
-import wandb
-from omegaconf import OmegaConf
 
+from _utils import get_center
+
+import wandb
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.unidock_vina_moo import VinaMOOTrainer
-from rxnflow.utils.misc import create_logger
-from utils import get_center
 
 
 def parse_args():
@@ -31,8 +30,8 @@ def parse_args():
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
-        default=0.01,
-        help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.01)",
+        default=0.05,
+        help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.05)",
     )
     run_cfg.add_argument("--wandb", type=str, help="wandb job name")
     run_cfg.add_argument("--debug", action="store_true", help="For debugging option")
@@ -42,26 +41,25 @@ def parse_args():
 def run(args):
     config = init_empty(Config())
     config.env_dir = args.env_dir
-    config.task.docking.protein_path = args.protein
-    config.task.docking.center = tuple(args.center)
-    config.task.docking.size = tuple(args.size)
-    config.num_training_steps = args.num_oracles
-    config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
     config.log_dir = args.out_dir
     config.print_every = 1
+    config.num_training_steps = args.num_oracles
+    config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
+
+    # docking info
+    config.task.docking.protein_path = args.protein
+    config.task.constraint.rule = args.filter
+    config.task.docking.center = tuple(args.center)
+    config.task.docking.size = tuple(args.size)
+
     if args.debug:
         config.overwrite_existing_exp = True
+    if args.wandb is not None:
+        wandb.init(project="rxnflow", name=args.wandb, group="unidock-mogfn")
 
     trainer = VinaMOOTrainer(config)
-    logger = create_logger()  # non-propagate version
-
-    if args.wandb is not None:
-        wandb.init(project="rxnflow_unidock", name=args.wandb)
-        wandb.config.update({"config": OmegaConf.to_container(trainer.cfg)})
-        trainer.run(logger)
-        wandb.finish()
-    else:
-        trainer.run(logger)
+    trainer.run()
+    trainer.terminate()
 
 
 if __name__ == "__main__":

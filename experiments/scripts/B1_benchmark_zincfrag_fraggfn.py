@@ -1,10 +1,10 @@
 import os
 import sys
-import wandb
+
 from omegaconf import OmegaConf
 
-from rxnflow.tasks.drug_benchmark_frag import BenchmarkTrainer, Config, init_empty, create_logger
-
+import wandb
+from rxnflow.tasks.drug_benchmark_frag import BenchmarkTrainer, Config, create_logger, init_empty
 
 TARGET_DIR = "./data/experiments/LIT-PCBA"
 

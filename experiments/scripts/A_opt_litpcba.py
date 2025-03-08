@@ -1,10 +1,11 @@
 from argparse import ArgumentParser
 from pathlib import Path
-import wandb
+
 from omegaconf import OmegaConf
 
-from rxnflow.tasks.drug_benchmark_moo import BenchmarkTrainer
+import wandb
 from rxnflow.config import Config, init_empty
+from rxnflow.tasks.drug_benchmark_moo import BenchmarkTrainer
 from rxnflow.utils.misc import create_logger
 
 TARGET_DIR = Path("./data/experiments/LIT-PCBA")

@@ -42,19 +42,14 @@ pmnet = ["pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git"]
 line-length = 120
 target-version = ["py312"]
 
+[tool.isort]
+profile = "black"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
 [tool.ruff.lint]
-select = ["E", "F", "B", "UP", "T203"]
+select = ["E", "F", "B", "UP", "T203", "I"]
 ignore = ["E501"]
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = [
-  "F401", # imported but unused
-  "E402", # Module level import not at top of file
-]
-
-[tool.basedpyright]
-pythonVersion = "3.12"
-typeCheckingMode = "standard"
-include = ["src/"]
+"__init__.py" = ["F401", "E402"]

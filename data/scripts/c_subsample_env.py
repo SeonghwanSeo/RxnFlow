@@ -1,8 +1,9 @@
 import argparse
 import os
-from pathlib import Path
-import numpy as np
 import random
+from pathlib import Path
+
+import numpy as np
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Subsample building blocks")

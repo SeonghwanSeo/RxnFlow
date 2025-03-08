@@ -6,10 +6,10 @@ from rdkit.Chem import Mol as RDMol
 from torch import Tensor, nn
 
 from gflownet import ObjectProperties
-from gflownet.utils.misc import get_worker_device
 from gflownet.models import bengio2021flow
-from rxnflow.config import Config, init_empty
+from gflownet.utils.misc import get_worker_device
 from rxnflow.base import BaseTask, RxnFlowTrainer
+from rxnflow.config import Config, init_empty
 
 
 class SEHTask(BaseTask):

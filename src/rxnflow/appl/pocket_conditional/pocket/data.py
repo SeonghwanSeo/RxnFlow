@@ -1,12 +1,12 @@
-from pathlib import Path
-import numpy as np
-from Bio.PDB.PDBParser import PDBParser
 import math
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn.functional as F
-from torch_geometric.data import Data
 import torch_cluster
-
+from Bio.PDB.PDBParser import PDBParser
+from torch_geometric.data import Data
 
 __all__ = ["generate_protein_graph", "generate_protein_data"]
 

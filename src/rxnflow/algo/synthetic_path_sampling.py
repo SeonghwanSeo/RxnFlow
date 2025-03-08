@@ -1,5 +1,6 @@
 import copy
 import math
+
 import torch
 from torch import Tensor
 from torch_geometric import data as gd
@@ -7,8 +8,7 @@ from torch_geometric import data as gd
 from gflownet.algo.graph_sampling import GraphSampler
 from gflownet.envs.graph_building_env import ActionIndex, Graph
 from gflownet.utils.misc import get_worker_device, get_worker_rng
-
-from rxnflow.envs import SynthesisEnv, SynthesisEnvContext, MolGraph, RxnActionType, RxnAction
+from rxnflow.envs import MolGraph, RxnAction, RxnActionType, SynthesisEnv, SynthesisEnvContext
 from rxnflow.envs.retrosynthesis import MultiRetroSyntheticAnalyzer, RetroSynthesisTree
 from rxnflow.models.gfn import RxnFlow
 from rxnflow.policy.action_categorical import RxnActionCategorical
