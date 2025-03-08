@@ -23,25 +23,33 @@ We support two building block libraries.
 1. Refine Building Blocks
 
 ```bash
-# ZINCFrag
+# ZINCFrag (200k building blocks)
 cd building_blocks
-gdown 1CHFACwJ_bqJEXxjWI-B7zryTMO52R43V # if it fails, gdown --id 1CHFACwJ_bqJEXxjWI-B7zryTMO52R43V
-gzip -d zincfrag.smi.gz
+gdown 16N8Xyxr9a-CifjIofgdH3ssFukC4Eh_V # if it fails, gdown --id 16N8Xyxr9a-CifjIofgdH3ssFukC4Eh_V
 
 # Enamine Comprehensive Catalog
-python scripts/a_enamine_catalog_to_smi.py -b `CATALOG_SDF` -o envs/enamine_catalog.smi --cpu `CPU`
+python scripts/a_enamine_catalog_to_smi.py -b `CATALOG_SDF` -o building_blocks/enamine_catalog.smi --cpu `CPU`
 
 # Enamine Stock
-python scripts/a_enamine_stock_to_smi.py -b `STOCK_SDF` -o envs/enamine_stock.smi --cpu `CPU`
+python scripts/a_enamine_stock_to_smi.py -b `STOCK_SDF` -o building_blocks/enamine_stock.smi --cpu `CPU`
 
 # Custom smiles
-python scripts/a_refine_smi.py -b `CUSTOM_SMI` -o envs/custom_block.smi --cpu `CPU`
+python scripts/a_refine_smi.py -b `CUSTOM_SMI` -o building_blocks/custom_block.smi --cpu `CPU`
 ```
 
 2. Create Environment
 
 ```bash
 python scripts/b_create_env.py -b `SMI-FILE` -o ./envs/`ENV` -t ./templates/real.txt --cpu `CPU`
+
+# ZINCFrag-10k (for debugging)
+python scripts/b_create_env.py -b ./building_blocks/zincfrag_10k.smi.gz -o ./envs/zincfrag-debug --cpu `CPU`
+
+# ZINCFrag
+python scripts/b_create_env.py -b ./building_blocks/zincfrag.smi.gz -o ./envs/zincfrag --cpu `CPU`
+
+# Enamine Comprehensive Catalog
+python scripts/b_create_env.py -b ./building_blocks/enamine_catalog.smi -o envs/catalog --cpu `CPU`
 ```
 
 ## Experimental Dataset
@@ -51,7 +59,7 @@ Place them at `experiments/`.
 
 ### LIT-PCBA optimization
 
-From https://drugdesign.unistra.fr/LIT-PCBA/
+From <https://drugdesign.unistra.fr/LIT-PCBA/>
 
 | Target     | PDB ID | Center                |
 | ---------- | ------ | --------------------- |
@@ -75,7 +83,7 @@ From https://drugdesign.unistra.fr/LIT-PCBA/
 
 ### SBDD optimization (zero-shot sampling with pocket-conditioning)
 
-From https://github.com/gnina/models/tree/master/data/CrossDocked2020
+From <https://github.com/gnina/models/tree/master/data/CrossDocked2020>
 
 (15,201 training pockets + 100 test pockets.)
 

@@ -1,7 +1,5 @@
 from argparse import ArgumentParser
 
-from _utils import get_center
-
 import wandb
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.unidock_vina_moo import VinaMOOTrainer
@@ -18,6 +16,7 @@ def parse_args():
     )
 
     run_cfg = parser.add_argument_group("Operation Config")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument("-o", "--out_dir", type=str, required=True, help="Output directory")
     run_cfg.add_argument(
         "-n",
@@ -26,7 +25,6 @@ def parse_args():
         default=1000,
         help="Number of Oracles (64 molecules per oracle; default: 1000)",
     )
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
@@ -39,6 +37,14 @@ def parse_args():
 
 
 def run(args):
+    from _utils import get_center
+
+    assert (args.center is not None) or (args.ref_ligand is not None), "--center or --ref_ligand is required"
+    if args.center is None:
+        args.center = get_center(args.ref_ligand)
+    else:
+        assert len(args.center) == 3, "--center need three values: X Y Z"
+
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
@@ -64,9 +70,4 @@ def run(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    assert (args.center is not None) or (args.ref_ligand is not None), "--center or --ref_ligand is required"
-    if args.center is None:
-        args.center = get_center(args.ref_ligand)
-    else:
-        assert len(args.center) == 3, "--center need three values: X Y Z"
     run(args)

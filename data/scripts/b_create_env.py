@@ -8,7 +8,7 @@ if __name__ == "__main__":
         "-b",
         "--building_block_path",
         type=str,
-        help="Path to input enamine building block file (.smi)",
+        help="Path to input enamine building block file (.smi | .smi.gz)",
         default="./building_blocks/enamine_catalog.smi",
     )
     parser.add_argument(

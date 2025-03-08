@@ -1,8 +1,6 @@
-from collections.abc import Callable
 from pathlib import Path
 
 import torch
-import torch.nn as nn
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
 
@@ -20,8 +18,8 @@ from rxnflow.config import Config
 class PocketConditionalTask(BaseTask):
     """Sets up a task where the reward is computed using a Proxy, QED."""
 
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        super().__init__(cfg, wrap_model)
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         self.pocket_db: PocketDB
         self.objectives = cfg.task.moo.objectives
         self.setup_pocket_db()

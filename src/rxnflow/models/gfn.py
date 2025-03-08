@@ -119,6 +119,9 @@ class RxnFlow(TrajectoryBalanceModel):
             raise NotImplementedError
         return fwd_cat, graph_out
 
+    def block_embedding(self, block: tuple[Tensor, Tensor]) -> Tensor:
+        return self.emb_block(block)
+
     def hook_firstblock(
         self,
         emb: Tensor,
@@ -142,7 +145,7 @@ class RxnFlow(TrajectoryBalanceModel):
             shape: [Nstate, Nblock]
         """
         state_emb = self.mlp_mdp["firstblock"](emb)
-        block_emb = self.emb_block(block)
+        block_emb = self.block_embedding(block)
         return state_emb @ block_emb.T
 
     def hook_birxn(
@@ -172,7 +175,7 @@ class RxnFlow(TrajectoryBalanceModel):
         """
         emb = emb + self.emb_birxn[protocol].view(1, -1)
         state_emb = self.mlp_mdp["birxn"](self.act_mdp(emb))
-        block_emb = self.emb_block(block)
+        block_emb = self.block_embedding(block)
         return state_emb @ block_emb.T
 
     def hook_stop(self, emb: Tensor):

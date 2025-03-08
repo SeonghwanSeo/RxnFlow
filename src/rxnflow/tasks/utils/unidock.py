@@ -14,6 +14,14 @@ from unidock_tools.application.proteinprep import pdb2pdbqt
 from unidock_tools.application.unidock_pipeline import UniDock
 
 
+def get_mol_center(ligand_path: str | Path) -> tuple[float, float, float]:
+    format = Path(ligand_path).suffix[1:]
+    pbmol: pybel.Molecule = next(pybel.readfile(format, str(ligand_path)))
+    coords = [atom.coords for atom in pbmol.atoms]
+    x, y, z = np.mean(coords, 0).tolist()
+    return round(x, 2), round(y, 2), round(z, 2)
+
+
 class VinaReward:
     def __init__(
         self,
@@ -27,7 +35,7 @@ class VinaReward:
         self.protein_pdb_path: Path = Path(protein_pdb_path)
         if center is None:
             assert ref_ligand_path is not None, "reference ligand path is required"
-            self.center = self.get_mol_center(ref_ligand_path)
+            self.center = get_mol_center(ref_ligand_path)
         else:
             if ref_ligand_path is not None:
                 warnings.warn(
@@ -70,14 +78,6 @@ class VinaReward:
     def run_mols(self, mol_list: list[RDMol], save_path: str | Path | None = None) -> list[float]:
         smiles_list = [Chem.MolToSmiles(mol) for mol in mol_list]
         return self.run_smiles(smiles_list, save_path)
-
-    @staticmethod
-    def get_mol_center(ligand_path: str | Path) -> tuple[float, float, float]:
-        format = Path(ligand_path).suffix[1:]
-        pbmol: pybel.Molecule = next(pybel.readfile(format, str(ligand_path)))
-        coords = [atom.coords for atom in pbmol.atoms]
-        x, y, z = np.mean(coords, 0).tolist()
-        return round(x, 2), round(y, 2), round(z, 2)
 
 
 def docking(

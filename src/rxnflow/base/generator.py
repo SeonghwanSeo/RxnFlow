@@ -34,7 +34,6 @@ samples[0]['info'] = {'beta': <beta> ...}
 
 class RxnFlowSampler:
     model: RxnFlow
-    sampling_model: RxnFlow
     env: SynthesisEnv
     ctx: SynthesisEnvContext
     task: BaseTask
@@ -67,10 +66,7 @@ class RxnFlowSampler:
 
         self.device = torch.device(device)
         self.setup()
-        if "sampling_models_state_dict" in state:
-            self.sampling_model.load_state_dict(state["sampling_models_state_dict"][0])
-        else:
-            self.sampling_model.load_state_dict(state["models_state_dict"][0])
+        self.model.load_state_dict(state["models_state_dict"][0])
         del state
 
         self.sample_dist = self.default_cfg.cond.temperature.sample_dist
@@ -149,8 +145,11 @@ class RxnFlowSampler:
         self.algo = SynthesisTB(self.env, self.ctx, self.cfg)
 
     def setup(self):
-        self.rng = np.random.default_rng(142857)
+        torch.manual_seed(self.cfg.seed)
+        if self.device == "cuda":
+            torch.cuda.manual_seed(self.cfg.seed)
         set_worker_rng_seed(self.cfg.seed)
+
         set_main_process_device(self.device)
         self.setup_env()
         self.setup_task()
@@ -162,8 +161,8 @@ class RxnFlowSampler:
         set_worker_env("ctx", self.ctx)
         set_worker_env("algo", self.algo)
         set_worker_env("task", self.task)
-        self.model = self.sampling_model = self.model.to(self.device)
-        self.sampling_model.eval()
+        self.model = self.model.to(self.device)
+        self.model.eval()
 
     @torch.no_grad()
     def iter(self, n: int, calc_reward: bool = True) -> Iterable[dict[str, Any]]:
@@ -190,7 +189,7 @@ class RxnFlowSampler:
     def step(self, it: int = 0, batch_size: int = 64, calc_reward: bool = True):
         cond_info = self.sample_conditional_information(batch_size, it)
         cond_info["encoding"] = cond_info["encoding"].to(self.device)
-        samples = self.algo.graph_sampler.sample_inference(self.sampling_model, batch_size, cond_info["encoding"])
+        samples = self.algo.graph_sampler.sample_inference(self.model, batch_size, cond_info["encoding"])
         for i, sample in enumerate(samples):
             sample["info"] = {k: self.to_item(v[i]) for k, v in cond_info.items() if k != "encoding"}
 

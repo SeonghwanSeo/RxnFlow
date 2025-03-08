@@ -1,9 +1,7 @@
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import torch
-import torch.nn as nn
 from pmnet_appl import BaseProxy, get_docking_proxy
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
@@ -29,16 +27,16 @@ Summary
 
 
 class ProxyTask(PocketConditionalTask):
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        super().__init__(cfg, wrap_model)
-        self.proxy: BaseProxy = self.models["proxy"]
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
+        self.proxy: BaseProxy = self._load_task_models()
         self.reward_function = get_reward_function(self.proxy, self.objectives)
         self.last_reward: dict[str, Tensor] = {}  # For Logging
 
-    def _load_task_models(self) -> dict[str, nn.Module]:
+    def _load_task_models(self) -> BaseProxy:
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.pocket_conditional.proxy
         proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, None, self.cfg.device)
-        return {"proxy": proxy}
+        return proxy
 
     def update_proxy(self):
         """add proxy cache for reward calculation"""
@@ -50,9 +48,8 @@ class ProxyTask(PocketConditionalTask):
 class ProxyTask_SinglePocket(ProxyTask):
     """Single Pocket Opt (Few-shot training & sampling)"""
 
-    def __init__(self, cfg: Config, wrap_model: Callable[[nn.Module], nn.Module]):
-        super().__init__(cfg, wrap_model)
-        self.proxy: BaseProxy = self.models["proxy"]
+    def __init__(self, cfg: Config):
+        super().__init__(cfg)
         self.reward_function = get_reward_function(self.proxy, self.objectives)
         self.last_reward: dict[str, Tensor] = {}  # For Logging
 
@@ -89,10 +86,10 @@ class ProxyTask_MultiPocket(ProxyTask):
         assert flat_rewards.shape[0] == len(objs)
         return ObjectProperties(flat_rewards), is_valid_t
 
-    def _load_task_models(self) -> dict[str, nn.Module]:
+    def _load_task_models(self) -> BaseProxy:
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.pocket_conditional.proxy
         proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, "train", self.cfg.device)
-        return {"proxy": proxy}
+        return proxy
 
 
 class ProxyTrainer_SinglePocket(PocketConditionalTrainer_SinglePocket):
@@ -107,7 +104,7 @@ class ProxyTrainer_SinglePocket(PocketConditionalTrainer_SinglePocket):
         base.algo.train_random_action_prob = 0.1
 
     def setup_task(self):
-        self.task = ProxyTask_SinglePocket(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = ProxyTask_SinglePocket(cfg=self.cfg)
 
     def log(self, info, index, key):
         for obj in self.task.objectives:
@@ -124,13 +121,13 @@ class ProxyTrainer_MultiPocket(PocketConditionalTrainer_MultiPocket):
         base.task.moo.objectives = ["vina", "qed"]
         base.validate_every = 0
         base.num_training_steps = 50_000
-        base.algo.train_random_action_prob = 0.1
+        base.algo.train_random_action_prob = 0.2
         base.model.num_emb_block = 64  # TODO: train model on large GPU!
 
         base.cond.temperature.dist_params = [0, 64]
 
     def setup_task(self):
-        self.task = ProxyTask_MultiPocket(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = ProxyTask_MultiPocket(cfg=self.cfg)
 
     def log(self, info, index, key):
         for obj in self.task.objectives:
@@ -146,7 +143,7 @@ class ProxySampler(RxnFlowSampler):
         self.model = RxnFlow_SinglePocket(self.ctx, self.cfg, num_graph_out=self.cfg.algo.tb.do_predict_n + 1)
 
     def setup_task(self):
-        self.task = ProxyTask_SinglePocket(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = ProxyTask_SinglePocket(cfg=self.cfg)
 
     def calc_reward(self, samples: list[Any]) -> list[Any]:
         samples = super().calc_reward(samples)
@@ -157,7 +154,6 @@ class ProxySampler(RxnFlowSampler):
 
     @torch.no_grad()
     def set_pocket(self, protein_path: str | Path, center: tuple[float, float, float]):
-        self.sampling_model.clear_cache()
         self.model.clear_cache()
         self.task.set_protein(str(protein_path), center)
 

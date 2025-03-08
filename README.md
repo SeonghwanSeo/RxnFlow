@@ -65,8 +65,8 @@ We support two building block libraries.
 You can optimize the docking score with GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
 
 ```bash
-python script/opt_unidock.py -h
-python script/opt_unidock.py \
+python scripts/opt_unidock.py -h
+python scripts/opt_unidock.py \
   -p <Protein PDB path> \
   -c <Center X> <Center Y> <Center Z> \
   -l <Reference ligand, required if center is empty. > \
@@ -82,8 +82,8 @@ python script/opt_unidock.py \
 You can also perform multi-objective optimization ([Multi-objective GFlowNet](https://arxiv.org/abs/2210.12765)) for docking score and QED.
 
 ```bash
-python script/opt_unidock_moo.py -h
-python script/opt_unidock_moo.py \
+python scripts/opt_unidock_moo.py -h
+python scripts/opt_unidock_moo.py \
   -p <Protein PDB path> \
   -c <Center X> <Center Y> <Center Z> \
   -l <Reference ligand, required if center is empty. > \
@@ -100,13 +100,13 @@ python script/opt_unidock_moo.py \
 - Use center coordinates
 
   ```bash
-  python script/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
+  python scripts/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
   ```
 
 - Use center of the reference ligand
 
   ```bash
-  python script/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
+  python scripts/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
   ```
 
 </details>
@@ -122,8 +122,8 @@ The trained model will be updated soon.
 - Training
 
   ```bash
-  python script/train_pocket_conditional.py -h
-  python script/train_pocket_conditional.py \
+  python scripts/train_pocket_conditional.py -h
+  python scripts/train_pocket_conditional.py \
     --env_dir <Environment directory> \
     --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.01> \
   ```
@@ -131,8 +131,8 @@ The trained model will be updated soon.
 - Sampling
 
   ```bash
-  python script/sampling_zeroshot.py -h
-  python script/sampling_zeroshot.py \
+  python scripts/sampling_zeroshot.py -h
+  python scripts/sampling_zeroshot.py \
     -p <Protein PDB path> \
     -c <Center X> <Center Y> <Center Z> \
     -l <Reference ligand, required if center is empty. > \
@@ -149,13 +149,13 @@ The trained model will be updated soon.
 - `csv` format: save molecules with their rewards (GPU is recommended)
 
   ```bash
-  python script/sampling_zeroshot.py -o out.csv -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb --cuda
+  python scripts/sampling_zeroshot.py -o out.csv -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb --cuda
   ```
 
 - `smi` format: save molecules only (CPU: 0.06s/mol, GPU: 0.04s/mol)
 
   ```bash
-  python script/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
+  python scripts/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
   ```
 
 </details>
@@ -165,7 +165,7 @@ The trained model will be updated soon.
 
 If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
 
-Example codes are provided in `./examples/`.
+Example codes are provided in `./scripts/examples/`.
 
 - Example (QED)
 
@@ -200,7 +200,7 @@ Example codes are provided in `./examples/`.
   from gflownet import ObjectProperties
   from rxnflow.base import RxnFlowTrainer, RxnFlowSampler, BaseTask
 
-  class MOOTask(BaseTask):
+  class MOGFNTask(BaseTask):
       is_moo=True
       def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, torch.Tensor]:
           fr1 = torch.tensor([reward1(mol) for mol in mols], dtype=torch.float)
@@ -215,11 +215,11 @@ Example codes are provided in `./examples/`.
           base.task.moo.objectives = ["obj1", "obj2"] # set the objective names
 
       def setup_task(self):
-          self.task = MOOTask(self.cfg)
+          self.task = MOGFNTask(self.cfg)
 
   class MOOSampler(RxnFlowSampler):  # Sampling with pre-trained GFlowNet
       def setup_task(self):
-          self.task = MOOTask(self.cfg)
+          self.task = MOGFNTask(self.cfg)
   ```
 
 </details>

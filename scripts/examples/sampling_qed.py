@@ -12,7 +12,7 @@ DEVICE = "cpu"  # or 'cuda'
 
 class QEDSampler(RxnFlowSampler):
     def setup_task(self):
-        self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = QEDTask(cfg=self.cfg)
 
 
 if __name__ == "__main__":
@@ -21,7 +21,7 @@ if __name__ == "__main__":
     config.algo.num_from_policy = 100  # 64 -> 100
     config.env_dir = "./data/envs/stock"  # if you want to use catalog, just remove this line
 
-    ckpt_path = "./logs/example-qed/model_state.pt"
+    ckpt_path = "./logs/example/qed/model_state.pt"
 
     # construct sampler
     sampler = QEDSampler(config, ckpt_path, DEVICE)

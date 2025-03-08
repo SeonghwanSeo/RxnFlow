@@ -18,22 +18,23 @@ class QEDTask(BaseTask):
 
 class QEDTrainer(RxnFlowTrainer):  # For online training
     def setup_task(self):
-        self.task = QEDTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = QEDTask(self.cfg)
 
 
 if __name__ == "__main__":
     config = init_empty(Config())
-    config.log_dir = "./logs/example-qed"
+    config.log_dir = "./logs/example/qed"
     config.overwrite_existing_exp = True
     config.checkpoint_every = 1000
     config.store_all_checkpoints = True
     config.print_every = 1
     config.num_workers_retrosynthesis = 8
 
-    config.env_dir = "./data/envs/stock/"
+    config.env_dir = "./data/envs/catalog/"
     config.num_training_steps = 10000
-    config.algo.action_subsampling.sampling_ratio = 0.01
+    config.algo.action_subsampling.sampling_ratio = 0.02
 
+    config.cond.temperature.sample_dist = "uniform"
     config.cond.temperature.dist_params = [0, 64]
     config.algo.train_random_action_prob = 0.1
 

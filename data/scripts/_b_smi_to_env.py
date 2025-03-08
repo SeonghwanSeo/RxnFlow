@@ -1,4 +1,5 @@
 import functools
+import gzip
 import multiprocessing
 import os
 from pathlib import Path
@@ -48,11 +49,17 @@ def get_block_data(block_path: str, template_path: str, save_directory_path: str
     save_fp_path = save_directory / "bb_fp_2_1024.npy"
 
     block_file = Path(block_path)
-    assert block_file.suffix == ".smi"
-
     print("Read SMI Files")
-    with block_file.open() as f:
-        lines = f.readlines()
+    if block_file.suffix == ".smi":
+        with block_file.open() as f:
+            lines = f.readlines()
+    elif block_file.suffix == ".gz":
+        assert ".smi.gz" in block_file.name, "block file format shoule be .smi or .smi.gz"
+        with gzip.open(block_file, mode="rt") as f:
+            lines = f.readlines()
+    else:
+        raise ValueError(block_file)
+
     smi_id_list = [ln.strip().split() for ln in lines]
     print("Including Mols:", len(smi_id_list))
 
@@ -68,8 +75,8 @@ def get_block_data(block_path: str, template_path: str, save_directory_path: str
     desc_list = []
     fp_list = []
     with open(save_block_path, "w") as w:
-        for idx in tqdm(range(0, len(smi_id_list), 100000)):
-            chunk = smi_id_list[idx : idx + 100000]
+        for idx in tqdm(range(0, len(smi_id_list), 50_000)):
+            chunk = smi_id_list[idx : idx + 50_000]
             with multiprocessing.Pool(num_cpus) as pool:
                 results = pool.map(func, chunk)
             for res in results:

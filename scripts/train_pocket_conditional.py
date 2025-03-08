@@ -2,32 +2,31 @@ from argparse import ArgumentParser
 
 import wandb
 from rxnflow.config import Config, init_empty
-from rxnflow.tasks.qed import QEDTrainer
+from rxnflow.tasks.multi_pocket import ProxyTrainer_MultiPocket
 
 
 def parse_args():
-    parser = ArgumentParser("RxnFlow", description="QED Pretraining")
+    parser = ArgumentParser("RxnFlow", description="Pocket-conditional GFlowNet training")
+    opt_cfg = parser.add_argument_group("Pocket DB")
+    opt_cfg.add_argument(
+        "--db", type=str, default="./data/experiments/CrossDocked2020/train_db.pt", help="Pocket DB Path"
+    )
+
     run_cfg = parser.add_argument_group("Operation Config")
+    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument("-o", "--out_dir", type=str, required=True, help="Output directory")
     run_cfg.add_argument(
         "-n",
         "--num_oracles",
         type=int,
-        default=20_000,
-        help="Number of Oracles (128 molecules per oracle; default: 20_000)",
+        default=50_000,
+        help="Number of Oracles (128 molecules per oracle; default: 50,000)",
     )
-    run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
         default=0.02,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.02)",
-    )
-    run_cfg.add_argument(
-        "--temperature",
-        type=str,
-        default="uniform-0-64",
-        help="temperature setting (e.g., constant-32 ; uniform-0-64(default))",
     )
     run_cfg.add_argument("--wandb", type=str, help="wandb job name")
     run_cfg.add_argument("--debug", action="store_true", help="For debugging option")
@@ -38,22 +37,23 @@ def run(args):
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
+
+    config.num_training_steps = args.num_oracles
     config.print_every = 50
-    config.checkpoint_every = 500
+    config.checkpoint_every = 1000
+    config.store_all_checkpoints = True
+    config.num_workers_retrosynthesis = 4
+
+    config.task.pocket_conditional.pocket_db = args.db
+    config.task.pocket_conditional.proxy = ("TacoGFN_Reward", "QVina", "ZINCDock15M")
 
     # === GFN parameters === #
-    temperature_info = args.temperature.split("-")
-    sample_dist = temperature_info[0]
-    dist_params = list(map(float, temperature_info[1:]))
-    assert sample_dist in ("constant", "uniform", "loguniform", "gamma", "beta")
-    config.cond.temperature.sample_dist = sample_dist
-    config.cond.temperature.dist_params = dist_params
+    config.cond.temperature.sample_dist = "uniform"
+    config.cond.temperature.dist_params = [0.0, 64.0]
 
     # === Training parameters === #
-    # we set high random action prob
-    # so, we do not use Double-GFN
-    config.algo.train_random_action_prob = 0.5
-    config.algo.sampling_tau = 0.0
+    config.algo.train_random_action_prob = 0.2
+    config.algo.sampling_tau = 0.9
 
     # pretrain -> more train and better regularization with dropout
     config.model.dropout = 0.1
@@ -63,25 +63,22 @@ def run(args):
     config.algo.num_from_policy = 128
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
 
-    # replay buffer
-    # each training batch: 128 mols from policy and 128 mols from buffer
-    config.replay.use = True
-    config.replay.warmup = 128 * 10
-    config.replay.capacity = 128 * 200
-    config.replay.num_from_replay = 128
+    # replay buffer is not supported
+    config.replay.use = False
 
     # training learning rate
     config.opt.learning_rate = 1e-4
-    config.opt.lr_decay = 2000
+    config.opt.lr_decay = 10_000
     config.algo.tb.Z_learning_rate = 1e-2
-    config.algo.tb.Z_lr_decay = 5_000
+    config.algo.tb.Z_lr_decay = 20_000
 
     if args.debug:
         config.overwrite_existing_exp = True
-    if args.wandb is not None:
-        wandb.init(project="rxnflow", name=args.wandb, group="qed-pretrain")
+        config.print_every = 1
+    if args.wandb:
+        wandb.init(project="rxnflow", name=args.wandb, group="pocket-conditional")
 
-    trainer = QEDTrainer(config)
+    trainer = ProxyTrainer_MultiPocket(config)
     trainer.run()
     trainer.terminate()
 

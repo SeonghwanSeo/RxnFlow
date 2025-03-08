@@ -4,7 +4,7 @@ from argparse import ArgumentParser
 from pathlib import Path
 
 import gdown
-from utils import get_center
+from _utils import get_center
 
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.multi_pocket import ProxySampler

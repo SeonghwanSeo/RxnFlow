@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "rxnflow"
 authors = [{ name = "Seonghwan Seo", email = "shwan0106@gmail.com" }]
-version = "0.0.3"
+version = "0.1.0"
 readme = "README.md"
 classifiers = [
   "Operating System :: OS Independent",
@@ -27,7 +27,6 @@ dependencies = [
     "tensorboard",
     "gitpython",
     "botorch",
-    "ruff",
 ]
 
 [project.optional-dependencies]
@@ -35,15 +34,20 @@ unidock = [
   "openbabel-wheel",
   "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
 ]
-synbench = ["synbench @ git+https://github.com/SeonghwanSeo/SynBench.git@init"]
-pmnet = ["pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git"]
+pmnet = [
+  "pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git",
+]
+dev = [
+  "black",
+  "isort",
+  "ruff",
+]
+# TODO: finish benchmark setting
+# synbench = ["synbench @ git+https://github.com/SeonghwanSeo/SynBench.git@init"]
 
 [tool.black]
 line-length = 120
 target-version = ["py312"]
-
-[tool.isort]
-profile = "black"
 
 [tool.ruff]
 target-version = "py312"
