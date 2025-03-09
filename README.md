@@ -6,7 +6,7 @@
 
 <img src="image/overview.png" width=600>
 
-Official implementation of **_Generative Flows on Synthetic Pathway for Drug Design_** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[arXiv](https://arxiv.org/abs/2410.04542)]
+Official implementation of **_Generative Flows on Synthetic Pathway for Drug Design_** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[paper](https://arxiv.org/abs/2410.04542)]
 
 RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space comprising **1M building blocks and 100 reaction templates without compute overhead**.
 
@@ -22,11 +22,11 @@ You can access the reproducing codes and scripts from [tag: paper-archive](https
 # python>=3.12,<3.13
 pip install -e . --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
-# For UniDock
+# For GPU-accelerated UniDock(Vina) scoring.
 conda install unidock==1.1.2
 pip install -e '.[unidock]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
-# For Pocket Conditional Generation
+# For Pocket conditional generation
 pip install -e '.[pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 
 # Install all dependencies
@@ -58,7 +58,7 @@ We support two building block libraries.
 
 If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
 
-Example codes are provided in `./src/rxnflow/tasks/` and `./scripts/examples/`.
+Example codes are provided in [`./src/rxnflow/tasks/`](src/rxnflow/tasks) and [`./scripts/examples/`](sripts/examples).
 
 - Single-objective optimization
 
@@ -96,7 +96,7 @@ Example codes are provided in `./src/rxnflow/tasks/` and `./scripts/examples/`.
 
   You can find example codes in [`unidock_vina_moo.py`](src/rxnflow/tasks/unidock_vina_moo.py) and [`multi_pocket.py`](src/rxnflow/tasks/multi_pocket.py).
 
-- Multi-objective optimization (Multi-objective GFlowNets (MO-GFN))
+- Multi-objective optimization (Multi-objective GFlowNets (MOGFN))
 
   You can find example codes in [`seh_moo.py`](src/rxnflow/tasks/seh_moo.py) and [`unidock_vina_mogfn.py`](src/rxnflow/tasks/unidock_vina_mogfn.py).
 
@@ -136,53 +136,60 @@ Example codes are provided in `./src/rxnflow/tasks/` and `./scripts/examples/`.
 <details>
 <summary><h3 style="display:inline-block"> Docking optimization with GPU-accelerated UniDock</h3></summary>
 
-You can optimize the docking score with GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
+You can optimize the Vina score with GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
 
 ```bash
 python scripts/opt_unidock.py -h
 python scripts/opt_unidock.py \
   --env_dir <Environment directory> \
-  -o <Output directory> \
+  --out_dir <Output directory> \
+  -n <Num iterations (64 molecules per iterations; default: 1000)> \
   -p <Protein PDB path> \
   -c <Center X> <Center Y> <Center Z> \
   -l <Reference ligand, required if center is empty. > \
   -s <Size X> <Size Y> <Size Z> \
-  -n <Num Oracles (default: 1000)> \
-  --filter <drugfilter; choice=(lipinski, veber, null); default: lipinski> \
+  --search_mode <Unidock mode; choice=(fast, balance, detail); default: fast> \
+  --filter <Drug filter; choice=(lipinski, veber, null); default: lipinski> \
   --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02> \
   --pretrained_model_path <Pretrained model Path; optional>
 ```
 
-You can also perform multi-objective optimization for docking score and QED.
+You can also perform multi-objective optimization for Vina score and QED.
 
-- Multiplication-based ($R(x) = QED(x) \times \widehat{Vina}(x)$)
+- Multiplication-based Reward
+
+  $$R(x) = QED(x) \times \widehat{Vina}(x)$$
 
   ```bash
   python scripts/opt_unidock_moo.py -h
   python scripts/opt_unidock_moo.py \
     --env_dir <Environment directory> \
-    -o <Output directory> \
+    --out_dir <Output directory> \
+    -n <Num iterations (64 molecules per iterations; default: 1000)> \
     -p <Protein PDB path> \
     -c <Center X> <Center Y> <Center Z> \
     -l <Reference ligand, required if center is empty. > \
     -s <Size X> <Size Y> <Size Z> \
-    -n <Num Oracles (default: 1000)> \
+    --search_mode <Unidock mode; choice=(fast, balance, detail); default: fast> \
     --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02> \
     --pretrained_model_path <Pretrained model Path; optional>
   ```
 
-- Multi-objective GFlowNet ($R(x;\alpha) = \alpha QED(x) + (1-\alpha) \widehat{Vina}(x)$)
+- Multi-objective GFlowNet (MOGFN)
+
+  $$R(x;\alpha) = \alpha QED(x) + (1-\alpha) \widehat{Vina}(x)$$
 
   ```bash
   python scripts/opt_unidock_mogfn.py -h
   python scripts/opt_unidock_mogfn.py \
     --env_dir <Environment directory> \
-    -o <Output directory> \
+    --out_dir <Output directory> \
+    -n <Num iterations (64 molecules per iterations; default: 1000)> \
     -p <Protein PDB path> \
     -c <Center X> <Center Y> <Center Z> \
     -l <Reference ligand, required if center is empty. > \
     -s <Size X> <Size Y> <Size Z> \
-    -n <Num Oracles (default: 1000)> \
+    --search_mode <Unidock mode; choice=(fast, balance, detail); default: fast> \
     --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02>
   ```
 
@@ -254,13 +261,6 @@ The trained model will be updated soon.
 </details>
 
 <details>
-<summary><h3 style="display:inline-block">Technical Report(TBA)</h3></summary>
-
-We will provide the technical report including a new benchmark test using our new building block set.
-
-</details>
-
-<details>
 <summary><h3 style="display:inline-block">Reproducing experimental results</h3></summary>
 
 The training/sampling scripts are provided in `experiments/`.
@@ -268,6 +268,10 @@ The training/sampling scripts are provided in `experiments/`.
 **_NOTE_**: Current version do not fully reproduce the paper result. Please switch to [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
 
 </details>
+
+## Technical Report
+
+TBA; We will provide the technical report including a new benchmark test using our new building block set.
 
 ## Citation
 
@@ -287,4 +291,3 @@ If you use our code in your research, we kindly ask that you consider citing our
 - [GFlowNet](https://arxiv.org/abs/2106.04399) (github: [recursionpharma/gflownet](https://github.com/recursionpharma/gflownet))
 - [TacoGFN](https://arxiv.org/abs/2310.03223) [github: [tsa87/TacoGFN-SBDD](https://github.com/tsa87/TacoGFN-SBDD)]
 - [PharmacoNet](https://arxiv.org/abs/2310.00681) [github: [SeonghwanSeo/PharmacoNet](https://github.com/SeonghwanSeo/PharmacoNet)]
-- [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145) [github: [dptech-corp/Uni-Dock](https://github.com/dptech-corp/Uni-Dock)]

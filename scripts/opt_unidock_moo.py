@@ -14,16 +14,23 @@ def parse_args():
     opt_cfg.add_argument(
         "-s", "--size", nargs="+", type=float, help="Search Box Size (--size X Y Z)", default=(22.5, 22.5, 22.5)
     )
+    opt_cfg.add_argument(
+        "--search_mode",
+        type=str,
+        choices=["fast", "balance", "detail"],
+        default="fast",
+        help="UniDock Search Mode",
+    )
 
     run_cfg = parser.add_argument_group("Operation Config")
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument("-o", "--out_dir", type=str, required=True, help="Output directory")
     run_cfg.add_argument(
         "-n",
-        "--num_oracles",
+        "--num_iterations",
         type=int,
         default=1000,
-        help="Number of Oracles (64 molecules per oracle; default: 1000)",
+        help="Number of training iterations (64 molecules for each iterations; default: 1000)",
     )
     run_cfg.add_argument(
         "--subsampling_ratio",
@@ -44,7 +51,8 @@ def run(args):
     config.pretrained_model_path = args.pretrained_model_path
 
     config.print_every = 1
-    config.num_training_steps = args.num_oracles
+    config.num_training_steps = args.num_iterations
+    config.algo.num_from_policy = 64
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
 
     # docking info
@@ -59,12 +67,19 @@ def run(args):
     else:
         config.algo.sampling_tau = 0.98
 
+    # replay buffer
+    config.replay.use = True
+    config.replay.capacity = 64 * 200
+    config.replay.warmup = 64 * 20
+    config.replay.num_from_replay = 256 - 64  # batch size = 256
+
     if args.debug:
         config.overwrite_existing_exp = True
     if args.wandb is not None:
         wandb.init(project="rxnflow", name=args.wandb, group="unidock-mogfn")
 
     trainer = VinaMOOTrainer(config)
+    trainer.task.vina.search_mode = args.search_mode  # set search mode
     trainer.run()
     trainer.terminate()
 

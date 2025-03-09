@@ -11,10 +11,10 @@ def parse_args():
     run_cfg.add_argument("-o", "--out_dir", type=str, required=True, help="Output directory")
     run_cfg.add_argument(
         "-n",
-        "--num_oracles",
+        "--num_iterations",
         type=int,
-        default=10000,
-        help="Number of Oracles (64 molecules per oracle; default: 10000)",
+        default=10_000,
+        help="Number of training iterations (default: 10,000)",
     )
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument(
@@ -33,7 +33,7 @@ def run(args):
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
     config.print_every = 10
-    config.num_training_steps = args.num_oracles
+    config.num_training_steps = args.num_iterations
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
 
     config.opt.learning_rate = 1e-4
