@@ -58,7 +58,7 @@ We support two building block libraries.
 
 If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
 
-Example codes are provided in [`./src/rxnflow/tasks/`](src/rxnflow/tasks) and [`./scripts/examples/`](sripts/examples).
+Example codes are provided in [`src/rxnflow/tasks/`](src/rxnflow/tasks) and [`scripts/examples/`](sripts/examples).
 
 - Single-objective optimization
 
@@ -158,7 +158,7 @@ You can also perform multi-objective optimization for Vina score and QED.
 
 - Multiplication-based Reward
 
-  $$R(x) = QED(x) \times \widehat{Vina}(x)$$
+  $$R(x) = \text{QED}(x) \times \widehat{\text{Vina}}(x)$$
 
   ```bash
   python scripts/opt_unidock_moo.py -h
@@ -177,7 +177,7 @@ You can also perform multi-objective optimization for Vina score and QED.
 
 - Multi-objective GFlowNet (MOGFN)
 
-  $$R(x;\alpha) = \alpha QED(x) + (1-\alpha) \widehat{Vina}(x)$$
+  $$R(x;\alpha) = \alpha \text{QED}(x) + (1-\alpha) \widehat{\text{Vina}}(x)$$
 
   ```bash
   python scripts/opt_unidock_mogfn.py -h

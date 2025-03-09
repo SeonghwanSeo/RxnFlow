@@ -49,7 +49,7 @@ if __name__ == "__main__":
     config.num_training_steps = 1000
     config.cond.temperature.sample_dist = "uniform"
     config.cond.temperature.dist_params = [0, 64]
-    config.algo.action_subsampling.sampling_ratio = 0.01
+    config.algo.action_subsampling.sampling_ratio = 0.02
     config.replay.use = False
 
     trainer = BenchmarkTrainer(config)
