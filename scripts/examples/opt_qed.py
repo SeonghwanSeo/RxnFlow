@@ -9,10 +9,10 @@ from rxnflow.config import Config, init_empty
 
 
 class QEDTask(BaseTask):
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        fr = torch.tensor([QED.qed(obj) for obj in objs], dtype=torch.float32)
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        fr = torch.tensor([QED.qed(obj) for obj in mols], dtype=torch.float32)
         fr = fr.reshape(-1, 1)
-        is_valid_t = torch.ones((len(objs),), dtype=torch.bool)
+        is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
         return ObjectProperties(fr), is_valid_t
 
 
@@ -24,14 +24,14 @@ class QEDTrainer(RxnFlowTrainer):  # For online training
 if __name__ == "__main__":
     config = init_empty(Config())
     config.log_dir = "./logs/example/qed"
+    config.env_dir = "./data/envs/catalog/"
     config.overwrite_existing_exp = True
+    config.num_training_steps = 10000
     config.checkpoint_every = 1000
     config.store_all_checkpoints = True
     config.print_every = 1
-    config.num_workers_retrosynthesis = 8
+    config.num_workers_retrosynthesis = 4
 
-    config.env_dir = "./data/envs/catalog/"
-    config.num_training_steps = 10000
     config.algo.action_subsampling.sampling_ratio = 0.02
 
     config.cond.temperature.sample_dist = "uniform"

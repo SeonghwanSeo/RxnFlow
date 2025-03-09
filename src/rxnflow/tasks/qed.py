@@ -9,9 +9,9 @@ from rxnflow.tasks.utils.chem_metrics import mol2qed
 
 
 class QEDTask(BaseTask):
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        fr = mol2qed(objs).reshape(-1, 1)
-        is_valid_t = torch.ones((len(objs),), dtype=torch.bool)
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        fr = mol2qed(mols).reshape(-1, 1)
+        is_valid_t = torch.ones((len(mols),), dtype=torch.bool)
         return ObjectProperties(fr), is_valid_t
 
 

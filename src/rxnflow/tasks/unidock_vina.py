@@ -36,11 +36,11 @@ class VinaTask(BaseTask):
         self.save_dir: Path = Path(cfg.log_dir) / "docking"
         self.save_dir.mkdir()
 
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        is_valid_t = torch.tensor([self.constraint(obj) for obj in objs], dtype=torch.bool)
-        valid_objs = [obj for flag, obj in zip(is_valid_t, objs, strict=True) if flag]
-        if len(valid_objs) > 0:
-            docking_scores = self.mol2vina(valid_objs)
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        is_valid_t = torch.tensor([self.constraint(obj) for obj in mols], dtype=torch.bool)
+        valid_mols = [obj for flag, obj in zip(is_valid_t, mols, strict=True) if flag]
+        if len(valid_mols) > 0:
+            docking_scores = self.mol2vina(valid_mols)
             fr = docking_scores * -1
         else:
             fr = torch.zeros((0,), dtype=torch.float)
@@ -74,10 +74,10 @@ class VinaTask(BaseTask):
         self.update_storage(mols, vina_scores)
         return torch.tensor(vina_scores, dtype=torch.float32)
 
-    def update_storage(self, objs: list[RDMol], vina_scores: list[float]):
+    def update_storage(self, mols: list[RDMol], vina_scores: list[float]):
         """update vina metric"""
         self.batch_vina = vina_scores
-        smiles_list = [Chem.MolToSmiles(obj) for obj in objs]
+        smiles_list = [Chem.MolToSmiles(obj) for obj in mols]
         self.topn_vina.update(zip(smiles_list, vina_scores, strict=True))
         topn = sorted(list(self.topn_vina.items()), key=lambda v: v[1])[:1000]
         self.topn_vina = OrderedDict(topn)

@@ -28,8 +28,8 @@ def parse_args():
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
-        default=0.05,
-        help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.05)",
+        default=0.02,
+        help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.02)",
     )
     run_cfg.add_argument("--pretrained_model_path", type=str, help="Pretrained Model Path")
     run_cfg.add_argument("--wandb", type=str, help="wandb job name")

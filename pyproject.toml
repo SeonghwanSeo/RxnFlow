@@ -13,10 +13,10 @@ classifiers = [
   "Programming Language :: Python :: 3",
 ]
 keywords = ["gflownet"]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "numpy==1.26.4",
-    "torch>=2.3.1",
+    "torch==2.5.1",
     "torch-geometric>=2.4.0",
     "torch-scatter>=2.1.2",
     "torch-sparse>=0.6.18",

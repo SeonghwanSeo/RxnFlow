@@ -18,9 +18,9 @@ class SEHMOOTask(SEHTask):
         super().__init__(cfg, wrap_model)
         assert set(self.objectives) <= {"seh", "qed", "sa", "mw"} and len(self.objectives) == len(set(self.objectives))
 
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        graphs = [bengio2021flow.mol2graph(i) for i in objs]
-        assert len(graphs) == len(objs)
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        graphs = [bengio2021flow.mol2graph(i) for i in mols]
+        assert len(graphs) == len(mols)
         is_valid = [i is not None for i in graphs]
         is_valid_t = torch.tensor(is_valid, dtype=torch.bool)
         if not any(is_valid):
@@ -31,10 +31,10 @@ class SEHMOOTask(SEHTask):
                 if obj == "seh":
                     flat_r.append(self.calc_seh_reward(graphs))
                 else:
-                    flat_r.append(aux_tasks[obj](objs, is_valid))
+                    flat_r.append(aux_tasks[obj](mols, is_valid))
 
             flat_rewards = torch.stack(flat_r, dim=1)
-            assert flat_rewards.shape[0] == len(objs)
+            assert flat_rewards.shape[0] == len(mols)
             return ObjectProperties(flat_rewards), is_valid_t
 
 

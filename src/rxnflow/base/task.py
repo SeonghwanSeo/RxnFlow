@@ -26,7 +26,8 @@ class BaseTask(GFNTask):
         if self.is_moo:
             self.setup_moo()
 
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        """we only generate rdkit molecules -> rename objs to mols"""
         raise NotImplementedError
 
     def setup_moo(self):

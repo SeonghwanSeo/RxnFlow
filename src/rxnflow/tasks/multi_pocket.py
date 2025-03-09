@@ -50,13 +50,13 @@ class ProxyTask_SinglePocket(ProxyTask):
         self.last_reward: dict[str, Tensor] = {}  # For Logging
 
     def compute_obj_properties(
-        self, objs: list[RDMol], sample_idcs: list[int] | None = None
+        self, mols: list[RDMol], sample_idcs: list[int] | None = None
     ) -> tuple[ObjectProperties, Tensor]:
-        is_valid_t = torch.ones(len(objs), dtype=torch.bool)
-        _, info = self.reward_function(objs, self.protein_key)
+        is_valid_t = torch.ones(len(mols), dtype=torch.bool)
+        _, info = self.reward_function(mols, self.protein_key)
         self.last_reward.update(info)
         flat_rewards = torch.stack([info[obj] for obj in self.objectives], dim=-1)
-        assert flat_rewards.shape[0] == len(objs)
+        assert flat_rewards.shape[0] == len(mols)
         return ObjectProperties(flat_rewards), is_valid_t
 
     def set_protein(
@@ -110,13 +110,13 @@ class ProxyTask_MultiPocket(ProxyTask):
         cfg = self.cfg.task.pocket_conditional
         self.pocket_db = PocketDB(torch.load(cfg.pocket_db, map_location="cpu"))
 
-    def compute_obj_properties(self, objs: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
-        is_valid_t = torch.ones(len(objs), dtype=torch.bool)
+    def compute_obj_properties(self, mols: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
+        is_valid_t = torch.ones(len(mols), dtype=torch.bool)
         pocket_keys = [self.pocket_db.batch_keys[idx] for idx in sample_idcs]
-        r, info = self.reward_function(objs, pocket_keys)
+        r, info = self.reward_function(mols, pocket_keys)
         self.last_reward.update(info)
         flat_rewards = r.view(-1, 1)
-        assert flat_rewards.shape[0] == len(objs)
+        assert flat_rewards.shape[0] == len(mols)
         return ObjectProperties(flat_rewards), is_valid_t
 
     def _load_task_models(self) -> BaseProxy:

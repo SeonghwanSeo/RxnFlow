@@ -22,7 +22,7 @@ class PocketConditionalTask(BaseTask):
         self.objectives = cfg.task.moo.objectives
         self.setup_pocket_db()
 
-    def compute_obj_properties(self, objs: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
+    def compute_obj_properties(self, mols: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
         raise NotImplementedError
 
     @property
@@ -88,20 +88,20 @@ class _DataSource(DataSource):
     def compute_properties(self, trajs, mark_as_online=False):
         """Sets trajs' obj_props and is_valid keys by querying the task."""
         valid_idcs = torch.tensor([i for i in range(len(trajs)) if trajs[i].get("is_valid", True)]).long()
-        objs = [self.ctx.graph_to_obj(trajs[i]["result"]) for i in valid_idcs]
+        mols = [self.ctx.graph_to_obj(trajs[i]["result"]) for i in valid_idcs]
 
         # NOTE: This is only the different part
-        obj_props, m_is_valid = self.task.compute_obj_properties(objs, valid_idcs.tolist())
-        # obj_props, m_is_valid = self.task.compute_obj_properties(objs) # previous
+        obj_props, m_is_valid = self.task.compute_obj_properties(mols, valid_idcs.tolist())
+        # obj_props, m_is_valid = self.task.compute_obj_properties(mols) # previous
 
         assert obj_props.ndim == 2, "FlatRewards should be (mbsize, n_objectives), even if n_objectives is 1"
-        # The task may decide some of the objs are invalid, we have to again filter those
+        # The task may decide some of the mols are invalid, we have to again filter those
         valid_idcs = valid_idcs[m_is_valid]
         all_fr = torch.zeros((len(trajs), obj_props.shape[1]))
         all_fr[valid_idcs] = obj_props
         for i in range(len(trajs)):
             trajs[i]["obj_props"] = all_fr[i]
             trajs[i]["is_online"] = mark_as_online
-        # Override the is_valid key in case the task made some objs invalid
+        # Override the is_valid key in case the task made some mols invalid
         for i in valid_idcs:
             trajs[i]["is_valid"] = True

@@ -24,9 +24,9 @@ class SEHTask(BaseTask):
         model = self._wrap_model(model)
         return {"seh": model}
 
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        graphs: list[gd.Data] = [bengio2021flow.mol2graph(i) for i in objs]
-        assert len(graphs) == len(objs)
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        graphs: list[gd.Data] = [bengio2021flow.mol2graph(i) for i in mols]
+        assert len(graphs) == len(mols)
         is_valid = [i is not None for i in graphs]
         is_valid_t = torch.tensor(is_valid, dtype=torch.bool)
         if not is_valid_t.any():

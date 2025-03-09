@@ -11,6 +11,8 @@ from rxnflow.tasks.utils.chem_metrics import mol2qed, mol2sascore
 
 aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
 
+"""multi-objective optimization using MO-GFN"""
+
 
 class VinaMOGFNTask(VinaTask):
     is_moo = True
@@ -19,35 +21,35 @@ class VinaMOGFNTask(VinaTask):
         super().__init__(cfg)
         assert set(self.objectives) <= {"vina", "qed", "sa"}
 
-    def compute_obj_properties(self, objs: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
-        is_valid_t = torch.tensor([self.constraint(obj) for obj in objs], dtype=torch.bool)
-        valid_objs = [obj for flag, obj in zip(is_valid_t, objs, strict=True) if flag]
+    def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
+        is_valid_t = torch.tensor([self.constraint(obj) for obj in mols], dtype=torch.bool)
+        valid_mols = [obj for flag, obj in zip(is_valid_t, mols, strict=True) if flag]
 
-        if len(valid_objs) > 0:
+        if len(valid_mols) > 0:
             flat_r: list[Tensor] = []
             self.avg_reward_info = []
             for prop in self.objectives:
                 if prop == "vina":
-                    docking_scores = self.mol2vina(objs)
+                    docking_scores = self.mol2vina(mols)
                     fr = docking_scores * -0.1  # normalization
                 else:
-                    fr = aux_tasks[prop](objs)
+                    fr = aux_tasks[prop](mols)
                 flat_r.append(fr)
                 self.avg_reward_info.append((prop, fr.mean().item()))
 
             flat_rewards = torch.stack(flat_r, dim=1)
         else:
             flat_rewards = torch.zeros((0, self.num_objectives), dtype=torch.float32)
-        assert flat_rewards.shape[0] == len(objs)
+        assert flat_rewards.shape[0] == len(mols)
         self.oracle_idx += 1
         return ObjectProperties(flat_rewards), is_valid_t
 
-    def update_storage(self, objs: list[RDMol], vina_scores: list[float]):
+    def update_storage(self, mols: list[RDMol], vina_scores: list[float]):
         """only consider QED > 0.5"""
-        is_pass = [QED.qed(obj) > 0.5 for obj in objs]
-        pass_objs = [mol for mol, flag in zip(objs, is_pass, strict=True) if flag]
+        is_pass = [QED.qed(obj) > 0.5 for obj in mols]
+        pass_mols = [mol for mol, flag in zip(mols, is_pass, strict=True) if flag]
         pass_vina_scores = [score for score, flag in zip(vina_scores, is_pass, strict=True) if flag]
-        super().update_storage(pass_objs, pass_vina_scores)
+        super().update_storage(pass_mols, pass_vina_scores)
 
 
 class VinaMOGFNTrainer(VinaTrainer):
