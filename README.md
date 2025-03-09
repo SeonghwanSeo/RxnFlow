@@ -61,9 +61,8 @@ If you want to train RxnFlow with your custom reward function, you can use the b
 Example codes are provided in `./src/rxnflow/tasks/` and `./scripts/examples/`.
 
 - Single-objective optimization
-  You can find example codes in [`seh.py`](src/rxnflow/tasks/seh.py) and [`unidock_vina.py`](src/rxnflow/tasks/unidock_vina.py).
 
-  Example:
+  You can find example codes in [`seh.py`](src/rxnflow/tasks/seh.py) and [`unidock_vina.py`](src/rxnflow/tasks/unidock_vina.py).
 
   ```python
   import torch
@@ -90,12 +89,15 @@ Example codes are provided in `./src/rxnflow/tasks/` and `./scripts/examples/`.
   ```
 
 - Multi-objective optimization (Multiplication-based)
+
   You can perform multi-objective optimization by designing the reward function as follows:
+
   $$R(x) = \prod R_{prop}(x)$$
 
   You can find example codes in [`unidock_vina_moo.py`](src/rxnflow/tasks/unidock_vina_moo.py) and [`multi_pocket.py`](src/rxnflow/tasks/multi_pocket.py).
 
 - Multi-objective optimization (Multi-objective GFlowNets (MO-GFN))
+
   You can find example codes in [`seh_moo.py`](src/rxnflow/tasks/seh_moo.py) and [`unidock_vina_mogfn.py`](src/rxnflow/tasks/unidock_vina_mogfn.py).
 
   ```python
@@ -214,7 +216,9 @@ The trained model will be updated soon.
   python scripts/train_pocket_conditional.py -h
   python scripts/train_pocket_conditional.py \
     --env_dir <Environment directory> \
-    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02> \
+    -o <Output directory> \
+    --batch_size <Batch size; memory-variance trade-off; default: 64> \
+    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02>
   ```
 
 - Sampling
@@ -246,6 +250,13 @@ The trained model will be updated soon.
   ```bash
   python scripts/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
   ```
+
+</details>
+
+<details>
+<summary><h3 style="display:inline-block">Technical Report(TBA)</h3></summary>
+
+We will provide the technical report including a new benchmark test using our new building block set.
 
 </details>
 
