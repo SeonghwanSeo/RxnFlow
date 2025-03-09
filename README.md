@@ -8,22 +8,13 @@
 
 Official implementation of **_Generative Flows on Synthetic Pathway for Drug Design_** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[arXiv](https://arxiv.org/abs/2410.04542)]
 
-RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space.
-
-- RxnFlow can operate on massive synthetic action spaces comprising **1M building blocks and 100 reaction templates without compute overhead**
-- RxnFlow can explore broader chemical space within less reaction steps, resulting in higher diversity, higher potency, and lower synthetic complexity of generated molecules.
-- RxnFlow can generate molecules with expanded or modified building block libaries without retraining.
+RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space comprising **1M building blocks and 100 reaction templates without compute overhead**.
 
 This project is based on Recursion's GFlowNet Repository; `src/gflownet/` is a clone of [recursionpharma/gflownet@v0.2.0](https://github@v0.2.0.com/recursionpharma/gflownet/tree/v0@v0.2.0.2@v0.2.0.0).
 Since we constantly improve it, current version does not reproduce the same results as the paper.
 You can access the reproducing codes and scripts from [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
 
-This repository was developed for research.
-The repository for real-world drug discovery will be released later.
-
-### NOTE
-
-Current main branch is pre-release; we will provide pre-trained models soon.
+**NOTE:** Current main branch is pre-release; we will provide pre-trained models soon.
 
 ## Installation
 
