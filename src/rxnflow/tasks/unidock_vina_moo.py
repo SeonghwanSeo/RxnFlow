@@ -17,15 +17,16 @@ aux_tasks = {"qed": mol2qed, "sa": mol2sascore}
 class VinaMOOTask(VinaTask):
     def __init__(self, cfg: Config):
         super().__init__(cfg)
+        self.objectives = cfg.task.moo.objectives
         assert set(self.objectives) <= {"vina", "qed", "sa"}
 
     def compute_obj_properties(self, mols: list[RDMol]) -> tuple[ObjectProperties, Tensor]:
         is_valid_t = torch.tensor([self.constraint(obj) for obj in mols], dtype=torch.bool)
         valid_mols = [obj for flag, obj in zip(is_valid_t, mols, strict=True) if flag]
 
+        self.avg_reward_info = []
         if len(valid_mols) > 0:
             flat_r: list[Tensor] = []
-            self.avg_reward_info = []
             for prop in self.objectives:
                 if prop == "vina":
                     docking_scores = self.mol2vina(mols)
@@ -34,7 +35,6 @@ class VinaMOOTask(VinaTask):
                     fr = aux_tasks[prop](mols)
                 flat_r.append(fr)
                 self.avg_reward_info.append((prop, fr.mean().item()))
-
             flat_rewards = torch.stack(flat_r, dim=1).prod(-1, keepdim=True)
         else:
             flat_rewards = torch.zeros((0, 1), dtype=torch.float32)

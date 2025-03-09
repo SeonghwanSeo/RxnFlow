@@ -52,12 +52,18 @@ def run(args):
 
     # docking info
     config.task.docking.protein_path = args.protein
-    config.task.docking.ref_ligand_path = args.ref_ligand_path
+    config.task.docking.ref_ligand_path = args.ref_ligand
     config.task.docking.center = args.center
     config.task.docking.size = args.size
 
     # drug filter
     config.task.constraint.rule = args.filter
+
+    # set EMA factor
+    if args.pretrained_model_path is None:
+        config.algo.sampling_tau = 0.9
+    else:
+        config.algo.sampling_tau = 0.98
 
     if args.debug:
         config.overwrite_existing_exp = True

@@ -25,9 +25,9 @@ class VinaMOGFNTask(VinaTask):
         is_valid_t = torch.tensor([self.constraint(obj) for obj in mols], dtype=torch.bool)
         valid_mols = [obj for flag, obj in zip(is_valid_t, mols, strict=True) if flag]
 
+        self.avg_reward_info = []
         if len(valid_mols) > 0:
             flat_r: list[Tensor] = []
-            self.avg_reward_info = []
             for prop in self.objectives:
                 if prop == "vina":
                     docking_scores = self.mol2vina(mols)
@@ -36,11 +36,10 @@ class VinaMOGFNTask(VinaTask):
                     fr = aux_tasks[prop](mols)
                 flat_r.append(fr)
                 self.avg_reward_info.append((prop, fr.mean().item()))
-
             flat_rewards = torch.stack(flat_r, dim=1)
         else:
             flat_rewards = torch.zeros((0, self.num_objectives), dtype=torch.float32)
-        assert flat_rewards.shape[0] == len(mols)
+        assert flat_rewards.shape == (len(mols), self.num_objectives)
         self.oracle_idx += 1
         return ObjectProperties(flat_rewards), is_valid_t
 
