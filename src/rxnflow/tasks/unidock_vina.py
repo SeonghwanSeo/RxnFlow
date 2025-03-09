@@ -41,7 +41,7 @@ class VinaTask(BaseTask):
         valid_objs = [obj for flag, obj in zip(is_valid_t, objs, strict=True) if flag]
         if len(valid_objs) > 0:
             docking_scores = self.mol2vina(valid_objs)
-            fr = docking_scores * -0.1
+            fr = docking_scores * -1
         else:
             fr = torch.zeros((0,), dtype=torch.float)
         self.oracle_idx += 1
@@ -92,20 +92,22 @@ class VinaTrainer(RxnFlowTrainer):
         base.num_training_steps = 1000
         base.validate_every = 0
 
-        base.algo.train_random_action_prob = 0.1
-        base.algo.action_subsampling.sampling_ratio = 0.02
-
-        base.cond.temperature.sample_dist = "uniform"
-        base.cond.temperature.dist_params = [0.0, 64.0]
-        base.replay.use = True
-        base.replay.capacity = 64 * 100
-        base.replay.warmup = 0
-
         # for training step = 1000
         base.opt.learning_rate = 1e-4
         base.opt.lr_decay = 500
         base.algo.tb.Z_learning_rate = 1e-2
         base.algo.tb.Z_lr_decay = 1000
+
+        # GFN parameters
+        base.cond.temperature.sample_dist = "uniform"
+        base.cond.temperature.dist_params = [0.0, 64.0]
+        base.algo.train_random_action_prob = 0.1
+        base.algo.action_subsampling.sampling_ratio = 0.02
+
+        # replay buffer
+        base.replay.use = True
+        base.replay.capacity = 64 * 100
+        base.replay.warmup = 0
 
     def run(self, logger=None):
         if logger is None:

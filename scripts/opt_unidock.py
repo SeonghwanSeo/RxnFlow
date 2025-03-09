@@ -9,8 +9,8 @@ def parse_args():
     parser = ArgumentParser("RxnFlow", description="Vina optimization with GPU-accelerated UniDock")
     opt_cfg = parser.add_argument_group("Protein Config")
     opt_cfg.add_argument("-p", "--protein", type=str, required=True, help="Protein PDB Path")
-    opt_cfg.add_argument("-c", "--center", nargs="+", type=float, help="Pocket Center (--center X Y Z)")
     opt_cfg.add_argument("-l", "--ref_ligand", type=str, help="Reference Ligand Path (required if center is missing)")
+    opt_cfg.add_argument("-c", "--center", nargs="+", type=float, help="Pocket Center (--center X Y Z)")
     opt_cfg.add_argument(
         "-s", "--size", nargs="+", type=float, help="Search Box Size (--size X Y Z)", default=(22.5, 22.5, 22.5)
     )
@@ -34,32 +34,30 @@ def parse_args():
         default=0.05,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.05)",
     )
+    run_cfg.add_argument("--pretrained_model_path", type=str, help="Pretrained model path")
     run_cfg.add_argument("--wandb", type=str, help="wandb job name")
     run_cfg.add_argument("--debug", action="store_true", help="For debugging option")
     return parser.parse_args()
 
 
 def run(args):
-    from _utils import get_center
-
-    assert (args.center is not None) or (args.ref_ligand is not None), "--center or --ref_ligand is required"
-    if args.center is None:
-        args.center = get_center(args.ref_ligand)
-    else:
-        assert len(args.center) == 3, "--center need three values: X Y Z"
-
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
+    config.pretrained_model_path = args.pretrained_model_path
+
     config.print_every = 1
     config.num_training_steps = args.num_oracles
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
 
     # docking info
     config.task.docking.protein_path = args.protein
+    config.task.docking.ref_ligand_path = args.ref_ligand_path
+    config.task.docking.center = args.center
+    config.task.docking.size = args.size
+
+    # drug filter
     config.task.constraint.rule = args.filter
-    config.task.docking.center = tuple(args.center)
-    config.task.docking.size = tuple(args.size)
 
     if args.debug:
         config.overwrite_existing_exp = True

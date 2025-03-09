@@ -17,10 +17,16 @@ def parse_args():
     run_cfg.add_argument("-o", "--out_dir", type=str, required=True, help="Output directory")
     run_cfg.add_argument(
         "-n",
-        "--num_oracles",
+        "--num_iterations",
         type=int,
         default=50_000,
-        help="Number of Oracles (128 molecules per oracle; default: 50,000)",
+        help="Number of training iterations (default: 50,000)",
+    )
+    run_cfg.add_argument(
+        "--batch_size",
+        type=int,
+        default=64,
+        help="Batch Size. Memory-variance trade-off (default: 128)",
     )
     run_cfg.add_argument(
         "--subsampling_ratio",
@@ -38,7 +44,7 @@ def run(args):
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
 
-    config.num_training_steps = args.num_oracles
+    config.num_training_steps = args.num_iterations
     config.print_every = 50
     config.checkpoint_every = 1000
     config.store_all_checkpoints = True
@@ -60,11 +66,8 @@ def run(args):
 
     # training batch size & subsampling size
     # cost-variance trade-off parameters
-    config.algo.num_from_policy = 128
+    config.algo.num_from_policy = args.batch_size
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
-
-    # replay buffer is not supported
-    config.replay.use = False
 
     # training learning rate
     config.opt.learning_rate = 1e-4

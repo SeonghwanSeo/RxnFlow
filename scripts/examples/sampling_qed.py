@@ -26,7 +26,7 @@ if __name__ == "__main__":
     # construct sampler
     sampler = QEDSampler(config, ckpt_path, DEVICE)
 
-    # STEP1: generate molecules only
+    # type1: generate molecules only
     tick_st = time.time()
     res = sampler.sample(NUM_SAMPLES, calc_reward=False)
     tick_end = time.time()
@@ -38,7 +38,7 @@ if __name__ == "__main__":
         for idx, sample in enumerate(res):
             w.write(f"{sample['smiles']}\tsample{idx}\n")
 
-    # STEP2: generate molecules with their rewards
+    # type2: generate molecules with their rewards
     tick_st = time.time()
     res = sampler.sample(NUM_SAMPLES, calc_reward=True)
     tick_end = time.time()

@@ -107,16 +107,18 @@ class RxnFlowSampler:
     @torch.no_grad()
     def sample(self, n: int, calc_reward: bool = True) -> list[dict[str, Any]]:
         """
-        samples = sampler.sample(200, calc_reward = False)
+        # generation only
+        samples: list = sampler.sample(200, calc_reward = False)
         samples[0] = {'smiles': <smiles>, 'traj': <traj>, 'info': <info>}
         samples[0]['traj'] = [
-            (('Start Block',), smiles1),        # None    -> smiles1
-            (('ReactUni', template), smiles2),  # smiles1 -> smiles2
-            ...                                 # smiles2 -> ...
+            (('Firstblock', block), smiles1),       # None    -> smiles1
+            (('UniRxn', template), smiles2),        # smiles1 -> smiles2
+            (('BiRxn', template, block), smiles3),  # smiles2 -> smiles3
+            ...                                     # smiles3 -> ...
         ]
         samples[0]['info'] = {'beta': <beta>, ...}
 
-
+        # with reward
         samples = sampler.sample(200, calc_reward = True)
         samples[0]['info'] = {'beta': <beta>, 'reward': <reward>, ...}
         """

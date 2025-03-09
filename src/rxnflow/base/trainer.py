@@ -79,6 +79,10 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         self.cfg.cond.moo.num_objectives = len(self.cfg.task.moo.objectives)
         super().setup()
 
+        # load checkpoint
+        if self.cfg.pretrained_model_path is not None:
+            self.load_checkpoint(self.cfg.pretrained_model_path)
+
         # setup multi-objective optimization
         self.is_moo: bool = self.task.is_moo
         if self.is_moo:
@@ -118,6 +122,17 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
             num_graph_out=self.cfg.algo.tb.do_predict_n + 1,
         )
 
+    def load_checkpoint(self, checkpoint_path: str | Path, load_ema: bool = False):
+        state = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+        print(f"load pre-trained model from {checkpoint_path}")
+        self.model.load_state_dict(state["models_state_dict"][0])
+        if self.sampling_model is not self.model:
+            if load_ema and "sampling_model_state_dict" in state:
+                self.sampling_model.load_state_dict(state["sampling_model_state_dict"][0])
+            else:
+                self.sampling_model.load_state_dict(state["models_state_dict"][0])
+        del state
+
     def run(self, logger=None):
         if wandb.run is not None:
             wandb.config.update({"config": OmegaConf.to_container(self.cfg)})
@@ -128,14 +143,6 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
         self.env.retro_analyzer.pool.shutdown(wait=True, cancel_futures=True)
         if wandb.run is not None:
             wandb.finish()
-
-    def load_checkpoint(self, checkpoint_path: str | Path):
-        state = torch.load(checkpoint_path, map_location="cpu")
-        print(f"load pre-trained model from {checkpoint_path}")
-        self.model.load_state_dict(state["models_state_dict"][0])
-        if self.sampling_model is not self.model:
-            self.sampling_model.load_state_dict(state["sampling_model_state_dict"][0])
-        del state
 
     # MOO setting
     def train_batch(self, batch: gd.Batch, epoch_idx: int, batch_idx: int, train_it: int) -> dict[str, Any]:

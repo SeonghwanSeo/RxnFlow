@@ -291,7 +291,7 @@ class SynthesisEnvContext(GraphBuildingEnvContext):
                 action_repr = ("FirstBlock", action.block)
             elif action.action is RxnActionType.UniRxn:
                 rxn_template = self.protocol_dict[action.protocol].rxn.template
-                action_repr = ("UniFxn", rxn_template)
+                action_repr = ("UniRxn", rxn_template)
             elif action.action is RxnActionType.BiRxn:
                 rxn_template = self.protocol_dict[action.protocol].rxn.template
                 action_repr = ("BiRxn", rxn_template, action.block)

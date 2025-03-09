@@ -86,14 +86,14 @@ class RxnFlow_SinglePocket(RxnFlow_PocketConditional):
                 param.requires_grad = False
 
         if freeze_action_embedding:
-            for param in self.mlp_block.parameters():
+            for param in self.emb_block.parameters():
                 param.requires_grad = False
 
     def forward(self, g: gd.Batch, cond: Tensor) -> tuple[RxnActionCategorical, Tensor]:
         if self.freeze_pocket_embedding:
             self.pocket_encoder.eval()
         if self.freeze_action_embedding:
-            self.mlp_block.eval()
+            self.emb_block.eval()
 
         self.pocket_embed = self.get_pocket_embed()
         pocket_embed = self.pocket_embed.view(1, -1).repeat(g.num_graphs, 1)

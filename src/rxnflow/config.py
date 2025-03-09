@@ -69,6 +69,7 @@ class Config(config.Config):
     overwrite_existing_exp: bool = False
     env_dir: str = MISSING
     num_workers_retrosynthesis: int = 4
+    pretrained_model_path: str | None = None
     algo: AlgoConfig = field(default_factory=AlgoConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     opt: config.OptimizerConfig = field(default_factory=config.OptimizerConfig)

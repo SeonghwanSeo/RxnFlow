@@ -34,7 +34,7 @@ class VinaReward:
     ):
         self.protein_pdb_path: Path = Path(protein_pdb_path)
         if center is None:
-            assert ref_ligand_path is not None, "reference ligand path is required"
+            assert ref_ligand_path is not None, "One of center or reference ligand path is required"
             self.center = get_mol_center(ref_ligand_path)
         else:
             if ref_ligand_path is not None:

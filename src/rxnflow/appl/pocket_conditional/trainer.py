@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import torch
 from rdkit.Chem import Mol as RDMol
 from torch import Tensor
@@ -9,7 +7,6 @@ from gflownet.data.data_source import DataSource
 from gflownet.data.replay_buffer import ReplayBuffer
 from gflownet.utils.misc import get_worker_rng
 from rxnflow.appl.pocket_conditional.model import RxnFlow_MultiPocket, RxnFlow_PocketConditional, RxnFlow_SinglePocket
-from rxnflow.appl.pocket_conditional.pocket.data import generate_protein_data
 from rxnflow.appl.pocket_conditional.utils import PocketDB
 from rxnflow.base import BaseTask, RxnFlowTrainer
 from rxnflow.config import Config
@@ -18,9 +15,10 @@ from rxnflow.config import Config
 class PocketConditionalTask(BaseTask):
     """Sets up a task where the reward is computed using a Proxy, QED."""
 
+    pocket_db: PocketDB
+
     def __init__(self, cfg: Config):
         super().__init__(cfg)
-        self.pocket_db: PocketDB
         self.objectives = cfg.task.moo.objectives
         self.setup_pocket_db()
 
@@ -32,15 +30,8 @@ class PocketConditionalTask(BaseTask):
         return len(self.pocket_db)
 
     def setup_pocket_db(self):
+        """set protein db for training"""
         raise NotImplementedError
-
-    def set_protein(self, protein_path: str, center: tuple[float, float, float]):
-        """set single protein db"""
-        self.protein_path: str = protein_path
-        self.protein_key: str = Path(self.protein_path).stem
-        self.center: tuple[float, float, float] = center
-        self.pocket_db = PocketDB({self.protein_key: generate_protein_data(self.protein_path, self.center)})
-        self.pocket_db.set_batch_idcs([0])
 
     def sample_conditional_information(self, n: int, train_it: int) -> dict[str, Tensor]:
         cond_info = super().sample_conditional_information(n, train_it)
@@ -50,17 +41,6 @@ class PocketConditionalTask(BaseTask):
         self.pocket_db.set_batch_idcs(pocket_indices)
         cond_info["pocket_idx"] = torch.LongTensor(pocket_indices)
         return cond_info
-
-
-class PocketConditionalTask_Fewshot(PocketConditionalTask):
-    """Sets up a task where the reward is computed using a Proxy, QED."""
-
-    def compute_obj_properties(self, objs: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
-        assert all(v == 0 for v in sample_idcs)
-        raise NotImplementedError
-
-    def setup_pocket_db(self):
-        self.set_protein(self.cfg.task.docking.protein_path, self.cfg.task.docking.center)
 
 
 class PocketConditionalTrainer(RxnFlowTrainer):

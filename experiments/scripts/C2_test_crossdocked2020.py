@@ -9,7 +9,9 @@ import torch
 from tqdm import tqdm
 
 from rxnflow.appl.pocket_conditional.model import RxnFlow_SinglePocket
+from rxnflow.appl.pocket_conditional.pocket.data import generate_protein_data
 from rxnflow.appl.pocket_conditional.trainer import PocketConditionalTask
+from rxnflow.appl.pocket_conditional.utils import PocketDB
 from rxnflow.base.generator import RxnFlowSampler
 from rxnflow.config import Config, init_empty
 
@@ -28,6 +30,14 @@ class TestTask(PocketConditionalTask):
     def setup_pocket_db(self):
         pass
 
+    def set_protein(self, protein_path: str | Path, center: tuple[float, float, float]):
+        """set single protein db - for sampling / few-shot training"""
+        self.protein_path: str = str(protein_path)
+        self.protein_key: str = Path(self.protein_path).stem
+        self.center: tuple[float, float, float] = center
+        self.pocket_db = PocketDB({self.protein_key: generate_protein_data(self.protein_path, self.center)})
+        self.pocket_db.set_batch_idcs([0])
+
 
 class TestSampler(RxnFlowSampler):
     task: TestTask
@@ -36,11 +46,10 @@ class TestSampler(RxnFlowSampler):
         self.model = RxnFlow_SinglePocket(self.ctx, self.cfg, num_graph_out=self.cfg.algo.tb.do_predict_n + 1)
 
     def setup_task(self):
-        self.task = TestTask(cfg=self.cfg, wrap_model=self._wrap_for_mp)
+        self.task = TestTask(cfg=self.cfg)
 
     @torch.no_grad()
     def set_pocket(self, protein_path: str | Path, center: tuple[float, float, float]):
-        self.sampling_model.clear_cache()
         self.model.clear_cache()
         self.task.set_protein(str(protein_path), center)
 
@@ -53,22 +62,24 @@ class TestSampler(RxnFlowSampler):
         calc_reward: bool = False,
     ) -> list[dict[str, Any]]:
         """
-        samples = sampler.sample_against_pocket(<pocket_file>, <center>, <n>, calc_reward = False)
+        # generation only
+        samples: list = sampler.sample(200, calc_reward = False)
         samples[0] = {'smiles': <smiles>, 'traj': <traj>, 'info': <info>}
         samples[0]['traj'] = [
-            (('StartingBlock',), smiles1),        # None    -> smiles1
-            (('UniMolecularReaction', template), smiles2),  # smiles1 -> smiles2
-            ...                                 # smiles2 -> ...
+            (('Firstblock', block), smiles1),       # None    -> smiles1
+            (('UniRxn', template), smiles2),        # smiles1 -> smiles2
+            (('BiRxn', template, block), smiles3),  # smiles2 -> smiles3
+            ...                                     # smiles3 -> ...
         ]
         samples[0]['info'] = {'beta': <beta>, ...}
 
-
+        # with reward
         samples = sampler.sample_against_pocket(..., calc_reward = True)
         samples[0]['info'] = {
             'beta': <beta>,
             'reward': <reward>,
             'reward_qed': <qed>,
-            'reward_docking': <proxy>,
+            'reward_vina': <proxy>,
         }
         """
         self.set_pocket(protein_path, center)

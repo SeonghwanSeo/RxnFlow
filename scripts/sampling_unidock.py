@@ -4,8 +4,6 @@ import time
 from argparse import ArgumentParser
 from pathlib import Path
 
-from _utils import get_center
-
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.unidock_vina import VinaSampler
 
@@ -26,33 +24,41 @@ def parse_args():
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
-        default=0.01,
-        help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.01)",
+        default=0.1,
+        help="Action Subsampling Ratio. Memory-efficiency trade-off (Higher ratio increase samplinge efficiency; default: 0.1)",
     )
     run_cfg.add_argument("--cuda", action="store_true", help="CUDA Acceleration")
 
-    opt_cfg = parser.add_argument_group("Protein Config (overwrite)")
-    opt_cfg.add_argument("-p", "--protein", type=str, required=False, help="Protein PDB Path")
+    opt_cfg = parser.add_argument_group("Protein Config (overwrite training setting)")
+    opt_cfg.add_argument("-p", "--protein", type=str, help="Protein PDB Path")
     opt_cfg.add_argument("-c", "--center", nargs="+", type=float, help="Pocket Center (--center X Y Z)")
     opt_cfg.add_argument("-l", "--ref_ligand", type=str, help="Reference Ligand Path (required if center is missing)")
     opt_cfg.add_argument(
         "-s", "--size", nargs="+", type=float, help="Search Box Size (--size X Y Z)", default=(22.5, 22.5, 22.5)
     )
-
-    run_cfg = parser.add_argument_group("Operation Config")
     return parser.parse_args()
 
 
 def run(args):
     ckpt_path = Path(args.model_path)
 
+    # change config from training
     config = init_empty(Config())
+
+    # most samplings are generated in multiples of 100. e.g., generate 1000 molecules
+    # 100 molecules for each iteration.
     config.algo.num_from_policy = 100
+
+    # low subsampling ratio: force exploration
+    # high subsampling ratio: more exploitation
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
+
     if args.env_dir is not None:
         config.env_dir = args.env_dir
     if args.protein is not None:
         config.task.docking.protein_path = args.protein
+    if args.ref_ligand_path is not None:
+        config.task.docking.ref_ligand_path = args.ref_ligand
     if args.center is not None:
         config.task.docking.center = args.center
     if args.size is not None:
@@ -85,8 +91,4 @@ def run(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.ref_ligand is not None:
-        args.center = get_center(args.ref_ligand)
-    elif args.center is not None:
-        assert len(args.center) == 3, "--center need three values: X Y Z"
     run(args)

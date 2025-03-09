@@ -61,20 +61,22 @@ class VinaMOOTrainer(VinaTrainer):
         base.num_training_steps = 1000
         base.validate_every = 0
 
-        base.algo.train_random_action_prob = 0.05
-        base.algo.action_subsampling.sampling_ratio = 0.02
-
-        base.cond.temperature.sample_dist = "uniform"
-        base.cond.temperature.dist_params = [0.0, 64.0]
-        base.replay.use = True
-        base.replay.capacity = 64 * 100
-        base.replay.warmup = 64 * 5
-
         # for training step = 1000
         base.opt.learning_rate = 1e-4
         base.opt.lr_decay = 500
         base.algo.tb.Z_learning_rate = 1e-2
         base.algo.tb.Z_lr_decay = 1000
+
+        # GFN parameters
+        base.cond.temperature.sample_dist = "uniform"
+        base.cond.temperature.dist_params = [0.0, 64.0]
+        base.algo.train_random_action_prob = 0.05
+        base.algo.action_subsampling.sampling_ratio = 0.02
+
+        # replay buffer
+        base.replay.use = True
+        base.replay.capacity = 64 * 100
+        base.replay.warmup = 64 * 10
 
     def setup_task(self):
         self.task = VinaMOOTask(self.cfg)
