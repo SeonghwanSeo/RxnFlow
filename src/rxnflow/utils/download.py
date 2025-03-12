@@ -3,8 +3,12 @@ import os
 import gdown
 
 DRIVE_ID = {
+    # up-to-date version
     "qed-unif-0-64": "1romQcMrJ7UM6Ps7sFrrvGp4Rmj_I2OBi",
     "qvina-unif-0-64": "13ATBmJIgIhU3Kclwut0yssjaciPCieEV",
+    # all version
+    "qed-unif-0-64_20250512": "1romQcMrJ7UM6Ps7sFrrvGp4Rmj_I2OBi",
+    "qvina-unif-0-64_20250512": "13ATBmJIgIhU3Kclwut0yssjaciPCieEV",
 }
 
 FILE_NAME = {

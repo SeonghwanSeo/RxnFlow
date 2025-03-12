@@ -14,8 +14,6 @@ This project is based on Recursion's GFlowNet Repository; `src/gflownet/` is a c
 
 <!-- Since we constantly improve it, current version does not reproduce the same results as the paper. You can access the reproducing codes and scripts from [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive). -->
 
-**NOTE:** Current main branch is pre-release; we will provide pre-trained models soon.
-
 ## Setup
 
 ### Installation
@@ -53,7 +51,10 @@ We support two building block libraries.
 - **ZINCFrag:** For reproducible benchmark study, we propose a new public building block library, which is a subset of ZINC22 fragment set. All fragments are also included in AiZynthFinder's built-in ZINC stock.
 - **Enamine:** We support the Enamine building block library, which is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog).
 
-### (Optional) Download pre-trained model
+### Download pre-trained model
+
+We provide some pre-trained GFlowNet models which are trained on QED and pocket-conditional proxy (see [./weights/README.md](weights/README.md)).
+Each model weight is also automatically downloaded through its name.
 
 ## Experiments
 
@@ -133,6 +134,18 @@ Example codes are provided in [`src/rxnflow/tasks/`](src/rxnflow/tasks) and [`sc
   class MOOSampler(RxnFlowSampler):  # Sampling with trained GFlowNet
       def setup_task(self):
           self.task = MOGFNTask(self.cfg)
+  ```
+
+- Finetuning a pre-trained model
+  We observed that the pre-training can be helpful for initial model training.
+  Finetuning can be performed by setting `config.pretrained_model_path`.
+
+  ```python
+  from rxnflow.utils.download import download_pretrained_weight
+
+  # download GFN (temperature=U(0,64)) trained on qed reward
+  qed_model_path = download_pretrained_weight('qed-unif-0-64')
+  config.pretrained_model_path = qed_model_path
   ```
 
 </details>
