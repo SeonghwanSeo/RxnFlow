@@ -136,9 +136,10 @@ Example codes are provided in [`src/rxnflow/tasks/`](src/rxnflow/tasks) and [`sc
           self.task = MOGFNTask(self.cfg)
   ```
 
-- Finetuning a pre-trained model
-  We observed that the pre-training can be helpful for initial model training.
-  Finetuning can be performed by setting `config.pretrained_model_path`.
+- Finetuning a pre-trained model (non-MOGFN)
+
+  We observed that pre-training can be helpful for initial model training.
+  It can be done by setting `config.pretrained_model_path`:
 
   ```python
   from rxnflow.utils.download import download_pretrained_weight
@@ -182,7 +183,6 @@ To perform multi-objective optimization for Vina and QED, we provide two reward 
   $$R(x) = \text{QED}(x) \times \widehat{\text{Vina}}(x)$$
 
   ```bash
-  # help (fine-tuning is available)
   python scripts/opt_unidock_moo.py -h
   ```
 
@@ -191,7 +191,6 @@ To perform multi-objective optimization for Vina and QED, we provide two reward 
   $$R(x;\alpha) = \alpha \text{QED}(x) + (1-\alpha) \widehat{\text{Vina}}(x)$$
 
   ```bash
-  # help (fine-tuning is unavailable)
   python scripts/opt_unidock_mogfn.py -h
   ```
 
@@ -211,12 +210,12 @@ To perform multi-objective optimization for Vina and QED, we provide two reward 
     -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb
   ```
 
-- Use pretrained model
+- Use pretrained model (see [weights/README.md](weights/README.md))
 
-  We provided pretrained model trained on QED for non-MOGFN:
+  We provided pretrained model trained on QED for non-MOGFN :
 
   ```bash
-  # fine-tune pretrained model (current model: qed-unif-0-64)
+  # fine-tune pretrained model
   python scripts/opt_unidock.py ... --pretrained_model 'qed-unif-0-64'
   python scripts/opt_unidock_moo.py ... --pretrained_model 'qed-unif-0-64'
   ```
@@ -226,35 +225,22 @@ To perform multi-objective optimization for Vina and QED, we provide two reward 
 <details>
 <summary><h3 style="display:inline-block"> Pocket-conditional generation (Zero-shot sampling)</h3></summary>
 
-Sample high-affinity molecules. The QuickVina docking score is estimated by Proxy Model [[github](https://github.com/SeonghwanSeo/PharmacoNet/tree/main/src/pmnet_appl)].
-To create dataset, please refer [data/](./data/)
+#### Sampling
 
-The trained model will be updated soon.
+Sample high-affinity molecules in a zero-shot manner (no training iterations):
 
-- Training
-
-  ```bash
-  python scripts/train_pocket_conditional.py \
-    --env_dir <Environment directory> \
-    --out_dir <Output directory> \
-    --batch_size <Batch size; memory-variance trade-off; default: 64> \
-    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02>
-  ```
-
-- Sampling
-
-  ```bash
-  python scripts/sampling_zeroshot.py \
-    --model_path <Checkpoint path; default: qvina-unif-0-64> \
-    --env_dir <Environment directory> \
-    -p <Protein PDB path> \
-    -c <Center X> <Center Y> <Center Z> \
-    -l <Reference ligand, required if center is empty. > \
-    -o <Output path: `smi|csv`> \
-    -n <Num samples (default: 100)> \
-    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.1> \
-    --cuda
-  ```
+```bash
+python scripts/sampling_zeroshot.py \
+  --model_path <Checkpoint path; default: qvina-unif-0-64> \
+  --env_dir <Environment directory> \
+  -p <Protein PDB path> \
+  -c <Center X> <Center Y> <Center Z> \
+  -l <Reference ligand, required if center is empty. > \
+  -o <Output path: `smi|csv`> \
+  -n <Num samples (default: 100)> \
+  --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.1> \
+  --cuda
+```
 
 **Example (KRAS G12C mutation)**
 
@@ -269,6 +255,20 @@ The trained model will be updated soon.
   ```bash
   python scripts/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb
   ```
+
+#### Training
+
+To train model, pocket database should be constructed. Please refer [data/](./data/).
+
+For reward function, we used proxy model [[github](https://github.com/SeonghwanSeo/PharmacoNet/tree/main/src/pmnet_appl)] to estimate QuickVina docking score.
+
+```bash
+python scripts/train_pocket_conditional.py \
+  --env_dir <Environment directory> \
+  --out_dir <Output directory> \
+  --batch_size <Batch size; memory-variance trade-off; default: 64> \
+  --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02>
+```
 
 </details>
 
