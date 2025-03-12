@@ -21,6 +21,7 @@ class VinaTask(BaseTask):
         self.oracle_idx = 0
         self.filter = cfg.task.constraint.rule
 
+        assert cfg.task.docking.protein_path is not None, "Config.task.docking.protein is required"
         self.vina = VinaReward(
             cfg.task.docking.protein_path,
             cfg.task.docking.center,

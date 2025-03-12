@@ -36,6 +36,7 @@ class ProxyTask(PocketConditionalTask):
         self.last_reward: dict[str, Tensor] = {}  # For Logging
 
     def _load_task_models(self) -> BaseProxy:
+        assert self.cfg.task.pocket_conditional.proxy, "cfg.task.pocket_conditional.proxy is required"
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.pocket_conditional.proxy
         proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, None, self.cfg.device)
         return proxy
@@ -98,6 +99,7 @@ class ProxyTask_Fewshot(ProxyTask_SinglePocket):
         del self.proxy.pmnet
 
     def setup_pocket_db(self):
+        assert self.cfg.task.docking.protein_path, "cfg.task.docking.protein_path is required"
         self.set_protein(
             self.cfg.task.docking.protein_path, self.cfg.task.docking.center, self.cfg.task.docking.ref_ligand_path
         )
@@ -108,6 +110,7 @@ class ProxyTask_MultiPocket(ProxyTask):
 
     def setup_pocket_db(self):
         cfg = self.cfg.task.pocket_conditional
+        assert cfg.pocket_db, "cfg.task.pocket_conditional.pocket_db is required"
         self.pocket_db = PocketDB(torch.load(cfg.pocket_db, map_location="cpu"))
 
     def compute_obj_properties(self, mols: list[RDMol], sample_idcs: list[int]) -> tuple[ObjectProperties, Tensor]:
@@ -120,6 +123,7 @@ class ProxyTask_MultiPocket(ProxyTask):
         return ObjectProperties(flat_rewards), is_valid_t
 
     def _load_task_models(self) -> BaseProxy:
+        assert self.cfg.task.pocket_conditional.proxy, "cfg.task.pocket_conditional.proxy is required"
         proxy_model, proxy_type, proxy_dataset = self.cfg.task.pocket_conditional.proxy
         proxy = get_docking_proxy(proxy_model, proxy_type, proxy_dataset, "train", self.cfg.device)
         return proxy

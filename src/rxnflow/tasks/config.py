@@ -1,7 +1,5 @@
 from dataclasses import dataclass, field
 
-from omegaconf import MISSING
-
 
 @dataclass
 class MOOTaskConfig:
@@ -40,8 +38,8 @@ class PocketConditionalConfig:
         Pocket embedding dimension
     """
 
-    proxy: tuple[str, str, str] = MISSING
-    pocket_db: str = MISSING
+    proxy: tuple[str, str, str] | None = None
+    pocket_db: str | None = None
     pocket_dim: int = 128
 
 
@@ -64,7 +62,7 @@ class DockingTaskConfig:
         Pocket Box Size
     """
 
-    protein_path: str = MISSING
+    protein_path: str | None = None
     center: tuple[float, float, float] | None = None
     ref_ligand_path: str | None = None
     size: tuple[float, float, float] = (22.5, 22.5, 22.5)  # unidock default

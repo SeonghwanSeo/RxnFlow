@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 import wandb
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.unidock_vina_moo import VinaMOOTrainer
+from rxnflow.utils.download import download_pretrained_weight
 
 
 def parse_args():
@@ -48,7 +49,9 @@ def run(args):
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
-    config.pretrained_model_path = args.pretrained_model
+
+    if args.pretrained_model is not None:
+        config.pretrained_model_path = str(download_pretrained_weight(args.pretrained_model))
 
     config.print_every = 1
     config.num_training_steps = args.num_iterations

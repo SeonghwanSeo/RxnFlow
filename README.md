@@ -8,15 +8,17 @@
 
 Official implementation of **_Generative Flows on Synthetic Pathway for Drug Design_** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[paper](https://arxiv.org/abs/2410.04542)]
 
-RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space comprising **1M building blocks and 100 reaction templates without compute overhead**.
+RxnFlow are a synthesis-oriented generative framework that aims to discover diverse drug candidates through GFlowNet objective and a large action space comprising **1M building blocks and 100 reaction templates without computational overhead**.
 
 This project is based on Recursion's GFlowNet Repository; `src/gflownet/` is a clone of [recursionpharma/gflownet@v0.2.0](https://github@v0.2.0.com/recursionpharma/gflownet/tree/v0@v0.2.0.2@v0.2.0.0).
-Since we constantly improve it, current version does not reproduce the same results as the paper.
-You can access the reproducing codes and scripts from [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive).
+
+<!-- Since we constantly improve it, current version does not reproduce the same results as the paper. You can access the reproducing codes and scripts from [tag: paper-archive](https://github.com/SeonghwanSeo/RxnFlow/tree/paper-archive). -->
 
 **NOTE:** Current main branch is pre-release; we will provide pre-trained models soon.
 
-## Installation
+## Setup
+
+### Installation
 
 ```bash
 # python>=3.12,<3.13
@@ -33,23 +35,25 @@ pip install -e '.[pmnet]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu12
 pip install -e '.[unidock,pmnet,dev]' --find-links https://data.pyg.org/whl/torch-2.5.1+cu121.html
 ```
 
-## Data Preparation
+### Data Preparation
 
 To construct datas, please follow the process in [data/README.md](data/README.md).
 
-### Reaction Template
+#### Reaction Template
 
 We provide the two reaction template sets:
 
 - **Real**: We provide the 109-size reaction template set [templates/real.txt](templates/real.txt) from Enamine REAL synthesis protocol ([Gao et al.](https://github.com/wenhao-gao/synformer)).
 - **HB**: The reaction template used in this paper contains 13 uni-molecular reactions and 58 bi-molecular reactions, which is constructed by [Cretu et al](https://github.com/mirunacrt/synflownet). The template set is available under [templates/hb_edited.txt](template/hb_edited.txt).
 
-### Building Block Library
+#### Building Block Library
 
 We support two building block libraries.
 
 - **ZINCFrag:** For reproducible benchmark study, we propose a new public building block library, which is a subset of ZINC22 fragment set. All fragments are also included in AiZynthFinder's built-in ZINC stock.
 - **Enamine:** We support the Enamine building block library, which is available upon request at [https://enamine.net/building-blocks/building-blocks-catalog](https://enamine.net/building-blocks/building-blocks-catalog).
+
+### (Optional) Download pre-trained model
 
 ## Experiments
 
@@ -58,7 +62,7 @@ We support two building block libraries.
 
 If you want to train RxnFlow with your custom reward function, you can use the base classes from `rxnflow.base`. The reward should be **Non-negative**.
 
-Example codes are provided in [`src/rxnflow/tasks/`](src/rxnflow/tasks) and [`scripts/examples/`](sripts/examples).
+Example codes are provided in [`src/rxnflow/tasks/`](src/rxnflow/tasks) and [`scripts/examples/`](scripts/examples).
 
 - Single-objective optimization
 
@@ -136,7 +140,9 @@ Example codes are provided in [`src/rxnflow/tasks/`](src/rxnflow/tasks) and [`sc
 <details>
 <summary><h3 style="display:inline-block"> Docking optimization with GPU-accelerated UniDock</h3></summary>
 
-You can optimize the Vina score with GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145).
+#### Single-objective optimization
+
+To train GFlowNet with Vina score using GPU-accelerated [UniDock](https://pubs.acs.org/doi/10.1021/acs.jctc.2c01145), run:
 
 ```bash
 python scripts/opt_unidock.py -h
@@ -151,66 +157,61 @@ python scripts/opt_unidock.py \
   --search_mode <Unidock mode; choice=(fast, balance, detail); default: fast> \
   --filter <Drug filter; choice=(lipinski, veber, null); default: lipinski> \
   --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02> \
-  --pretrained_model_path <Pretrained model Path; optional>
+  --pretrained_model <Pretrained model path; optional>
 ```
 
-You can also perform multi-objective optimization for Vina score and QED.
+#### Multi-objective optimization
 
-- Multiplication-based Reward
+To perform multi-objective optimization for Vina and QED, we provide two reward designs:
+
+- Multiplication-based Reward:
 
   $$R(x) = \text{QED}(x) \times \widehat{\text{Vina}}(x)$$
 
   ```bash
+  # help (fine-tuning is available)
   python scripts/opt_unidock_moo.py -h
-  python scripts/opt_unidock_moo.py \
-    --env_dir <Environment directory> \
-    --out_dir <Output directory> \
-    -n <Num iterations (64 molecules per iterations; default: 1000)> \
-    -p <Protein PDB path> \
-    -c <Center X> <Center Y> <Center Z> \
-    -l <Reference ligand, required if center is empty. > \
-    -s <Size X> <Size Y> <Size Z> \
-    --search_mode <Unidock mode; choice=(fast, balance, detail); default: fast> \
-    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02> \
-    --pretrained_model_path <Pretrained model Path; optional>
   ```
 
-- Multi-objective GFlowNet (MOGFN)
+- Multi-objective GFlowNet (MOGFN):
 
   $$R(x;\alpha) = \alpha \text{QED}(x) + (1-\alpha) \widehat{\text{Vina}}(x)$$
 
   ```bash
+  # help (fine-tuning is unavailable)
   python scripts/opt_unidock_mogfn.py -h
-  python scripts/opt_unidock_mogfn.py \
-    --env_dir <Environment directory> \
-    --out_dir <Output directory> \
-    -n <Num iterations (64 molecules per iterations; default: 1000)> \
-    -p <Protein PDB path> \
-    -c <Center X> <Center Y> <Center Z> \
-    -l <Reference ligand, required if center is empty. > \
-    -s <Size X> <Size Y> <Size Z> \
-    --search_mode <Unidock mode; choice=(fast, balance, detail); default: fast> \
-    --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02>
   ```
 
-**Example (KRAS G12C mutation)**
+#### Example (KRAS G12C mutation)
 
 - Use center coordinates
 
   ```bash
-  python scripts/opt_unidock.py -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 -o ./log/kras --filter veber
+  python scripts/opt_unidock.py -o ./log/kras --filter veber \
+    -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
   ```
 
 - Use center of the reference ligand
 
   ```bash
-  python scripts/opt_unidock_moo.py -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb -o ./log/kras
+  python scripts/opt_unidock_mogfn.py -o ./log/kras_moo \
+    -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb
+  ```
+
+- Use pretrained model
+
+  We provided pretrained model trained on QED for non-MOGFN:
+
+  ```bash
+  # fine-tune pretrained model (current model: qed-unif-0-64)
+  python scripts/opt_unidock.py ... --pretrained_model 'qed-unif-0-64'
+  python scripts/opt_unidock_moo.py ... --pretrained_model 'qed-unif-0-64'
   ```
 
 </details>
 
 <details>
-<summary><h3 style="display:inline-block"> Pocket-conditional generation</h3></summary>
+<summary><h3 style="display:inline-block"> Pocket-conditional generation (Zero-shot sampling)</h3></summary>
 
 Sample high-affinity molecules. The QuickVina docking score is estimated by Proxy Model [[github](https://github.com/SeonghwanSeo/PharmacoNet/tree/main/src/pmnet_appl)].
 To create dataset, please refer [data/](./data/)
@@ -220,10 +221,9 @@ The trained model will be updated soon.
 - Training
 
   ```bash
-  python scripts/train_pocket_conditional.py -h
   python scripts/train_pocket_conditional.py \
     --env_dir <Environment directory> \
-    -o <Output directory> \
+    --out_dir <Output directory> \
     --batch_size <Batch size; memory-variance trade-off; default: 64> \
     --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.02>
   ```
@@ -231,32 +231,53 @@ The trained model will be updated soon.
 - Sampling
 
   ```bash
-  python scripts/sampling_zeroshot.py -h
   python scripts/sampling_zeroshot.py \
+    --model_path <Checkpoint path; default: qvina-unif-0-64> \
+    --env_dir <Environment directory> \
     -p <Protein PDB path> \
     -c <Center X> <Center Y> <Center Z> \
     -l <Reference ligand, required if center is empty. > \
     -o <Output path: `smi|csv`> \
     -n <Num samples (default: 100)> \
-    --env_dir <Environment directory> \
-    --model_path <Checkpoint path; default: None (auto-downloaded)> \
     --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.1> \
     --cuda
   ```
 
 **Example (KRAS G12C mutation)**
 
-- `csv` format: save molecules with their rewards (GPU is recommended)
+- `csv`: save molecules with their rewards (GPU is recommended)
 
   ```bash
-  python scripts/sampling_zeroshot.py -o out.csv -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb --cuda
+  python scripts/sampling_zeroshot.py -o out.csv -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361 --cuda
   ```
 
-- `smi` format: save molecules only (CPU: 0.06s/mol, GPU: 0.04s/mol)
+- `smi`: save molecules only (CPU: 0.06s/mol, GPU: 0.04s/mol)
 
   ```bash
-  python scripts/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -c 1.872 -8.260 -1.361
+  python scripts/sampling_zeroshot.py -o out.smi -p ./data/examples/6oim_protein.pdb -l ./data/examples/6oim_ligand.pdb
   ```
+
+</details>
+
+<details>
+<summary><h3 style="display:inline-block">Few shot training from pocket-conditional generation</h3></summary>
+
+We can do few-shot training for a single pocket by fine-tuning the pocket conditional GFlowNet.
+Pocket embedding and action embedding are frozen, so we can use higher subsampling ratio.
+
+```bash
+python scripts/few_shot_unidock_moo.py \
+  --env_dir <Environment directory> \
+  --out_dir <Output directory> \
+  --pretrained_model <Pretrained model path; default: qvina-unif-0-64> \
+  -n <Num iterations (64 molecules per iterations; default: 1000)> \
+  -p <Protein PDB path> \
+  -c <Center X> <Center Y> <Center Z> \
+  -l <Reference ligand, required if center is empty. > \
+  -s <Size X> <Size Y> <Size Z> \
+  --search_mode <Unidock mode; choice=(fast, balance, detail); default: fast> \
+  --subsampling_ratio <Subsample ratio; memory-variance trade-off; default: 0.04>
+```
 
 </details>
 
@@ -288,6 +309,6 @@ If you use our code in your research, we kindly ask that you consider citing our
 
 ## Related Works
 
-- [GFlowNet](https://arxiv.org/abs/2106.04399) (github: [recursionpharma/gflownet](https://github.com/recursionpharma/gflownet))
+- [GFlowNet](https://arxiv.org/abs/2106.04399) [github: [recursionpharma/gflownet](https://github.com/recursionpharma/gflownet)]
 - [TacoGFN](https://arxiv.org/abs/2310.03223) [github: [tsa87/TacoGFN-SBDD](https://github.com/tsa87/TacoGFN-SBDD)]
 - [PharmacoNet](https://arxiv.org/abs/2310.00681) [github: [SeonghwanSeo/PharmacoNet](https://github.com/SeonghwanSeo/PharmacoNet)]

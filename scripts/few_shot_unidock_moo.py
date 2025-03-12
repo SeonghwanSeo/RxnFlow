@@ -3,6 +3,7 @@ from argparse import ArgumentParser
 import wandb
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.unidock_vina_fewshot import VinaMOOTrainer_Fewshot
+from rxnflow.utils.download import download_pretrained_weight
 
 
 def parse_args():
@@ -27,6 +28,7 @@ def parse_args():
     run_cfg = parser.add_argument_group("Operation Config")
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
     run_cfg.add_argument("-o", "--out_dir", type=str, required=True, help="Output directory")
+    run_cfg.add_argument("--pretrained_model", type=str, help="Pretrained Model Path", default="qvina-unif-0-64")
     run_cfg.add_argument(
         "-n",
         "--num_iterations",
@@ -34,13 +36,13 @@ def parse_args():
         default=1_000,
         help="Number of training iterations (default: 1,000)",
     )
+    # since action embedding layer is frozen, we can use higher subsampling ratio
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
         default=0.04,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.04)",
     )
-    run_cfg.add_argument("--pretrained_model", type=str, help="Pretrained Model Path")
     run_cfg.add_argument("--wandb", type=str, help="wandb job name")
     run_cfg.add_argument("--debug", action="store_true", help="For debugging option")
     return parser.parse_args()
@@ -50,7 +52,7 @@ def run(args):
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
-    config.pretrained_model_path = args.pretrained_model
+    config.pretrained_model_path = str(download_pretrained_weight(args.pretrained_model))
 
     config.print_every = 1
     config.num_training_steps = args.num_iterations

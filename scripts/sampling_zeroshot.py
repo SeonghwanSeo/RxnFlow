@@ -1,16 +1,12 @@
 import os
 import time
 from argparse import ArgumentParser
-from pathlib import Path
-
-import gdown
 
 from rxnflow.config import Config, init_empty
 from rxnflow.tasks.multi_pocket import ProxySampler
+from rxnflow.utils.download import download_pretrained_weight
 
-DEFAULT_CKPT_LINK = "https://drive.google.com/uc?id=1uwvFbP0l_wNzb4riJ568Zouewhmuxvur"
-DEFAULT_CKPT_PATH = "./weights/rxnflow_crossdocked_qvina.pt"
-DEFAULT_CKPT_PATH = "./logs/pretrain/sbdd-uniform-0-64/model_state.pt"
+DEFAULT_CKPT = "qvina-unif-0-64"
 
 
 def parse_args():
@@ -21,15 +17,21 @@ def parse_args():
     opt_cfg.add_argument("-c", "--center", nargs="+", type=float, help="Pocket Center (--center X Y Z)")
 
     run_cfg = parser.add_argument_group("Operation Config")
+    run_cfg.add_argument("--model_path", type=str, help="Checkpoint Path", default="qvina-unif-0-64")
     run_cfg.add_argument("-n", "--num_samples", type=int, default=100, help="Number of Samples (default: 100)")
     run_cfg.add_argument("-o", "--out_path", type=str, required=True, help="Output Path (.csv | .smi)")
     run_cfg.add_argument("--env_dir", type=str, default="./data/envs/catalog", help="Environment Directory Path")
-    run_cfg.add_argument("--model_path", type=str, help="Checkpoint Path")
     run_cfg.add_argument(
         "--subsampling_ratio",
         type=float,
         default=0.1,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.1)",
+    )
+    run_cfg.add_argument(
+        "--temperature",
+        type=str,
+        default="uniform-16-64",
+        help="temperature setting (e.g., uniform-16-64(default), uniform-32-64, ...)",
     )
     run_cfg.add_argument("--cuda", action="store_true", help="CUDA Acceleration")
     run_cfg.add_argument("--seed", type=int, help="seed", default=1)
@@ -37,6 +39,8 @@ def parse_args():
 
 
 def run(args):
+    from _utils import parse_temperature
+
     # change config from training
     config = init_empty(Config())
     config.seed = args.seed
@@ -44,19 +48,19 @@ def run(args):
     config.algo.num_from_policy = 100
     config.algo.action_subsampling.sampling_ratio = args.subsampling_ratio
 
-    # protein path
-    config.task.docking.protein_path = args.protein
-    config.task.docking.ref_ligand_path = args.ref_ligand
-    config.task.docking.center = args.center
-
     device = "cuda" if args.cuda else "cpu"
     save_reward = os.path.splitext(args.out_path)[1] == ".csv"
 
-    # NOTE: Run
-    model_path = Path(args.model_path)
+    # create sampler
+    model_path = download_pretrained_weight(args.model_path)
     sampler = ProxySampler(config, model_path, device)
-    sampler.update_temperature("uniform", [16, 64])
+    sample_dist, dist_params = parse_temperature(args.temperature)
+    sampler.update_temperature(sample_dist, dist_params)
 
+    # set binding site
+    sampler.set_pocket(args.protein, args.center, args.ref_ligand)
+
+    # run
     tick = time.time()
     res = sampler.sample(args.num_samples, calc_reward=save_reward)
     print(f"Sampling: {time.time() - tick:.3f} sec")
@@ -77,9 +81,4 @@ def run(args):
 
 if __name__ == "__main__":
     args = parse_args()
-    if args.model_path is None:
-        args.model_path = DEFAULT_CKPT_PATH
-        if not os.path.exists(args.model_path):
-            os.system("mkdir -p weights/")
-            gdown.download(DEFAULT_CKPT_LINK, DEFAULT_CKPT_PATH)
     run(args)

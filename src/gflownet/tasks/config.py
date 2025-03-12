@@ -1,6 +1,5 @@
 from dataclasses import dataclass, field
 from typing import List
-from omegaconf import MISSING
 
 from gflownet.utils.misc import StrictDataClass
 
@@ -105,7 +104,7 @@ class DockingTaskConfig:
         Pocket Box Size
     """
 
-    protein_path: str = MISSING
+    protein_path: str | None = None
     center: tuple[float, float, float] | None = None
     ref_ligand_path: str | None = None
     size: tuple[float, float, float] = (22.5, 22.5, 22.5)  # unidock default
