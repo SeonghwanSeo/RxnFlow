@@ -185,14 +185,14 @@ class RxnActionCategorical(GraphActionCategorical):
             return [logits + alpha * w for logits, w in zip(self.logits, self._importance_weights, strict=True)]
 
     def _apply_action_masks(self):
-        self._masked_logits = [
-            self._mask(logits, mask) for logits, mask in zip(self.raw_logits, self._protocol_masks, strict=True)
-        ]
+        def mask_fn(x: Tensor, m: Tensor) -> Tensor:
+            assert m.dtype == torch.bool
+            m = m.unsqueeze(-1)  # [Ngraph,] -> [Ngraph, 1]
+            return x.masked_fill_(~m, -torch.inf)  # [Ngraph, Naction]
 
-    def _mask(self, x: Tensor, m: Tensor) -> Tensor:
-        assert m.dtype == torch.bool
-        m = m.unsqueeze(-1)  # [Ngraph,] -> [Ngraph, 1]
-        return x.masked_fill_(~m, -torch.inf)  # [Ngraph, Naction]
+        self._masked_logits = [
+            mask_fn(logits, mask) for logits, mask in zip(self.raw_logits, self._protocol_masks, strict=True)
+        ]
 
     # NOTE: same but 10x faster (optimized for graph-wise predictions)
     def argmax(

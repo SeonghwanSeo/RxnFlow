@@ -140,7 +140,7 @@ class ProxyTrainer_Fewshot(PocketConditionalTrainer_SinglePocket):
         base.cond.temperature.dist_params = [0, 64]
 
     def setup_task(self):
-        self.task = ProxyTask_SinglePocket(cfg=self.cfg)
+        self.task = ProxyTask_Fewshot(cfg=self.cfg)
 
     def log(self, info, index, key):
         for obj in self.task.objectives:

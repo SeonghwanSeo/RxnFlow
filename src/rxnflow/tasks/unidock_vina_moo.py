@@ -98,6 +98,7 @@ if __name__ == "__main__":
     config.num_training_steps = 100
     config.log_dir = "./logs/debug-vina-moo/"
     config.env_dir = "./data/envs/stock"
+    config.algo.action_subsampling.sampling_ratio = 0.1
     config.overwrite_existing_exp = True
 
     config.task.docking.protein_path = "./data/examples/6oim_protein.pdb"

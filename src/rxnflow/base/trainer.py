@@ -140,7 +140,7 @@ class RxnFlowTrainer(CustomStandardOnlineTrainer):
 
     def terminate(self):
         super().terminate()
-        self.env.retro_analyzer.pool.shutdown(wait=True, cancel_futures=True)
+        self.env.retro_analyzer.terminate()
         if wandb.run is not None:
             wandb.finish()
 

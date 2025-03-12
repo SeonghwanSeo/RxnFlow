@@ -1,5 +1,8 @@
 import logging
 import sys
+from pathlib import Path
+
+import gdown
 
 _WORKER = {}
 
@@ -32,3 +35,7 @@ def create_logger(name="logger", loglevel=logging.INFO, logfile=None, streamHand
 
     logger.propagate = False
     return logger
+
+
+def download_checkpoint(weight_dir: Path):
+    pass

@@ -66,8 +66,9 @@ class VinaReward:
                 num_workers=self.num_workers,
             )
             for j, (_, v) in zip(unique_indices, res, strict=True):
+                if v < 0.0:
+                    self.history[smiles_list[j]] = v
                 scores[j] = min(v, 0.0)
-                self.history[smiles_list[j]] = scores[j]
             if save_path is not None:
                 with SDWriter(str(save_path)) as w:
                     for mol, _ in res:

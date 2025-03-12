@@ -253,6 +253,9 @@ class MultiRetroSyntheticAnalyzer:
     def init(self):
         self.result()
 
+    def terminate(self):
+        self.pool.shutdown(wait=True, cancel_futures=True)
+
     def submit(
         self,
         key: int,

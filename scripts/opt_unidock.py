@@ -41,7 +41,7 @@ def parse_args():
         default=0.02,
         help="Action Subsampling Ratio. Memory-variance trade-off (Smaller ratio increase variance; default: 0.02)",
     )
-    run_cfg.add_argument("--pretrained_model_path", type=str, help="Pretrained model path")
+    run_cfg.add_argument("--pretrained_model", type=str, help="Pretrained model path")
     run_cfg.add_argument("--wandb", type=str, help="wandb job name")
     run_cfg.add_argument("--debug", action="store_true", help="For debugging option")
     return parser.parse_args()
@@ -51,7 +51,7 @@ def run(args):
     config = init_empty(Config())
     config.env_dir = args.env_dir
     config.log_dir = args.out_dir
-    config.pretrained_model_path = args.pretrained_model_path
+    config.pretrained_model_path = args.pretrained_model
 
     config.print_every = 1
     config.num_training_steps = args.num_iterations
@@ -68,7 +68,7 @@ def run(args):
     config.task.constraint.rule = args.filter
 
     # set EMA factor
-    if args.pretrained_model_path is None:
+    if args.pretrained_model is None:
         config.algo.sampling_tau = 0.9
     else:
         config.algo.sampling_tau = 0.98
