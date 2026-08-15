@@ -1,0 +1,54 @@
+# Complete RxnFlow configuration template.
+# Start with qed.yaml for ordinary use. Copy this file only when advanced
+# training, model, or action-space controls need to be changed.
+
+# Required data settings and graph capacity.
+data:
+  env_dir: /path/to/prepared/emolecules
+  max_atoms: 50
+
+# Filesystem, reproducibility, and hardware settings.
+run:
+  output_dir: runs/qed
+  device: auto
+  seed: 0
+
+# Exponent and floor affect trajectory-balance optimization. Settings is
+# expanded into the selected reward constructor; the bundled CLI constructs
+# QEDReward(**settings). YAML does not import or select custom reward classes,
+# which remain explicit Python dependencies.
+reward:
+  exponent: 32.0
+  floor: 0.0001
+  settings: {}
+
+# Optional hard upper bounds. Supported keys: mw, tpsa, hbd, hba, logp,
+# rotatable_bonds, rings, aromatic_rings, and heavy_atoms.
+property_penalty: {}
+
+# Tier-stratified building-block action-space subsampling.
+subsampling:
+  sampling_ratio: 0.1
+  min_sampling: 50
+  importance_temp: 1.0
+
+# Pure-PyTorch graph model. hidden_dim must be divisible by num_heads.
+model:
+  hidden_dim: 128
+  num_heads: 4
+  num_layers: 3
+  dropout: 0.0
+
+training:
+  steps: 1000
+  batch_size: 128
+  replay_batch_size: 128
+  # Set to 0 to disable replay storage and sampling.
+  replay_capacity: 10000
+  learning_rate: 0.0001
+  weight_decay: 0.00000001
+  sampling_temperature: 1.0
+  random_action_prob: 0.05
+  ema_decay: 0.99
+  checkpoint_every: 100
+  log_every: 10

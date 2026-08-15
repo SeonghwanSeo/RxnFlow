@@ -1,204 +1,266 @@
-from functools import cached_property
+"""eMolecules eXplore/Synple synthesis environment."""
+
+from __future__ import annotations
+
+import csv
+import hashlib
 from pathlib import Path
 
-import numpy as np
-from numpy.typing import NDArray
-from rdkit import Chem, RDLogger
-from rdkit.Chem import Mol as RDMol
+import yaml
+from rdkit import Chem
 
-from gflownet.envs.graph_building_env import Graph, GraphBuildingEnv
+from rxnflow.chemistry import heavy_atom_count, parse_molecule
+from rxnflow.data.graph import molecule_to_graph_data
+from rxnflow.types import ActionKind, MoleculeState, RxnAction
 
-from .action import Protocol, RxnAction, RxnActionType
-from .reaction import BiReaction, Reaction, UniReaction
-from .retrosynthesis import MultiRetroSyntheticAnalyzer
+from .building_block import load_block_libraries
+from .workflow import Protocol, Workflow
 
-logger = RDLogger.logger()
-RDLogger.DisableLog("rdApp.*")
-
-
-class MolGraph(Graph):
-    def __init__(self, mol: str | Chem.Mol, **kwargs):
-        super().__init__(**kwargs)
-        self._mol: str | Chem.Mol = mol
-        self.is_setup: bool = False
-
-    def __repr__(self):
-        return self.smi
-
-    @cached_property
-    def smi(self) -> str:
-        if isinstance(self._mol, Chem.Mol):
-            return Chem.MolToSmiles(self._mol)
-        else:
-            return self._mol
-
-    @cached_property
-    def mol(self) -> Chem.Mol:
-        if isinstance(self._mol, Chem.Mol):
-            return self._mol
-        else:
-            return Chem.MolFromSmiles(self._mol)
+PROTOCOL_KINDS = {
+    "FirstBlock": ActionKind.FIRST_BLOCK,
+    "UniRxn": ActionKind.UNI_REACTION,
+    "BiRxn": ActionKind.BI_REACTION,
+}
 
 
-class SynthesisEnv(GraphBuildingEnv):
-    """Molecules and reaction templates environment. The new (initial) state are Empty Molecular Graph.
+class SynthesisEnv:
+    """A local, fixed-workflow synthesis environment.
 
-    This environment specifies how to obtain new molecules from applying reaction templates to current molecules. Works by
-    having the agent select a reaction template. Masks ensure that only valid templates are selected.
+    The first decision chooses a workflow. Every subsequent decision follows
+    that workflow's protocol sequence, so backward probabilities are one.
     """
 
-    def __init__(self, env_dir: str | Path, num_workers: int = 4):
-        """Environment for Synthesis-oriented generation
+    def __init__(self, env_dir: str | Path, max_atoms: int = 50):
+        self.env_dir = Path(env_dir)
+        self.max_atoms = max_atoms
+        assert max_atoms > 0
+        self.blocks = load_block_libraries(self.env_dir)
+        self.protocols = self._load_protocols(self.env_dir / "protocol.yaml")
+        self.workflows = self._load_workflows(self.env_dir / "workflow_map.csv")
+        self._validate_references()
+        self.protocol_names = sorted(self.protocols)
+        self.protocol_to_index = {
+            name: index for index, name in enumerate(self.protocol_names)
+        }
+        self.block_types = sorted(self.blocks)
+        self.block_type_to_index = {
+            name: index for index, name in enumerate(self.block_types)
+        }
+        self.signature = self._build_signature()
 
-        Parameters
-        ----------
-        env_dir : str | Path
-            root directory of synthesis environment
-        num_workers : int
-            number of workers for retrosynthetic analysis
-        """
-        """A reaction template and building block environment instance"""
-        self.env_dir = env_dir = Path(env_dir)
-        reaction_template_path = env_dir / "template.txt"
-        building_block_path = env_dir / "building_block.smi"
-        pre_computed_building_block_mask_path = env_dir / "bb_mask.npy"
-        pre_computed_building_block_fp_path = env_dir / "bb_fp_2_1024.npy"
-        pre_computed_building_block_desc_path = env_dir / "bb_desc.npy"
+    def _build_signature(self) -> dict[str, object]:
+        digest = hashlib.sha256()
+        for workflow in self.workflows:
+            digest.update(workflow.identifier.encode())
+            digest.update(workflow.name.encode())
+            for protocol in workflow.protocols:
+                digest.update(protocol.name.encode())
+                digest.update(str(int(protocol.kind)).encode())
+                digest.update((protocol.block_type or "").encode())
+                digest.update((protocol.forward or "").encode())
+        for block_type in self.block_types:
+            library = self.blocks[block_type]
+            digest.update(block_type.encode())
+            for smiles, identifier, tier, atom_count in zip(
+                library.smiles,
+                library.identifiers,
+                library.tiers.tolist(),
+                library.heavy_atoms.tolist(),
+                strict=True,
+            ):
+                digest.update(f"{smiles}\t{identifier}\t{tier}\t{atom_count}\n".encode())
+        return {
+            "workflow_ids": [workflow.identifier for workflow in self.workflows],
+            "block_counts": {name: len(library) for name, library in self.blocks.items()},
+            "protocol_names": self.protocol_names,
+            "content_sha256": digest.hexdigest(),
+        }
 
-        # set protocol
-        self.protocols: list[Protocol] = []
-        self.protocols.append(Protocol("stop", RxnActionType.Stop))
-        self.protocols.append(Protocol("firstblock", RxnActionType.FirstBlock))
-        with reaction_template_path.open() as file:
-            reaction_templates = [ln.strip() for ln in file.readlines()]
-        for i, template in enumerate(reaction_templates):
-            _rxn = Reaction(template)
-            if _rxn.num_reactants == 1:
-                rxn = UniReaction(template)
-                self.protocols.append(Protocol(f"unirxn{i}", RxnActionType.UniRxn, _rxn))
-            elif _rxn.num_reactants == 2:
-                for block_is_first in [True, False]:  # this order is important
-                    rxn = BiReaction(template, block_is_first)
-                    self.protocols.append(Protocol(f"birxn{i}_{block_is_first}", RxnActionType.BiRxn, rxn))
-        self.protocol_dict: dict[str, Protocol] = {protocol.name: protocol for protocol in self.protocols}
-        self.stop_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.Stop]
-        self.firstblock_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.FirstBlock]
-        self.unirxn_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.UniRxn]
-        self.birxn_list: list[Protocol] = [p for p in self.protocols if p.action is RxnActionType.BiRxn]
+    @staticmethod
+    def _load_protocols(path: Path) -> dict[str, Protocol]:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        with path.open(encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+        if not isinstance(data, dict):
+            raise ValueError("protocol.yaml must contain a mapping")
+        protocols: dict[str, Protocol] = {}
+        for section, kind in PROTOCOL_KINDS.items():
+            entries = data.get(section, {})
+            if not isinstance(entries, dict):
+                raise ValueError(f"protocol section {section} must be a mapping")
+            for name, raw in entries.items():
+                if name in protocols:
+                    raise ValueError(f"duplicate protocol name {name}")
+                if not isinstance(raw, dict):
+                    raise ValueError(f"protocol {name} must be a mapping")
+                unknown = set(raw) - {"block_type", "forward"}
+                if unknown:
+                    raise ValueError(
+                        f"unknown fields in protocol {name}: {sorted(unknown)}"
+                    )
+                protocols[name] = Protocol(name=name, kind=kind, **raw)
+        if not protocols:
+            raise ValueError("protocol.yaml does not define any protocols")
+        return protocols
 
-        # set building blocks
-        with building_block_path.open() as file:
-            lines = file.readlines()
-            building_blocks = [ln.split()[0] for ln in lines]
-            building_block_ids = [ln.strip().split()[1] for ln in lines]
-        self.blocks: list[str] = building_blocks
-        self.block_ids: list[str] = building_block_ids
-        self.num_blocks: int = len(building_blocks)
+    def _load_workflows(self, path: Path) -> list[Workflow]:
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        workflows: list[Workflow] = []
+        with path.open(newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            if not reader.fieldnames:
+                raise ValueError("workflow_map.csv has no header")
+            protocol_columns = [
+                name for name in reader.fieldnames if name.lower().startswith("protocol ")
+            ]
+            required_columns = {"workflow id", "workflow name", *protocol_columns}
+            if not protocol_columns or set(reader.fieldnames) != required_columns:
+                raise ValueError(
+                    "workflow_map.csv requires only workflow id, workflow name, and protocol N columns"
+                )
+            for line_number, row in enumerate(reader, start=2):
+                identifier = (row.get("workflow id") or "").strip()
+                name = (row.get("workflow name") or "").strip()
+                names = [(row.get(column) or "").strip() for column in protocol_columns]
+                names = [value for value in names if value and value.lower() != "nan"]
+                if not identifier or not name or not names:
+                    raise ValueError(
+                        f"workflow_map.csv:{line_number}: incomplete workflow"
+                    )
+                try:
+                    protocols = tuple(self.protocols[value] for value in names)
+                except KeyError as error:
+                    raise ValueError(
+                        f"workflow_map.csv:{line_number}: unknown protocol {error.args[0]}"
+                    ) from error
+                if protocols[0].kind != ActionKind.FIRST_BLOCK:
+                    raise ValueError(f"workflow {identifier} must begin with FirstBlock")
+                workflows.append(
+                    Workflow(identifier=identifier, name=name, protocols=protocols)
+                )
+        if not workflows:
+            raise ValueError("workflow_map.csv contains no workflows")
+        identifiers = [workflow.identifier for workflow in workflows]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("workflow identifiers must be unique")
+        return workflows
 
-        # set precomputed building block feature
-        self.block_fp = np.load(pre_computed_building_block_fp_path)
-        self.block_prop = np.load(pre_computed_building_block_desc_path)
+    def _validate_references(self) -> None:
+        referenced_types = {
+            protocol.block_type
+            for workflow in self.workflows
+            for protocol in workflow.protocols
+            if protocol.block_type is not None
+        }
+        missing = referenced_types - set(self.blocks)
+        extra = set(self.blocks) - referenced_types
+        if missing:
+            raise ValueError(
+                f"missing SMILES/features for block types: {sorted(missing)}"
+            )
+        if extra:
+            raise ValueError(f"unreferenced block types in environment: {sorted(extra)}")
 
-        # set block mask
-        block_mask: NDArray[np.bool_] = np.load(pre_computed_building_block_mask_path)
-        self.birxn_block_indices: dict[str, np.ndarray] = {}
-        for i, protocol in enumerate(self.birxn_list):
-            self.birxn_block_indices[protocol.name] = np.where(block_mask[i])[0]
-        self.num_total_actions = (
-            1 + len(self.unirxn_list) + sum(indices.shape[0] for indices in self.birxn_block_indices.values())
+    @staticmethod
+    def initial_state() -> MoleculeState:
+        return MoleculeState()
+
+    def is_terminal(self, state: MoleculeState) -> bool:
+        return state.workflow_index >= 0 and state.protocol_order >= len(
+            self.workflows[state.workflow_index].protocols
         )
 
-        self.retro_analyzer = MultiRetroSyntheticAnalyzer.create(self.protocols, self.blocks, num_workers=num_workers)
+    def next_action_kind(self, state: MoleculeState) -> ActionKind:
+        if state.workflow_index < 0:
+            return ActionKind.SET_WORKFLOW
+        if self.is_terminal(state):
+            raise ValueError("terminal states do not have actions")
+        return self.workflows[state.workflow_index].protocols[state.protocol_order].kind
 
-    def new(self) -> MolGraph:
-        return MolGraph("")
+    def current_protocol(self, state: MoleculeState) -> Protocol:
+        if state.workflow_index < 0 or self.is_terminal(state):
+            raise ValueError("state has no current protocol")
+        return self.workflows[state.workflow_index].protocols[state.protocol_order]
 
-    def step(self, g: MolGraph, action: RxnAction) -> MolGraph:
-        """Applies the action to the current state and returns the next state.
+    def graph_data(self, state: MoleculeState):
+        kind = self.next_action_kind(state)
+        return molecule_to_graph_data(
+            state.smiles,
+            self.max_atoms,
+            state.workflow_index,
+            state.protocol_order,
+            int(kind),
+        )
 
-        Args:
-            mol (Chem.Mol): Current state as an RDKit mol.
-            action tuple[int, Optional[int], Optional[int]]: Action indices to apply to the current state.
-            (ActionType, reaction_template_idx, reactant_idx)
+    def step(self, state: MoleculeState, action: RxnAction) -> MoleculeState:
+        expected = self.next_action_kind(state)
+        assert action.kind == expected
+        if expected == ActionKind.SET_WORKFLOW:
+            assert 0 <= action.workflow_index < len(self.workflows)
+            return MoleculeState("", action.workflow_index, 0)
+        assert action.workflow_index == state.workflow_index
+        assert action.protocol_order == state.protocol_order
 
-        Returns:
-            (Chem.Mol): Next state as an RDKit mol.
-        """
-        state_info = g.graph
-        protocol = self.protocol_dict[action.protocol]
-
-        if action.action is RxnActionType.Stop:
-            return g
-        elif action.action is RxnActionType.BckStop:
-            return g
-
-        elif action.action == RxnActionType.FirstBlock:
-            obj = action.block
-        elif action.action == RxnActionType.BckFirstBlock:
-            obj = ""
-
-        elif action.action is RxnActionType.UniRxn:
-            ps = protocol.rxn.forward(g.mol, strict=True)
-            assert len(ps) > 0, "reaction is Fail"
-            obj = Chem.MolToSmiles(ps[0][0])
-        elif action.action is RxnActionType.BckUniRxn:
-            rs = protocol.rxn.reverse(g.mol)[0]
-            assert len(rs) > 0, "reverse reaction is Fail"
-            obj = Chem.MolToSmiles(rs[0])
-
-        elif action.action is RxnActionType.BiRxn:
-            block = Chem.MolFromSmiles(action.block)
-            ps = protocol.rxn.forward(g.mol, block, strict=True)
-            assert len(ps) > 0, "forward reaction is Fail"
-            obj = Chem.MolToSmiles(ps[0][0])
-        elif action.action is RxnActionType.BckBiRxn:
-            rs = protocol.rxn.reverse(g.mol)[0]
-            assert len(rs) > 0, "reverse reaction is Fail"
-            obj = Chem.MolToSmiles(rs[0])
-
+        protocol = self.current_protocol(state)
+        if expected in (ActionKind.FIRST_BLOCK, ActionKind.BI_REACTION):
+            assert action.block_type == protocol.block_type
+            assert action.block_index is not None
+            library = self.blocks[protocol.block_type]
+            block_smiles = library.smiles[action.block_index]
         else:
-            raise ValueError(action.action)
-        return MolGraph(obj, **state_info)
+            block_smiles = ""
 
-    def parents(self, mol: RDMol, max_depth: int = 4) -> list[tuple[RxnAction, str]]:
-        """list possible parents of molecule `mol`
-
-        Parameters
-        ----------
-        mol: Chem.Mol
-            molecule
-
-        Returns
-        -------
-        parents: list[Pair(RxnAction, str)]
-            The list of parent-action pairs
-        """
-        raise NotImplementedError
-        retro_tree = self.retrosynthetic_analyzer.run(mol, max_depth)
-        return [(action, subtree.smi) for action, subtree in retro_tree.branches]
-
-    def count_backward_transitions(self, mol: RDMol, check_idempotent: bool = False):
-        """Counts the number of parents of molecule (by default, without checking for isomorphisms)"""
-        # We can count actions backwards easily, but only if we don't check that they don't lead to
-        # the same parent. To do so, we need to enumerate (unique) parents and count how many there are:
-        return len(self.parents(mol))
-
-    def reverse(self, g: str | RDMol | Graph | None, ra: RxnAction) -> RxnAction:
-        if ra.action == RxnActionType.Stop:
-            return RxnAction(RxnActionType.BckStop, ra.protocol)
-        elif ra.action == RxnActionType.BckStop:
-            return RxnAction(RxnActionType.Stop, ra.protocol)
-        elif ra.action == RxnActionType.FirstBlock:
-            return RxnAction(RxnActionType.BckFirstBlock, ra.protocol, ra.block, ra.block_idx)
-        elif ra.action == RxnActionType.BckFirstBlock:
-            return RxnAction(RxnActionType.FirstBlock, ra.protocol, ra.block, ra.block_idx)
-        elif ra.action == RxnActionType.UniRxn:
-            return RxnAction(RxnActionType.BckUniRxn, ra.protocol)
-        elif ra.action == RxnActionType.BckUniRxn:
-            return RxnAction(RxnActionType.UniRxn, ra.protocol)
-        elif ra.action == RxnActionType.BiRxn:
-            return RxnAction(RxnActionType.BckBiRxn, ra.protocol, ra.block, ra.block_idx)
-        elif ra.action == RxnActionType.BckBiRxn:
-            return RxnAction(RxnActionType.BiRxn, ra.protocol, ra.block, ra.block_idx)
+        if expected == ActionKind.FIRST_BLOCK:
+            product_smiles = block_smiles
         else:
-            raise ValueError(ra)
+            current = parse_molecule(state.smiles)
+            if current is None or protocol.reaction is None:
+                raise ValueError("reaction state is missing a valid molecule")
+            if expected == ActionKind.UNI_REACTION:
+                product_smiles = protocol.reaction.run(current)
+            else:
+                block = parse_molecule(block_smiles)
+                if block is None:
+                    raise ValueError("invalid building block")
+                product_smiles = protocol.reaction.run(current, block)
+
+        product = Chem.MolFromSmiles(product_smiles)
+        atom_count = heavy_atom_count(product)
+        if atom_count > self.max_atoms:
+            raise ValueError(
+                f"reaction product has {atom_count} heavy atoms; limit is {self.max_atoms}"
+            )
+        canonical = Chem.MolToSmiles(product) if product is not None else ""
+        if not canonical:
+            raise ValueError("reaction produced an invalid molecule")
+        return MoleculeState(canonical, state.workflow_index, state.protocol_order + 1)
+
+    def workflow_label(self, index: int) -> str:
+        workflow = self.workflows[index]
+        return f"{workflow.identifier}: {workflow.name}"
+
+    def action_to_dict(self, action: RxnAction) -> dict[str, object]:
+        workflow = self.workflows[action.workflow_index]
+        result: dict[str, object] = {
+            "type": action.kind.name,
+            "workflow_id": workflow.identifier,
+            "workflow_name": workflow.name,
+            "protocol_order": action.protocol_order,
+        }
+        if action.protocol_order >= 0:
+            protocol = workflow.protocols[action.protocol_order]
+            result["protocol"] = protocol.name
+        if action.block_index is not None and action.block_type is not None:
+            library = self.blocks[action.block_type]
+            result.update(
+                {
+                    "block_type": action.block_type,
+                    "block_index": action.block_index,
+                    "block_smiles": library.smiles[action.block_index],
+                    "block_identifier": library.identifiers[action.block_index],
+                    "tier": int(library.tiers[action.block_index]),
+                }
+            )
+        return result

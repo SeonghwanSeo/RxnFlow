@@ -1,66 +1,80 @@
-import math
+"""Tier-stratified building-block action-space subsampling."""
 
-import numpy as np
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
 import torch
 from torch import Tensor
 
-from gflownet.utils.misc import get_worker_rng
-from rxnflow.config import Config
-from rxnflow.envs.action import RxnActionType
-from rxnflow.envs.env import SynthesisEnv
+from rxnflow.config import SubsamplingConfig
 
 
-class ActionSpace:
-    def __init__(self, action_idcs: np.ndarray, sampling_ratio: float, min_sampling: int):
-        assert sampling_ratio <= 1
-        self.action_idcs = action_idcs
-        num_actions = self.action_idcs.shape[0]
-        min_sampling = min(num_actions, min_sampling)
-        self.num_actions: int = num_actions
-        self.num_sampling = max(int(num_actions * sampling_ratio), min_sampling)
-
-        self.sampling_ratio: float = max(self.num_sampling, 1) / max(self.num_actions, 1)
-        self.rng = get_worker_rng()
-
-    def sampling(self) -> Tensor:
-        # TODO: introduce importance subsampling instead of uniform subsampling
-        if self.num_sampling == 0:
-            return torch.tensor([], dtype=torch.long)
-        if self.sampling_ratio < 1:
-            indices = self.rng.choice(self.action_idcs, self.num_sampling, replace=False)
-            np.sort(indices)
-            return torch.from_numpy(indices).to(torch.long)
-        else:
-            return torch.from_numpy(self.action_idcs)
+@dataclass(frozen=True)
+class TierSample:
+    indices: Tensor
+    inclusion_probability: Tensor
+    log_importance: Tensor
 
 
-class SubsamplingPolicy:
-    def __init__(self, env: SynthesisEnv, cfg: Config):
-        self.global_cfg = cfg
-        self.cfg = cfg.algo.action_subsampling
+class TieredActionSpace:
+    """Sample global block indices without replacement within each price tier."""
 
-        sr = self.cfg.sampling_ratio
-        nmin = int(self.cfg.min_sampling)
+    def __init__(self, tiers: Tensor, config: SubsamplingConfig):
+        tiers = torch.as_tensor(tiers, dtype=torch.long, device="cpu")
+        assert tiers.ndim == 1 and len(tiers) > 0 and (tiers > 0).all()
+        self.tiers = tiers
+        self.config = config
+        self.groups = {
+            int(tier): torch.nonzero(tiers == tier, as_tuple=False).flatten()
+            for tier in torch.unique(tiers, sorted=True).tolist()
+        }
 
-        self.protocols = env.protocols
-        self.block_spaces: dict[str, ActionSpace] = {}
-        self.num_blocks: dict[str, int] = {}
-        for protocol in env.firstblock_list:
-            self.block_spaces[protocol.name] = ActionSpace(np.arange(env.num_blocks), sr, nmin)
-        for protocol in env.birxn_list:
-            self.block_spaces[protocol.name] = ActionSpace(env.birxn_block_indices[protocol.name], sr, nmin)
-        sampling_ratios = {t: space.sampling_ratio for t, space in self.block_spaces.items()}
-        weights = {t: math.log(1 / sr) for t, sr in sampling_ratios.items()}
+    def allocation(self) -> dict[int, int]:
+        sizes = {tier: len(indices) for tier, indices in self.groups.items()}
+        if self.config.sampling_ratio == 1:
+            return sizes
+        requested = min(
+            len(self.tiers),
+            max(1, math.ceil(len(self.tiers) * self.config.sampling_ratio)),
+        )
+        allocation = {
+            tier: min(size, self.config.min_sampling) for tier, size in sizes.items()
+        }
+        target = min(len(self.tiers), max(requested, sum(allocation.values())))
+        remaining = target - sum(allocation.values())
+        tiers = sorted(sizes)
+        while remaining:
+            for tier in tiers:
+                if allocation[tier] < sizes[tier]:
+                    allocation[tier] += 1
+                    remaining -= 1
+                    if remaining == 0:
+                        break
+        return allocation
 
-        self.protocol_weights = [weights.get(protocol.name, 0.0) for protocol in self.protocols]
-
-    def sampling(self) -> list[Tensor]:
-        subsamples: list[Tensor] = []
-        for protocol in self.protocols:
-            if protocol.action in (RxnActionType.FirstBlock, RxnActionType.BiRxn):
-                # subsampling
-                subsample = self.block_spaces[protocol.name].sampling()
+    def sample(self, generator: torch.Generator) -> TierSample:
+        selected: list[Tensor] = []
+        probabilities: list[Tensor] = []
+        for tier, count in self.allocation().items():
+            global_indices = self.groups[tier]
+            size = len(global_indices)
+            if count >= size:
+                chosen = global_indices.clone()
             else:
-                subsample = torch.tensor([0])
-            subsamples.append(subsample)
-        return subsamples
+                positions = torch.randperm(size, generator=generator)[:count]
+                chosen = global_indices[positions]
+            selected.append(chosen)
+            probabilities.append(
+                torch.full((len(chosen),), count / size, dtype=torch.float32)
+            )
+        indices = torch.cat(selected)
+        inclusion = torch.cat(probabilities)
+        order = torch.argsort(indices)
+        indices = indices[order]
+        inclusion = inclusion[order]
+        importance = torch.log(inclusion.reciprocal())
+        return TierSample(
+            indices=indices, inclusion_probability=inclusion, log_importance=importance
+        )

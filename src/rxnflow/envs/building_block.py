@@ -1,56 +1,119 @@
-import numpy as np
-from numpy.typing import NDArray
-from rdkit import Chem
-from rdkit.Chem import Crippen, MACCSkeys, rdMolDescriptors
-from rdkit.Chem.rdFingerprintGenerator import GetMorganGenerator
+"""Aligned building-block library loading."""
 
-FP_RADIUS = 2
-FP_NBITS = 1024
-BLOCK_FP_DIM = 1024 + 166
-BLOCK_PROPERTY_DIM = 8
-MOL_PROPERTY_DIM = 8
+from __future__ import annotations
 
+import re
+from dataclasses import dataclass
+from pathlib import Path
 
-def get_block_features(mol: str | Chem.Mol) -> tuple[NDArray[np.bool_], NDArray[np.float32]]:
-    """Setup Building Block Datas"""
-    if isinstance(mol, str):
-        mol = Chem.MolFromSmiles(mol)
+import torch
+from torch import Tensor
 
-    # NOTE: MACCS Fingerprint, Morgan Fingerprint
-    maccs_fp = np.array(MACCSkeys.GenMACCSKeys(mol), dtype=np.bool_)[:166]
-    mg = GetMorganGenerator(FP_RADIUS, fpSize=FP_NBITS)
-    morgan_fp = mg.GetFingerprintAsNumPy(mol).astype(np.bool_)
-    fp_out = np.concatenate([maccs_fp, morgan_fp], dtype=np.bool_)
+from rxnflow.chemistry import FINGERPRINT_DIM, PROPERTY_DIM
 
-    # NOTE: Common RDKit Descriptors
-    feature = []
-    feature.append(rdMolDescriptors.CalcExactMolWt(mol) / 100)
-    feature.append(rdMolDescriptors.CalcNumHeavyAtoms(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumHBA(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumHBD(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumAromaticRings(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumAliphaticRings(mol) / 10)
-    feature.append(rdMolDescriptors.CalcTPSA(mol) / 100)
-    feature.append(Crippen.MolLogP(mol) / 10)
-    feature_out = np.array(feature, dtype=np.float32)
-
-    return fp_out, feature_out
+TIER_PATTERN = re.compile(r"^Tier\s+(\d+)$", re.IGNORECASE)
 
 
-def get_mol_features(mol: str | Chem.Mol) -> NDArray[np.float32]:
-    """Setup Molecular Features"""
-    if isinstance(mol, str):
-        mol = Chem.MolFromSmiles(mol)
+@dataclass
+class BlockLibrary:
+    block_type: str
+    smiles: list[str]
+    identifiers: list[str]
+    tiers: Tensor
+    properties: Tensor
+    fingerprints: Tensor
+    heavy_atoms: Tensor
 
-    # NOTE: Common RDKit Descriptors
-    feature = []
-    feature.append(rdMolDescriptors.CalcExactMolWt(mol) / 100)
-    feature.append(rdMolDescriptors.CalcNumHeavyAtoms(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumHBA(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumHBD(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumAromaticRings(mol) / 10)
-    feature.append(rdMolDescriptors.CalcNumAliphaticRings(mol) / 10)
-    feature.append(rdMolDescriptors.CalcTPSA(mol) / 100)
-    feature.append(Crippen.MolLogP(mol) / 10)
-    feature_out = np.array(feature, dtype=np.float32)
-    return feature_out
+    def __len__(self) -> int:
+        return len(self.smiles)
+
+    def validate(self) -> None:
+        count = len(self.smiles)
+        if count == 0:
+            raise ValueError(f"building-block type {self.block_type!r} is empty")
+        if len(self.identifiers) != count:
+            raise ValueError(f"identifier alignment failed for {self.block_type}")
+        expected = {
+            "tiers": (count,),
+            "properties": (count, PROPERTY_DIM),
+            "fingerprints": (count, FINGERPRINT_DIM),
+            "heavy_atoms": (count,),
+        }
+        for name, shape in expected.items():
+            value = getattr(self, name)
+            if tuple(value.shape) != shape:
+                raise ValueError(
+                    f"{self.block_type}.{name} has shape {tuple(value.shape)}, expected {shape}"
+                )
+        if (
+            not torch.isfinite(self.properties).all()
+            or not torch.isfinite(self.fingerprints).all()
+        ):
+            raise ValueError(f"non-finite block features in {self.block_type}")
+        if (self.tiers <= 0).any():
+            raise ValueError(f"tiers must be positive in {self.block_type}")
+        if (self.heavy_atoms < 0).any():
+            raise ValueError(f"negative heavy-atom count in {self.block_type}")
+
+
+def read_smiles_file(path: Path) -> tuple[list[str], list[int], list[str]]:
+    smiles: list[str] = []
+    tiers: list[int] = []
+    identifiers: list[str] = []
+    with path.open(encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            line = raw_line.rstrip("\n")
+            if not line:
+                continue
+            fields = line.split("\t")
+            if len(fields) != 3:
+                raise ValueError(
+                    f"{path}:{line_number}: expected three tab-separated fields"
+                )
+            match = TIER_PATTERN.match(fields[1].strip())
+            if match is None:
+                raise ValueError(f"{path}:{line_number}: invalid tier {fields[1]!r}")
+            if not fields[0] or not fields[2]:
+                raise ValueError(f"{path}:{line_number}: missing SMILES or identifier")
+            smiles.append(fields[0])
+            tiers.append(int(match.group(1)))
+            identifiers.append(fields[2])
+    return smiles, tiers, identifiers
+
+
+def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
+    feature_path = env_dir / "bb_feature.pt"
+    smiles_dir = env_dir / "smiles"
+    if not feature_path.is_file() or not smiles_dir.is_dir():
+        raise FileNotFoundError(
+            "prepared environment requires smiles/*.smi and bb_feature.pt"
+        )
+    data = torch.load(feature_path, map_location="cpu", weights_only=False)
+    if not isinstance(data, dict) or data.get("format") != "rxnflow-bb-feature-v1":
+        raise ValueError("unsupported bb_feature.pt format; regenerate the environment")
+    block_data = data.get("blocks")
+    if not isinstance(block_data, dict):
+        raise ValueError("bb_feature.pt is missing the blocks mapping")
+
+    files = sorted(smiles_dir.glob("*.smi"))
+    file_types = {path.stem for path in files}
+    if file_types != set(block_data):
+        raise ValueError("SMILES files and bb_feature.pt block types are not aligned")
+    libraries: dict[str, BlockLibrary] = {}
+    for path in files:
+        smiles, tiers, identifiers = read_smiles_file(path)
+        feature = block_data[path.stem]
+        library = BlockLibrary(
+            block_type=path.stem,
+            smiles=smiles,
+            identifiers=identifiers,
+            tiers=torch.as_tensor(feature["tiers"], dtype=torch.long),
+            properties=torch.as_tensor(feature["properties"], dtype=torch.float32),
+            fingerprints=torch.as_tensor(feature["fingerprints"], dtype=torch.float32),
+            heavy_atoms=torch.as_tensor(feature["heavy_atoms"], dtype=torch.long),
+        )
+        library.validate()
+        if not torch.equal(library.tiers, torch.tensor(tiers, dtype=torch.long)):
+            raise ValueError(f"tier alignment failed for {path.stem}")
+        libraries[path.stem] = library
+    return libraries

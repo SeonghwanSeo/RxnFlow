@@ -1,59 +1,53 @@
 [build-system]
-requires = ["setuptools", "wheel"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "rxnflow"
-authors = [{ name = "Seonghwan Seo", email = "shwan0106@gmail.com" }]
-version = "0.1.0"
+dynamic = ["version"]
+description = "Synthesizable molecular design with GFlowNet"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Seonghwan Seo", email = "shwan0106@gmail.com" }]
+requires-python = ">=3.10"
 classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
 ]
-keywords = ["gflownet"]
-requires-python = ">=3.12,<3.13"
+keywords = ["gflownet", "molecular-generation", "synthesis"]
 dependencies = [
-    "numpy==1.26.4",
-    "torch==2.5.1",
-    "torch-geometric>=2.4.0",
-    "torch-scatter>=2.1.2",
-    "torch-sparse>=0.6.18",
-    "torch-cluster>=1.6.3",
-    "rdkit>=2023.9.6",
-    "omegaconf>=2.3",
-    "wandb",
-    "tensorboard",
-    "gitpython",
-    "botorch",
+  "numpy>=2.0",
+  "torch>=2.1",
+  "omegaconf>=2.3",
+  "PyYAML>=6",
+  "rdkit>=2023.9.6",
 ]
 
 [project.optional-dependencies]
-unidock = [
-  "openbabel-wheel",
-  "unidock_tools @ git+https://github.com/dptech-corp/Uni-Dock.git@1.1.2#subdirectory=unidock_tools",
-]
-pmnet = [
-  "pharmaconet @ git+https://github.com/SeonghwanSeo/PharmacoNet.git",
-]
-dev = [
-  "black",
-  "isort",
-  "ruff",
-]
-# TODO: finish benchmark setting
-# synbench = ["synbench @ git+https://github.com/SeonghwanSeo/SynBench.git@init"]
+dev = ["build>=1", "pytest>=8", "ruff>=0.5", "wheel>=0.45"]
 
-[tool.black]
-line-length = 120
-target-version = ["py312"]
+[project.scripts]
+rxnflow-prepare = "rxnflow.cli.prepare:main"
+rxnflow-train = "rxnflow.cli.train:main"
+rxnflow-sample = "rxnflow.cli.sample:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "rxnflow._version.__version__" }
 
 [tool.ruff]
-target-version = "py312"
-line-length = 120
+target-version = "py310"
+line-length = 90
+
 [tool.ruff.lint]
-select = ["E", "F", "B", "UP", "T203", "I"]
+select = ["E", "F", "B", "UP", "I"]
 ignore = ["E501"]
+
 [tool.ruff.lint.per-file-ignores]
-"__init__.py" = ["F401", "E402"]
+"__init__.py" = ["F401"]
+"tests/**" = ["B011"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+markers = ["heavy: requires representative eMolecules data and substantial compute"]
