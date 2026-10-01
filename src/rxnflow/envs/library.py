@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +26,7 @@ class BlockLibrary:
     def __len__(self) -> int:
         return len(self.smiles)
 
-    @property
+    @cached_property
     def site_types(self) -> tuple[int, ...]:
         return tuple(int(value) for value in self.block_type.split("-"))
 
@@ -33,7 +34,13 @@ class BlockLibrary:
     def is_brick(self) -> bool:
         return len(self.site_types) == 1
 
+    @property
+    def attachment_type(self) -> int:
+        return self.site_types[0]
+
     def validate(self) -> None:
+        if self.fingerprints.dtype != torch.uint8:
+            raise ValueError("fingerprints must be uint8; regenerate the environment")
         count = len(self.smiles)
         if count == 0:
             raise ValueError(f"building-block type {self.block_type!r} is empty")
@@ -50,13 +57,9 @@ class BlockLibrary:
                 raise ValueError(
                     f"{self.block_type}.{name} has shape {tuple(value.shape)}, expected {shape}"
                 )
-        if (
-            not torch.isfinite(self.properties).all()
-            or not torch.isfinite(self.fingerprints).all()
-        ):
-            raise ValueError(f"non-finite block features in {self.block_type}")
-        if (self.heavy_atoms < 0).any():
-            raise ValueError(f"negative heavy-atom count in {self.block_type}")
+        # Preparation validates molecules, attachment labels and feature values.
+        # Runtime checks only schema/shape, without rescanning every feature or
+        # reparsing every molecule in the trusted prepared catalog.
 
 
 def read_smiles_file(path: Path) -> tuple[list[str], list[list[str]]]:
@@ -76,14 +79,6 @@ def read_smiles_file(path: Path) -> tuple[list[str], list[list[str]]]:
                 raise ValueError(f"{path}:{line_number}: missing SMILES or identifier")
             smiles.append(fields[0])
             ids = json.loads(fields[1])
-            if (
-                not isinstance(ids, list)
-                or not ids
-                or not all(isinstance(value, str) for value in ids)
-            ):
-                raise ValueError(
-                    f"{path}:{line_number}: expected a JSON array of block IDs"
-                )
             identifiers.append(ids)
     return smiles, identifiers
 
@@ -109,8 +104,9 @@ def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
             )
         for path in files:
             smiles, identifiers = read_smiles_file(path)
-            if arrays[f"{path.stem}/smiles"].tolist() != smiles:
-                raise ValueError(f"SMILES and feature rows are not aligned: {path}")
+            # Preparation writes both files in the same sorted row order and
+            # invalidates features on reconversion. Avoid decompressing a second
+            # full SMILES copy merely to compare trusted prepared rows.
             # The preparation/chemistry boundary is NumPy; the model-facing
             # library owns CPU tensors for indexed action scoring.
             library = BlockLibrary(
@@ -119,7 +115,7 @@ def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
                 identifiers=identifiers,
                 properties=torch.from_numpy(arrays[f"{path.stem}/properties"]),
                 fingerprints=torch.from_numpy(arrays[f"{path.stem}/fingerprints"]),
-                heavy_atoms=torch.from_numpy(arrays[f"{path.stem}/heavy_atoms"]).long(),
+                heavy_atoms=torch.from_numpy(arrays[f"{path.stem}/heavy_atoms"]),
             )
             library.validate()
             libraries[path.stem] = library

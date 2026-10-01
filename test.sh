@@ -18,7 +18,7 @@ quick() {
   "$python_bin" -m compileall -q src tests
   ruff check src tests
   "$python_bin" -m build --no-isolation
-  PYTHONPATH=src "$python_bin" -c 'import rxnflow; print(rxnflow.__all__)'
+  PYTHONPATH=src "$python_bin" -c 'import rxnflow; print(rxnflow.__version__)'
   PYTHONPATH=src "$python_bin" -m pytest -m 'not heavy' tests
 }
 

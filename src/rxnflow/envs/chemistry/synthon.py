@@ -27,21 +27,22 @@ class SynthonConversion:
         reaction.Initialize()
         self.reaction: ChemicalReaction = reaction
 
-    def run_mol(self, mol: Chem.Mol) -> list[str]:
-        products: set[str] = set()
+    def run_mol(self, mol: Chem.Mol) -> dict[str, Chem.Mol]:
+        products: dict[str, Chem.Mol] = {}
         for product_tuple in self.reaction.RunReactants((mol,), 0):
             if len(product_tuple) != 1:
                 continue
             product = product_tuple[0]
             try:
                 Chem.SanitizeMol(product)
-                smiles = Chem.MolToSmiles(Chem.RemoveHs(product))
+                product = Chem.RemoveHs(product)
+                smiles = Chem.MolToSmiles(product)
             except (ValueError, RuntimeError, Chem.rdchem.KekulizeException):
                 continue
-            checked = Chem.MolFromSmiles(smiles)
-            if checked is not None and "." not in smiles:
-                products.add(Chem.MolToSmiles(checked))
-        return sorted(products)
+            if "." not in smiles:
+                products.setdefault(smiles, product)
+        # Reuse sanitized products during conversion and site inspection.
+        return {smiles: products[smiles] for smiles in sorted(products)}
 
 
 def typed_dummy_isotopes(mol: Chem.Mol) -> tuple[int, ...]:

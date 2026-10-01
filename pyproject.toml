@@ -34,7 +34,7 @@ rxnflow-train = "rxnflow.cli.train:main"
 rxnflow-sample = "rxnflow.cli.sample:main"
 
 [tool.setuptools.dynamic]
-version = { attr = "rxnflow._version.__version__" }
+version = { attr = "rxnflow.__version__" }
 
 [tool.ruff]
 target-version = "py310"

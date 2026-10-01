@@ -16,7 +16,7 @@ property_penalty:
   mw: 500
 
 subsampling:
-  sampling_ratio: 0.1
+  sampling_ratio: 0.01
 
 generation:
   min_reactions: 1
@@ -24,5 +24,5 @@ generation:
 
 training:
   steps: 1000
-  batch_size: 128
-  replay_batch_size: 128
+  batch_size: 64
+  replay_batch_size: 64

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass
 
 import torch
@@ -12,52 +13,59 @@ from rxnflow.config import SubsamplingConfig
 
 
 @dataclass(frozen=True)
-class BlockSample:
+class BlockSubsample:
     indices: Tensor
     inclusion_probability: Tensor
     log_importance: Tensor
 
 
-class UniformActionSpace:
+class BlockSubsampler:
     def __init__(self, size: int, config: SubsamplingConfig):
         assert size > 0
         self.size = size
         self.config = config
 
     def sample(
-        self, generator: torch.Generator, required_index: int | None = None
-    ) -> BlockSample:
+        self,
+        generator: torch.Generator,
+        required_indices: tuple[int, ...] = (),
+    ) -> BlockSubsample:
+        # One draw per library and policy batch. TB/replay conditions that draw
+        # on the union of observed rows, so all state denominators share it.
+        size = self.size
+        required = torch.tensor(sorted(set(required_indices)), dtype=torch.long)
+        n_required = len(required)
+        assert all(0 <= index < size for index in required_indices)
         count = min(
-            self.size,
+            size,
             max(
                 self.config.min_sampling,
-                math.ceil(self.size * self.config.sampling_ratio),
+                math.ceil(size * self.config.sampling_ratio),
+                n_required + 1 if n_required else 0,
             ),
         )
-        if required_index is not None:
-            assert 0 <= required_index < self.size
-            # During TB/replay, include the observed block with probability one
-            # and uniformly sample the remaining population. At least one other
-            # block is needed to estimate that population when it is nonempty.
-            count = min(self.size, max(2, count))
-        if count == self.size:
-            indices = torch.arange(self.size, dtype=torch.long)
+        if count == size:
+            indices = torch.arange(size, dtype=torch.long)
             inclusion = torch.ones(count, dtype=torch.float32)
-        elif required_index is not None:
-            others = torch.randperm(self.size - 1, generator=generator)[: count - 1]
-            others += (others >= required_index).long()
-            indices = torch.sort(
-                torch.cat([others, torch.tensor([required_index])])
-            ).values
-            inclusion = torch.full(
-                (count,), (count - 1) / (self.size - 1), dtype=torch.float32
-            )
-            inclusion[indices == required_index] = 1.0
         else:
-            indices = torch.randperm(self.size, generator=generator)[:count]
-            indices = torch.sort(indices).values
-            inclusion = torch.full((count,), count / self.size, dtype=torch.float32)
-        return BlockSample(
+            # Draw compact ranks in the non-required population, then skip the
+            # forced rows. No full-library permutation or rejection loop.
+            rng = random.Random(int(torch.randint(2**63 - 1, (), generator=generator)))
+            others = torch.tensor(
+                rng.sample(range(size - n_required), count - n_required),
+                dtype=torch.long,
+            )
+            others += torch.searchsorted(
+                required - torch.arange(n_required), others, right=True
+            )
+            indices = torch.sort(torch.cat([others, required])).values
+            inclusion = torch.full(
+                (count,),
+                (count - n_required) / (size - n_required),
+                dtype=torch.float32,
+            )
+            inclusion[torch.isin(indices, required)] = 1.0
+        return BlockSubsample(
             indices=indices,
             inclusion_probability=inclusion,
             log_importance=torch.log(inclusion.reciprocal()),

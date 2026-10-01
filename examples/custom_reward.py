@@ -1,6 +1,9 @@
 """Minimal local reward injection example."""
 
-from rxnflow import Config, RewardFunction, RxnFlowTrainer, Sample
+from rxnflow.config import Config
+from rxnflow.gflownet.types import Sample
+from rxnflow.reward import RewardFunction
+from rxnflow.trainer import RxnFlowTrainer
 
 
 class HeavyAtomReward(RewardFunction):

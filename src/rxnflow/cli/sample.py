@@ -5,7 +5,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rxnflow import QEDReward, RxnFlowSampler
+from rxnflow.reward import QEDReward
+from rxnflow.sampler import RxnFlowSampler
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -22,9 +23,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     reward = QEDReward() if args.qed else None
-    sampler = RxnFlowSampler.from_checkpoint(
-        args.checkpoint, reward=reward, device=args.device
-    )
+    sampler = RxnFlowSampler(args.checkpoint, reward=reward, device=args.device)
     results = sampler.sample(args.num_samples, args.temperature, args.seed)
     sampler.write(results, args.output, args.format)
     print(f"wrote {len(results)} valid samples to {args.output}")

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import math
-
 import torch
 from torch import Tensor, nn
+from torch.nn import functional as F
 
 from rxnflow.envs.graph import GraphBatch
 
@@ -31,12 +30,15 @@ class EdgeAwareAttention(nn.Module):
         query = query.transpose(1, 2)
         key = key.transpose(1, 2)
         value = value.transpose(1, 2)
-        scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(self.head_dim)
         bias = self.edge_bias(edge_features).permute(0, 3, 1, 2)
-        scores = scores + bias
-        scores = scores.masked_fill(~allowed.unsqueeze(1), torch.finfo(scores.dtype).min)
-        attention = torch.softmax(scores, dim=-1)
-        attended = torch.matmul(self.dropout(attention), value)
+        bias = bias.masked_fill(~allowed.unsqueeze(1), torch.finfo(x.dtype).min)
+        attended = F.scaled_dot_product_attention(
+            query,
+            key,
+            value,
+            attn_mask=bias,
+            dropout_p=self.dropout.p if self.training else 0.0,
+        )
         attended = attended.transpose(1, 2).reshape(batch, length, hidden)
         attended = self.output(attended) * valid.unsqueeze(-1)
         return x + self.dropout(attended)
@@ -93,7 +95,11 @@ class GraphTransformer(nn.Module):
             ]
         )
         self.output_norm = nn.LayerNorm(hidden_dim)
-        self.pool_gate = nn.Linear(hidden_dim, 1)
+        # HSX readout: concatenate the molecular mean with the virtual node,
+        # then project. A learned pooling gate would change that aggregation.
+        self.readout = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim), nn.LayerNorm(hidden_dim)
+        )
 
     def forward(self, batch: GraphBatch) -> Tensor:
         nodes = self.node_projection(batch.node_features) * batch.node_mask.unsqueeze(-1)
@@ -116,16 +122,11 @@ class GraphTransformer(nn.Module):
             (batch_size, length, length), dtype=torch.bool, device=x.device
         )
         allowed[:, :node_count, :node_count] = batch.adjacency
-        node_eye = torch.eye(node_count, dtype=torch.bool, device=x.device).unsqueeze(0)
-        allowed[:, :node_count, :node_count] |= node_eye & batch.node_mask.unsqueeze(1)
         allowed[:, :node_count, node_count] = batch.node_mask
         allowed[:, node_count, :node_count] = batch.node_mask
-        allowed[:, node_count, node_count] = True
-        # Invalid padded queries attend to themselves, then are zeroed after every update.
-        allowed |= torch.eye(length, dtype=torch.bool, device=x.device).unsqueeze(0)
-        allowed &= valid.unsqueeze(1) | torch.eye(
-            length, dtype=torch.bool, device=x.device
-        ).unsqueeze(0)
+        # GraphBatch has no padding edges. Every query gets one self edge,
+        # including padded queries whose updates are zeroed by valid.
+        allowed.diagonal(dim1=-2, dim2=-1).fill_(True)
 
         edges = torch.zeros(
             (batch_size, length, length, self.edge_dim), dtype=x.dtype, device=x.device
@@ -135,11 +136,6 @@ class GraphTransformer(nn.Module):
             x = layer(x, valid, allowed, edges)
         x = self.output_norm(x)
         node_values = x[:, :node_count]
-        gates = (
-            self.pool_gate(node_values).squeeze(-1).masked_fill(~batch.node_mask, -1e9)
-        )
-        weights = torch.softmax(gates, dim=-1) * batch.node_mask
-        denominator = weights.sum(dim=-1, keepdim=True).clamp_min(1e-8)
-        pooled = (node_values * (weights / denominator).unsqueeze(-1)).sum(dim=1)
-        has_nodes = batch.node_mask.any(dim=1, keepdim=True)
-        return x[:, -1] + torch.where(has_nodes, pooled, torch.zeros_like(pooled))
+        node_count = batch.node_mask.sum(dim=-1, keepdim=True).clamp_min(1)
+        pooled = (node_values * batch.node_mask.unsqueeze(-1)).sum(dim=1) / node_count
+        return self.readout(torch.cat([pooled, x[:, -1]], dim=-1))

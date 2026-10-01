@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -27,8 +28,8 @@ class DataConfig:
 class SubsamplingConfig:
     """Uniform building-block action-space sampling."""
 
-    sampling_ratio: float = 0.1
-    min_sampling: int = 50
+    sampling_ratio: float = 0.01
+    min_sampling: int = 10
     importance_temp: float = 1.0
 
     def validate(self) -> None:
@@ -92,10 +93,12 @@ class GenerationConfig:
 @dataclass
 class TrainingConfig:
     steps: int = 1_000
-    batch_size: int = 128
-    replay_batch_size: int = 128
+    batch_size: int = 64
+    replay_batch_size: int = 64
     replay_capacity: int = 10_000
     learning_rate: float = 1e-4
+    log_z_learning_rate: float = 1e-1
+    lr_decay_steps: float = 20_000
     weight_decay: float = 1e-8
     sampling_temperature: float = 1.0
     random_action_prob: float = 0.05
@@ -120,8 +123,18 @@ class TrainingConfig:
             raise ValueError("training.replay_capacity must be non-negative")
         if self.retrosynthesis_workers < 0:
             raise ValueError("training.retrosynthesis_workers must be non-negative")
-        if self.learning_rate <= 0 or self.sampling_temperature <= 0:
-            raise ValueError("learning_rate and sampling_temperature must be positive")
+        if any(
+            value <= 0
+            for value in (
+                self.learning_rate,
+                self.log_z_learning_rate,
+                self.lr_decay_steps,
+                self.sampling_temperature,
+            )
+        ):
+            raise ValueError(
+                "learning rates, decay steps and sampling temperature must be positive"
+            )
         if not 0 <= self.random_action_prob <= 1:
             raise ValueError("training.random_action_prob must be in [0, 1]")
         if not 0 <= self.ema_decay < 1:
@@ -157,8 +170,10 @@ class Config:
         unknown = set(self.property_penalty) - set(PROPERTY_NAMES)
         if unknown:
             raise ValueError(f"unknown property_penalty properties: {sorted(unknown)}")
-        if any(value <= 0 for value in self.property_penalty.values()):
-            raise ValueError("property_penalty values must be positive")
+        # Zero is useful for counts (e.g. no rings/HBD); logP may be negative.
+        # These are upper bounds, so positivity is not a general requirement.
+        if any(not math.isfinite(value) for value in self.property_penalty.values()):
+            raise ValueError("property_penalty values must be finite")
         self.subsampling.validate()
         self.generation.validate()
         self.model.validate()

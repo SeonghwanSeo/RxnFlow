@@ -72,7 +72,7 @@ instance/
 .scrapy
 
 # Sphinx documentation
-docs/_build/
+codex/docs/_build/
 
 # PyBuilder
 target/
@@ -116,6 +116,9 @@ venv.bak/
 # Local vendor catalogs are inputs to rxnflow-prepare, never repository data.
 data/building_blocks/*.smi
 !data/building_blocks/.gitkeep
+# Locally prepared vendor subsets and training/evaluation outputs.
+/data/envs/
+/runs/
 
 # Spyder project settings
 .spyderproject

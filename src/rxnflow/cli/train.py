@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rxnflow import Config, QEDReward, RxnFlowTrainer
+from rxnflow.config import Config
+from rxnflow.reward import QEDReward
+from rxnflow.trainer import RxnFlowTrainer
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -17,8 +19,12 @@ def main(argv: list[str] | None = None) -> None:
     config = Config.from_file(args.config)
     reward = QEDReward(**config.reward.settings)
     trainer = RxnFlowTrainer(config, reward, restart=args.restart)
-    checkpoint = trainer.run(args.steps)
-    print(checkpoint)
+    try:
+        checkpoint = trainer.run(args.steps)
+        print(checkpoint)
+    finally:
+        if "retro_analyzer" in trainer.env.__dict__:
+            trainer.env.retro_analyzer.close()
 
 
 if __name__ == "__main__":

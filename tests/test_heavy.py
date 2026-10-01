@@ -4,19 +4,20 @@ from pathlib import Path
 import pytest
 import torch
 
-from rxnflow import (
+from rxnflow.config import (
     Config,
     DataConfig,
-    QEDReward,
+    ModelConfig,
     RewardConfig,
-    RxnFlowSampler,
-    RxnFlowTrainer,
     SubsamplingConfig,
+    TrainingConfig,
 )
-from rxnflow.config import ModelConfig, TrainingConfig
-from rxnflow.envs import SynthesisEnv
+from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.prepare import convert_stage, features_stage
-from rxnflow.gflownet.subsampling import UniformActionSpace
+from rxnflow.gflownet.subsampling import BlockSubsampler
+from rxnflow.reward import QEDReward
+from rxnflow.sampler import RxnFlowSampler
+from rxnflow.trainer import RxnFlowTrainer
 
 
 def _representative_stock(source: Path, destination: Path, limit: int) -> Path:
@@ -53,7 +54,7 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
 
     env = SynthesisEnv(env_dir, max_atoms=50, retrosynthesis_workers=0)
     assert env.bi_reactions and env.blocks and env.brick_types
-    sampled = UniformActionSpace(
+    sampled = BlockSubsampler(
         1_000_000,
         SubsamplingConfig(sampling_ratio=0.01, min_sampling=50),
     ).sample(torch.Generator().manual_seed(0))
@@ -79,4 +80,9 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
         device="auto",
     )
     checkpoint = RxnFlowTrainer(config, QEDReward()).run()
-    assert RxnFlowSampler(config, checkpoint).sample(4)
+    # Exercises CPU RNG restoration even when auto selects CUDA on gnode7.
+    restarted = RxnFlowTrainer(config, QEDReward(), restart=checkpoint)
+    checkpoint = restarted.run(1)
+    assert restarted.step == steps + 1
+    restarted.env.retro_analyzer.close()
+    assert RxnFlowSampler(checkpoint).sample(4)

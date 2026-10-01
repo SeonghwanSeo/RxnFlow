@@ -12,6 +12,8 @@ from rdkit.Chem import (
     rdMolDescriptors,
 )
 
+_MORGAN_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=512)
+
 PROPERTY_DIM = 9
 FINGERPRINT_DIM = 678
 PROPERTY_NAMES = (
@@ -25,7 +27,18 @@ PROPERTY_NAMES = (
     "aromatic_rings",
     "heavy_atoms",
 )
-_PROPERTY_SCALE = [500.0, 150.0, 5.0, 10.0, 5.0, 10.0, 5.0, 10.0, 50.0]
+PROPERTY_SCALE_DICT = {
+    "mw": 100.0,
+    "tpsa": 100.0,
+    "hbd": 10.0,
+    "hba": 10.0,
+    "logp": 10.0,
+    "rotatable_bonds": 10.0,
+    "rings": 10.0,
+    "aromatic_rings": 10.0,
+    "heavy_atoms": 100.0,
+}
+_PROPERTY_SCALE = [PROPERTY_SCALE_DICT[name] for name in PROPERTY_NAMES]
 PROPERTY_SCALE = np.array(_PROPERTY_SCALE, dtype=np.float32)
 
 
@@ -40,7 +53,6 @@ def parse_molecule(smiles: str) -> Chem.Mol | None:
 
 def heavy_atom_count(mol: Chem.Mol | None) -> int:
     """RDKit heavy-atom count; hydrogens and dummy handles are excluded."""
-
     if mol is None:
         return 0
     return int(mol.GetNumHeavyAtoms())
@@ -73,26 +85,28 @@ def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
 
 def normalize_molecular_properties(values: np.ndarray) -> np.ndarray:
     """Scale NumPy descriptors for graph input; model tensors normalize on device."""
-
     return values / PROPERTY_SCALE
 
 
 def block_fingerprint(mol: Chem.Mol) -> np.ndarray:
-    generator = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=512)
     invariants = rdMolDescriptors.GetConnectivityInvariants(mol)
     # Default Morgan invariants ignore dummy isotopes. Supply the categorical
     # label explicitly, so active/latent types and their positions remain
-    # visible to both the block and outcome encoders (without fake atom masses).
+    # visible to the block encoder (without fake atom masses).
     for atom in mol.GetAtoms():
         if atom.GetAtomicNum() == 0:
             invariants[atom.GetIdx()] = atom.GetIsotope()
-    morgan = generator.GetCountFingerprint(mol, customAtomInvariants=invariants)
-    morgan_array = np.zeros(512, dtype=np.float32)
+    morgan = _MORGAN_GENERATOR.GetCountFingerprint(mol, customAtomInvariants=invariants)
+    # Clamp before narrowing: casting a count above 255 directly to uint8
+    # wraps instead of saturating. Catalogs keep bytes;
+    # only selected model inputs are converted to floating point.
+    morgan_array = np.zeros(512, dtype=np.uint32)
     DataStructs.ConvertToNumpyArray(morgan, morgan_array)
+    np.minimum(morgan_array, 255, out=morgan_array)
     maccs = MACCSkeys.GenMACCSKeys(mol)
-    maccs_array = np.zeros(167, dtype=np.float32)
+    maccs_array = np.zeros(167, dtype=np.uint8)
     DataStructs.ConvertToNumpyArray(maccs, maccs_array)
-    return np.concatenate([morgan_array, maccs_array[1:]])
+    return np.concatenate([morgan_array.astype(np.uint8), maccs_array[1:]])
 
 
 def block_feature_row(smiles: str) -> tuple[np.ndarray, np.ndarray, int]:

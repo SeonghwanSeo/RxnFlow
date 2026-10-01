@@ -19,8 +19,8 @@ property_penalty: {}
 
 # Uniform sampling within each compatible synthon block library.
 subsampling:
-  sampling_ratio: 0.1
-  min_sampling: 50
+  sampling_ratio: 0.01
+  min_sampling: 10
   importance_temp: 1.0
 
 # FirstBlock is excluded. The final allowed reaction must consume the last site.
@@ -36,10 +36,12 @@ model:
 
 training:
   steps: 1000
-  batch_size: 128
-  replay_batch_size: 128
+  batch_size: 64
+  replay_batch_size: 64
   replay_capacity: 10000
   learning_rate: 0.0001
+  log_z_learning_rate: 0.1
+  lr_decay_steps: 20000
   weight_decay: 0.00000001
   sampling_temperature: 1.0
   random_action_prob: 0.05

@@ -2,18 +2,18 @@ import math
 from types import SimpleNamespace
 
 from rxnflow.envs.retrosynthesis import (
-    MultiRetroSyntheticAnalyzer,
-    RetroSynthesisTree,
-    RetroSyntheticAnalyzer,
+    RetrosynthesisSearch,
+    RetrosynthesisTree,
+    RetrosynthesisWorkers,
 )
-from rxnflow.types import ActionKind, RxnAction
+from rxnflow.gflownet.types import ActionKind, RxnAction
 
 
 class StaticAnalyzer:
-    def __init__(self, tree: RetroSynthesisTree):
+    def __init__(self, tree: RetrosynthesisTree):
         self.tree = tree
 
-    def run(self, smiles: str, max_reactions: int) -> RetroSynthesisTree:
+    def run(self, smiles: str, max_reactions: int) -> RetrosynthesisTree:
         return self.tree
 
 
@@ -22,9 +22,9 @@ class EchoAnalyzer:
         self,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetroSynthesisTree]],
-    ) -> RetroSynthesisTree:
-        return RetroSynthesisTree(smiles, known_branches)
+        known_branches: list[tuple[RxnAction, RetrosynthesisTree]],
+    ) -> RetrosynthesisTree:
+        return RetrosynthesisTree(smiles, known_branches)
 
 
 class UnexpectedUnaryReaction:
@@ -35,14 +35,14 @@ class UnexpectedUnaryReaction:
 def test_depth_weighted_backward_probability() -> None:
     selected = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="selected")
     alternative = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="alternative")
-    leaf = RetroSynthesisTree("")
-    one_step = RetroSynthesisTree("one", [(selected, leaf)])
-    two_step = RetroSynthesisTree("two", [(alternative, one_step)])
-    root = RetroSynthesisTree(
+    leaf = RetrosynthesisTree("")
+    one_step = RetrosynthesisTree("one", [(selected, leaf)])
+    two_step = RetrosynthesisTree("two", [(alternative, one_step)])
+    root = RetrosynthesisTree(
         "root",
         [(selected, one_step), (alternative, two_step)],
     )
-    analyzer = MultiRetroSyntheticAnalyzer(StaticAnalyzer(root), workers=0)
+    analyzer = RetrosynthesisWorkers(StaticAnalyzer(root), workers=0)
     value = analyzer.log_probability(
         "root", 2, selected, total_actions=10, parent_smiles="one"
     )
@@ -54,21 +54,21 @@ def test_known_branch_is_preserved_and_shorter_leaf_prunes_dfs() -> None:
     brick = "[1*]C"
     env = SimpleNamespace(
         uni_reactions={"unexpected": UnexpectedUnaryReaction()},
-        bi_actions={},
-        blocks={"1": SimpleNamespace(smiles=[brick])},
+        bi_reactions={},
+        blocks={"1": SimpleNamespace(smiles=["*C"])},
         brick_types=["1"],
     )
-    analyzer = RetroSyntheticAnalyzer(env)
+    analyzer = RetrosynthesisSearch(env)
     tree = analyzer.run(brick, max_reactions=2)
     assert tree is not None
     assert [action.kind for action, _ in tree.branches] == [ActionKind.FIRST_BLOCK]
 
     generated = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="generated")
-    child = RetroSynthesisTree(brick, tree.branches)
+    child = RetrosynthesisTree(brick, tree.branches)
     empty_env = SimpleNamespace(
-        uni_reactions={}, bi_actions={}, blocks={}, brick_types=[]
+        uni_reactions={}, bi_reactions={}, blocks={}, brick_types=[]
     )
-    known_tree = RetroSyntheticAnalyzer(empty_env).run(
+    known_tree = RetrosynthesisSearch(empty_env).run(
         "CC", max_reactions=2, known_branches=[(generated, child)]
     )
     assert known_tree is not None
@@ -76,9 +76,9 @@ def test_known_branch_is_preserved_and_shorter_leaf_prunes_dfs() -> None:
 
 
 def test_worker_queue_collects_multiple_submissions() -> None:
-    analyzer = MultiRetroSyntheticAnalyzer(EchoAnalyzer(), workers=2)
+    analyzer = RetrosynthesisWorkers(EchoAnalyzer(), workers=2)
     action = RxnAction(ActionKind.FIRST_BLOCK, "[1*]C", block_type="1", block_index=0)
-    child = RetroSynthesisTree("")
+    child = RetrosynthesisTree("")
     try:
         analyzer.submit(3, "first", 0, [(action, child)])
         analyzer.submit(7, "second", 0, [(action, child)])
@@ -95,10 +95,10 @@ def test_worker_queue_collects_multiple_submissions() -> None:
 
 def test_same_action_from_different_parents_has_distinct_backward_probability() -> None:
     action = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="conversion")
-    leaf = RetroSynthesisTree("")
-    first = RetroSynthesisTree("first", [(action, leaf)])
-    second = RetroSynthesisTree("second", [(action, leaf)])
-    tree = RetroSynthesisTree("CC", [(action, first), (action, second)])
+    leaf = RetrosynthesisTree("")
+    first = RetrosynthesisTree("first", [(action, leaf)])
+    second = RetrosynthesisTree("second", [(action, leaf)])
+    tree = RetrosynthesisTree("CC", [(action, first), (action, second)])
     for parent in ("first", "second"):
-        value = MultiRetroSyntheticAnalyzer.tree_log_probability(tree, action, 10, parent)
+        value = RetrosynthesisWorkers.tree_log_probability(tree, action, 10, parent)
         assert math.isclose(value, -math.log(2))

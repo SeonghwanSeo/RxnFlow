@@ -9,13 +9,13 @@ from dataclasses import dataclass, field
 from rdkit import Chem
 
 from rxnflow.envs.chemistry.synthon import typed_dummy_isotopes
-from rxnflow.types import ActionKind, RxnAction
+from rxnflow.gflownet.types import ActionKind, RxnAction
 
 
 @dataclass
-class RetroSynthesisTree:
+class RetrosynthesisTree:
     smiles: str
-    branches: list[tuple[RxnAction, RetroSynthesisTree]] = field(default_factory=list)
+    branches: list[tuple[RxnAction, RetrosynthesisTree]] = field(default_factory=list)
 
     @property
     def is_leaf(self) -> bool:
@@ -29,24 +29,16 @@ class RetroSynthesisTree:
         ]
 
 
-class RetroSyntheticAnalyzer:
+class RetrosynthesisSearch:
     def __init__(self, env):
         self.uni_reactions = env.uni_reactions
-        self.bi_actions = env.bi_actions
+        self.bi_reactions = env.bi_reactions
         self.block_search = {
             block_type: {smiles: index for index, smiles in enumerate(library.smiles)}
             for block_type, library in env.blocks.items()
         }
         self.brick_types = set(env.brick_types)
-        self.compatible = {
-            name: [
-                block_type
-                for block_type, library in env.blocks.items()
-                if action.block_site_type in library.site_types
-            ]
-            for name, action in self.bi_actions.items()
-        }
-        self._memo: dict[tuple[str, int], RetroSynthesisTree | None] = {}
+        self._memo: dict[tuple[str, int], RetrosynthesisTree | None] = {}
         self._max_depth = 0
         self._min_depth = 0
 
@@ -54,31 +46,31 @@ class RetroSyntheticAnalyzer:
         self,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
-    ) -> RetroSynthesisTree | None:
+        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
+    ) -> RetrosynthesisTree | None:
         self._max_depth = self._min_depth = max_reactions + 1
         if known_branches:
             self._min_depth = min(
                 min(child.leaf_depths()) + 1 for _, child in known_branches
             )
         self._memo = {}
-        return self._dfs(smiles, 1, known_branches)
+        mol = Chem.MolFromSmiles(smiles) if smiles else None
+        if mol is None:
+            return None
+        return self._dfs(mol, Chem.MolToSmiles(mol), 1, known_branches)
 
     def _check_depth(self, depth: int) -> bool:
         return depth <= self._max_depth and depth <= self._min_depth
 
     def _dfs(
         self,
-        smiles: str,
+        mol: Chem.Mol,
+        canonical: str,
         depth: int,
-        known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
-    ) -> RetroSynthesisTree | None:
-        if not smiles or not self._check_depth(depth):
+        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
+    ) -> RetrosynthesisTree | None:
+        if not self._check_depth(depth):
             return None
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
-        canonical = Chem.MolToSmiles(mol)
         key = (canonical, depth)
         if known_branches is None and key in self._memo:
             return self._memo[key]
@@ -87,9 +79,17 @@ class RetroSyntheticAnalyzer:
         # precursors. Backward choices identify both the action and its parent.
         branch_keys = {(action, child.smiles) for action, child in branches}
 
-        if len(typed_dummy_isotopes(mol)) == 1:
-            for block_type in sorted(self.brick_types):
-                block_index = self.block_search[block_type].get(canonical)
+        signature = typed_dummy_isotopes(mol)
+        if len(signature) == 1:
+            site_type = signature[0]
+            brick = Chem.Mol(mol)
+            for atom in brick.GetAtoms():
+                if atom.GetAtomicNum() == 0:
+                    atom.SetIsotope(0)
+            brick_smiles = Chem.MolToSmiles(brick)
+            block_type = str(site_type)
+            if block_type in self.brick_types:
+                block_index = self.block_search[block_type].get(brick_smiles)
                 if block_index is not None:
                     action = RxnAction(
                         ActionKind.FIRST_BLOCK,
@@ -98,78 +98,85 @@ class RetroSyntheticAnalyzer:
                         block_index=block_index,
                     )
                     if (action, "") not in branch_keys:
-                        branches.append((action, RetroSynthesisTree("")))
+                        branches.append((action, RetrosynthesisTree("")))
                         branch_keys.add((action, ""))
                     self._min_depth = min(self._min_depth, depth)
 
         if self._check_depth(depth + 1):
             for name, reaction in self.uni_reactions.items():
                 expected = () if reaction.output_type is None else (reaction.output_type,)
-                if typed_dummy_isotopes(mol) != expected:
+                if signature != expected:
                     continue
                 for products in reaction.run_reverse(mol, 2):
                     if len(products) != 1:
                         continue
-                    precursor = Chem.MolFromSmiles(products[0])
-                    if precursor is None or typed_dummy_isotopes(precursor) != (
-                        reaction.input_type,
-                    ):
+                    precursor = products[0]
+                    if typed_dummy_isotopes(precursor) != (reaction.input_type,):
                         continue
                     parent_smiles = Chem.MolToSmiles(precursor)
                     action = RxnAction(ActionKind.UNI_REACTION, canonical, reaction=name)
                     if (action, parent_smiles) in branch_keys:
                         continue
-                    if canonical not in reaction.run_forward(precursor):
+                    forward_product = reaction.run_forward(precursor)
+                    if (
+                        forward_product is None
+                        or Chem.MolToSmiles(forward_product) != canonical
+                    ):
                         continue
-                    child = self._dfs(parent_smiles, depth + 1)
+                    child = self._dfs(precursor, parent_smiles, depth + 1)
                     if child is not None:
                         branches.append((action, child))
                         branch_keys.add((action, parent_smiles))
 
-            for name, action in self.bi_actions.items():
-                for child_smiles, block_smiles in action.reaction.reverse_pairs(
-                    mol, action.block_first, 2
-                ):
-                    child_mol = Chem.MolFromSmiles(child_smiles)
-                    block_mol = Chem.MolFromSmiles(block_smiles)
-                    if child_mol is None or block_mol is None:
-                        continue
+            for name, action in self.bi_reactions.items():
+                for child_mol, block_mol in action.run_reverse(mol, 2):
                     child_canonical = Chem.MolToSmiles(child_mol)
                     block_canonical = Chem.MolToSmiles(block_mol)
                     if typed_dummy_isotopes(child_mol) != (action.state_type,):
                         continue
-                    for block_type in self.compatible[name]:
-                        block_index = self.block_search[block_type].get(block_canonical)
-                        if block_index is None:
-                            continue
-                        reverse_action = RxnAction(
-                            ActionKind.BI_REACTION,
-                            product_smiles=canonical,
-                            reaction=name,
-                            block_type=block_type,
-                            block_index=block_index,
-                        )
-                        if (reverse_action, child_canonical) in branch_keys:
-                            continue
-                        if canonical not in action.reaction.run(
-                            child_mol, block_mol, action.block_first
-                        ):
-                            continue
-                        child = self._dfs(child_canonical, depth + 1)
-                        if child is not None:
-                            branches.append((reverse_action, child))
-                            branch_keys.add((reverse_action, child_canonical))
+                    # Reverse products carry the incoming isotope-0 attachment
+                    # and (for linkers) the remaining type. Together with the
+                    # reaction's incoming type this determines one library.
+                    block_sites = typed_dummy_isotopes(block_mol)
+                    if not block_sites or block_sites[0] != 0:
+                        continue
+                    block_type = "-".join(map(str, (action.block_type, *block_sites[1:])))
+                    library = self.block_search.get(block_type)
+                    if library is None:
+                        continue
+                    block_index = library.get(block_canonical)
+                    if block_index is None:
+                        continue
+                    reverse_action = RxnAction(
+                        ActionKind.BI_REACTION,
+                        product_smiles=canonical,
+                        reaction=name,
+                        block_type=block_type,
+                        block_index=block_index,
+                    )
+                    if (reverse_action, child_canonical) in branch_keys:
+                        continue
+                    forward_product = action.run_forward(child_mol, block_mol)
+                    if (
+                        forward_product is None
+                        or Chem.MolToSmiles(forward_product) != canonical
+                    ):
+                        continue
+                    child = self._dfs(child_mol, child_canonical, depth + 1)
+                    if child is not None:
+                        branches.append((reverse_action, child))
+                        branch_keys.add((reverse_action, child_canonical))
 
-        result = RetroSynthesisTree(canonical, branches) if branches else None
+        result = RetrosynthesisTree(canonical, branches) if branches else None
         if known_branches is None:
             self._memo[key] = result
         return result
 
 
-_WORKER_ANALYZER: RetroSyntheticAnalyzer | None = None
+_WORKER_ANALYZER: RetrosynthesisSearch | None = None
 
 
-def _init_worker(analyzer: RetroSyntheticAnalyzer) -> None:
+def _init_worker(analyzer: RetrosynthesisSearch) -> None:
     global _WORKER_ANALYZER
     _WORKER_ANALYZER = analyzer
 
@@ -177,14 +184,14 @@ def _init_worker(analyzer: RetroSyntheticAnalyzer) -> None:
 def _worker_run(
     smiles: str,
     max_reactions: int,
-    known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None,
-) -> RetroSynthesisTree | None:
+    known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None,
+) -> RetrosynthesisTree | None:
     assert _WORKER_ANALYZER is not None
     return _WORKER_ANALYZER.run(smiles, max_reactions, known_branches)
 
 
-class MultiRetroSyntheticAnalyzer:
-    def __init__(self, analyzer: RetroSyntheticAnalyzer, workers: int):
+class RetrosynthesisWorkers:
+    def __init__(self, analyzer: RetrosynthesisSearch, workers: int):
         self.analyzer = analyzer
         self.pool = (
             ProcessPoolExecutor(
@@ -195,15 +202,15 @@ class MultiRetroSyntheticAnalyzer:
             if workers > 0
             else None
         )
-        self.futures: list[tuple[int, Future[RetroSynthesisTree | None]]] = []
-        self.results: list[tuple[int, RetroSynthesisTree | None]] = []
+        self.futures: list[tuple[int, Future[RetrosynthesisTree | None]]] = []
+        self.results: list[tuple[int, RetrosynthesisTree | None]] = []
 
     def run(
         self,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
-    ) -> RetroSynthesisTree | None:
+        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
+    ) -> RetrosynthesisTree | None:
         if self.pool is None:
             if known_branches is None:
                 return self.analyzer.run(smiles, max_reactions)
@@ -217,7 +224,7 @@ class MultiRetroSyntheticAnalyzer:
         key: int,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetroSynthesisTree]],
+        known_branches: list[tuple[RxnAction, RetrosynthesisTree]],
     ) -> None:
         if self.pool is None:
             self.results.append(
@@ -230,7 +237,7 @@ class MultiRetroSyntheticAnalyzer:
             future = self.pool.submit(_worker_run, smiles, max_reactions, known_branches)
             self.futures.append((key, future))
 
-    def result(self) -> list[tuple[int, RetroSynthesisTree | None]]:
+    def result(self) -> list[tuple[int, RetrosynthesisTree | None]]:
         if self.pool is None:
             results = self.results
             self.results = []
@@ -241,7 +248,7 @@ class MultiRetroSyntheticAnalyzer:
 
     @staticmethod
     def tree_log_probability(
-        tree: RetroSynthesisTree | None,
+        tree: RetrosynthesisTree | None,
         action: RxnAction,
         total_actions: int,
         parent_smiles: str,
@@ -266,7 +273,7 @@ class MultiRetroSyntheticAnalyzer:
         action: RxnAction,
         total_actions: int,
         parent_smiles: str,
-        known_branches: list[tuple[RxnAction, RetroSynthesisTree]] | None = None,
+        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
     ) -> float | None:
         tree = self.run(smiles, max_reactions, known_branches)
         return self.tree_log_probability(tree, action, total_actions, parent_smiles)

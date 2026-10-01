@@ -1,4 +1,5 @@
 import json
+import pickle
 import shutil
 from dataclasses import replace
 from pathlib import Path
@@ -7,9 +8,10 @@ import numpy as np
 import pytest
 from rdkit import Chem
 
-from rxnflow.envs import SynthesisEnv
+from rxnflow.envs.env import SynthesisEnv
+from rxnflow.envs.graph import molecule_to_graph_data
 from rxnflow.envs.prepare import convert_stage, features_stage
-from rxnflow.types import ActionKind, MoleculeState
+from rxnflow.gflownet.types import ActionKind, MoleculeState
 
 
 def block_index(env, block_type, smiles):
@@ -55,14 +57,18 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
             ]
         )
     env = SynthesisEnv(prepared_env, max_atoms=30)
-    assert len(env.bi_reactions) == 38
+    with np.load(prepared_env / "bb_feature.npz") as arrays:
+        for name, library in env.blocks.items():
+            assert arrays[f"{name}/fingerprints"].dtype == np.uint8
+            assert library.fingerprints.numpy().dtype == np.uint8
+    assert len({name.rsplit("_", 2)[0] for name in env.bi_reactions}) == 38
     assert len(env.uni_reactions) == 4
     assert len(env.synthon_types) == 35
-    i = block_index(env, "1", "[1*]NCCN")
+    i = block_index(env, "1", "*NCCN")
     assert env.blocks["1"].identifiers[i] == ["EN-A", "EN-A2"]
     assert env.sources["EN-A"] == "NCCN"
     # One primary amine cannot be counted twice as a two-site linker.
-    assert "[1*]N([1*])CCN" not in env.blocks["1-1"].smiles
+    assert "*N([1*])CCN" not in env.blocks["1-1"].smiles
     assert all(len(row) == 9 for row in env.blocks["1"].properties)
 
 
@@ -70,10 +76,10 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     env = SynthesisEnv(prepared_env, max_atoms=30, max_reactions=3)
     initial = env.initial_state()
     assert {g.kind for g in env.available_groups(initial)} == {ActionKind.FIRST_BLOCK}
-    first = actions_for(env, initial, "first_block", "1", "[1*]NCCN")[0]
+    first = actions_for(env, initial, "first_block", "1", "*NCCN")[0]
     start = env.step(initial, first)
     assert start.reaction_count == 0
-    coupling = actions_for(env, start, "rxn1_b1", "3-33", "[3*]CN[33*]")[0]
+    coupling = actions_for(env, start, "rxn1_state_first", "3-33", "*CN[33*]")[0]
     protected = env.step(start, coupling)
     assert env.dummy_signature(protected.smiles) == (33,)
     assert {g.kind for g in env.available_groups(protected)} == {ActionKind.UNI_REACTION}
@@ -81,7 +87,7 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     activated = env.step(protected, deprotect)
     assert activated.reaction_count == 2
     assert env.dummy_signature(activated.smiles) == (1,)
-    closure = actions_for(env, activated, "rxn1_b1", "3", "C[3*]")[0]
+    closure = actions_for(env, activated, "rxn1_state_first", "3", "C*")[0]
     terminal = env.step(activated, closure)
     assert terminal.terminated and terminal.reaction_count == 3
     assert "*" not in terminal.smiles and not env.available_groups(terminal)
@@ -96,9 +102,45 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     )
 
 
+def test_state_retains_product_molecule_and_stereochemistry(
+    prepared_env: Path,
+    monkeypatch,
+) -> None:
+    env = SynthesisEnv(prepared_env, max_atoms=30)
+    parent = MoleculeState.from_smiles("[1*]N[C@@H](C)C/C=C/c1ccc([N+](=O)[O-])cc1")
+    parent_smiles = parent.smiles
+    expected = Chem.MolToSmiles(
+        Chem.MolFromSmiles("CC(=O)N[C@@H](C)C/C=C/c1ccc([N+](=O)[O-])cc1")
+    )
+    action = actions_for(env, parent, "rxn1_state_first", "3", "C*")[0]
+
+    # Explicitly executing the action already produced the molecule. Applying that action and encoding
+    # its result must not reparse either the parent or product SMILES.
+    def unexpected_parse(*args, **kwargs):
+        raise AssertionError("state/graph encoding reparsed a molecule")
+
+    monkeypatch.setattr(Chem, "MolFromSmiles", unexpected_parse)
+    child = env.step(parent, action)
+    graph = molecule_to_graph_data(child.mol, env.max_atoms, child.reaction_count)
+    restored = pickle.loads(pickle.dumps(child))
+    restored_graph = molecule_to_graph_data(
+        restored.mol, env.max_atoms, restored.reaction_count
+    )
+    assert child.smiles == expected == action.product_smiles
+    assert restored.smiles == expected == Chem.MolToSmiles(restored.mol)
+    assert child.mol is not parent.mol
+    assert Chem.MolToSmiles(parent.mol) == parent_smiles
+    assert np.array_equal(
+        graph.node_features.numpy(), restored_graph.node_features.numpy()
+    )
+    assert np.array_equal(
+        graph.bond_features.numpy(), restored_graph.bond_features.numpy()
+    )
+
+
 def test_terminal_unary_early_exit_and_final_step_masks(prepared_env: Path) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=30, max_reactions=3)
-    first = actions_for(env, env.initial_state(), "first_block", "11", "CC[11*]")[0]
+    first = actions_for(env, env.initial_state(), "first_block", "11", "CC*")[0]
     state = env.step(env.initial_state(), first)
     action = actions_for(env, state, "nitrile_to_tetrazole")[0]
     early = env.step(state, action)
@@ -108,43 +150,71 @@ def test_terminal_unary_early_exit_and_final_step_masks(prepared_env: Path) -> N
     assert actions_for(env, last, "nitrile_to_tetrazole") == [action]
     assert env.step(last, action).terminated
     assert env.available_groups(replace(state, reaction_count=3)) == []
-    assert env.available_groups(MoleculeState("[33*]NCC", reaction_count=2)) == []
+    assert (
+        env.available_groups(MoleculeState.from_smiles("[33*]NCC", reaction_count=2))
+        == []
+    )
     assert not env.available_groups(early)
     with pytest.raises(ValueError, match="not available"):
         env.step(early, action)
 
 
-def test_non_equivalent_linker_sites_are_separate_actions(prepared_env: Path) -> None:
+def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
+    prepared_env: Path,
+) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=30, max_reactions=3)
-    state = MoleculeState("[3*]C")
-    outcomes = actions_for(env, state, "rxn1_b0", "1-1", "[1*]NCCC(C)N[1*]")
-    assert len(outcomes) == 2
-    assert len({action.product_smiles for action in outcomes}) == 2
-    for action in outcomes:
+    state = MoleculeState.from_smiles("[3*]C")
+    directions = ["*NCCC(C)N[1*]", "[1*]NCCC(C)N*"]
+    outcomes = []
+    fingerprints = []
+    for smiles in directions:
+        actions = actions_for(env, state, "rxn1_block_first", "1-1", smiles)
+        assert len(actions) == 1
+        action = actions[0]
+        outcomes.append(action)
+        fingerprints.append(env.blocks["1-1"].fingerprints[action.block_index])
         product = env.step(state, action)
         assert env.dummy_signature(product.smiles) == (1,)
         assert not product.terminated
-    # Symmetry-equivalent terminal amines yield one product, not two actions.
-    assert len(actions_for(env, state, "rxn1_b0", "1-1", "[1*]NCCN[1*]")) == 1
+        assert env.backward_log_probability(product, action, state.smiles) is not None
+    assert outcomes[0].block_index != outcomes[1].block_index
+    assert outcomes[0].product_smiles != outcomes[1].product_smiles
+    assert not np.array_equal(fingerprints[0].numpy(), fingerprints[1].numpy())
+    # Equivalent orientations collapse to one catalog row.
+    symmetric = Chem.MolToSmiles(Chem.MolFromSmiles("*NCCN[1*]"))
+    assert env.blocks["1-1"].smiles.count(symmetric) == 1
+    assert len(actions_for(env, state, "rxn1_block_first", "1-1", symmetric)) == 1
+
+    # Ordered library types determine which end attaches, even for two types.
+    assert "1-3" in env.blocks and "3-1" in env.blocks
+    assert all(
+        g.block_type != "1-3"
+        for g in env.available_groups(MoleculeState.from_smiles("[1*]NCC"))
+        if g.name == "rxn1_state_first"
+    )
 
 
-def test_exact_product_limits_include_inserted_atoms_and_unary(
+def test_selected_product_capacity_and_estimated_property_budget(
     prepared_env: Path,
 ) -> None:
     # Amidation inserts C=O: the two synthon heavy-atom counts alone undercount.
     env = SynthesisEnv(prepared_env, max_atoms=5)
-    state = MoleculeState("[1*]NCCN")
-    assert actions_for(env, state, "rxn1_b1", "3", "C[3*]") == []
+    state = MoleculeState.from_smiles("[1*]NCCN")
+    assert actions_for(env, state, "rxn1_state_first", "3", "C*") == []
     relaxed = SynthesisEnv(prepared_env, max_atoms=7)
-    assert actions_for(relaxed, state, "rxn1_b1", "3", "C[3*]")
+    assert actions_for(relaxed, state, "rxn1_state_first", "3", "C*")
     # Terminal tetrazole is seven heavy atoms; it must respect the same limits.
-    assert actions_for(env, MoleculeState("[11*]CC"), "nitrile_to_tetrazole") == []
-    property_limited = SynthesisEnv(
-        prepared_env, max_atoms=30, property_penalty={"rings": 0.5}
-    )
     assert (
-        actions_for(property_limited, MoleculeState("[11*]CC"), "nitrile_to_tetrazole")
+        actions_for(env, MoleculeState.from_smiles("[11*]CC"), "nitrile_to_tetrazole")
         == []
+    )
+    property_limited = SynthesisEnv(
+        prepared_env, max_atoms=30, property_penalty={"rings": 0}
+    )
+    # Property masking is a reactant-budget estimate, not an exact product
+    # constraint. Unary ring formation is not vetoed by a product descriptor.
+    assert actions_for(
+        property_limited, MoleculeState.from_smiles("[11*]CC"), "nitrile_to_tetrazole"
     )
 
 
@@ -183,13 +253,116 @@ def test_versioned_feature_artifact_is_rejected(
 
 def test_minimum_reactions_masks_early_termination(prepared_env: Path) -> None:
     env = SynthesisEnv(prepared_env, min_reactions=2, max_reactions=3)
-    state = MoleculeState("[3*]C")
+    state = MoleculeState.from_smiles("[3*]C")
     assert env.available_groups(state)
     assert all(not env.blocks[g.block_type].is_brick for g in env.available_groups(state))
     assert "nitrile_to_tetrazole" not in {
-        g.name for g in env.available_groups(MoleculeState("[11*]CC"))
+        g.name for g in env.available_groups(MoleculeState.from_smiles("[11*]CC"))
     }
-    allowed = MoleculeState("[11*]CC", reaction_count=1)
+    allowed = MoleculeState.from_smiles("[11*]CC", reaction_count=1)
     assert env.step(
         allowed, actions_for(env, allowed, "nitrile_to_tetrazole")[0]
     ).terminated
+
+
+def test_budget_tolerance_and_nonpositive_bounds(prepared_env: Path) -> None:
+    import torch
+
+    from rxnflow.envs.chemistry.features import PROPERTY_DIM, PROPERTY_NAMES
+
+    env = SynthesisEnv(
+        prepared_env, property_penalty={"mw": 100.0, "rings": 0, "logp": -1.0}
+    )
+    name = env.brick_types[0]
+    library = env.blocks[name]
+    library.properties[:, PROPERTY_NAMES.index("mw")] = 100.05
+    library.properties[:, PROPERTY_NAMES.index("rings")] = 0
+    library.properties[:, PROPERTY_NAMES.index("logp")] = -1.0
+    state_properties = torch.zeros(PROPERTY_DIM)
+    assert env.block_mask(state_properties, name).all()
+    state_properties[PROPERTY_NAMES.index("mw")] = 0.1
+    assert not env.block_mask(state_properties, name).any()
+    state_properties.zero_()
+    state_properties[PROPERTY_NAMES.index("rings")] = 1
+    assert not env.block_mask(state_properties, name).any()
+    state_properties.zero_()
+    state_properties[PROPERTY_NAMES.index("logp")] = 0.01
+    assert not env.block_mask(state_properties, name).any()
+
+
+def test_parallel_preparation_matches_serial(prepared_env: Path, tmp_path: Path) -> None:
+    root = Path(__file__).parents[1]
+    source = (root / "tests/fixtures/enamine_stock.smi").read_text()
+    # Cross the conversion batch boundary and check that duplicate provenance
+    # merges identically even when the same BB is handled by different workers.
+    stock = tmp_path / "stock.smi"
+    stock.write_text(source + (source.splitlines()[0] + "\n") * 512)
+    parallel = tmp_path / "parallel"
+    convert_stage(stock, parallel, root / "data/templates", num_workers=2)
+    features_stage(parallel, num_workers=2)
+    assert (parallel / "building_blocks.json").read_bytes() == (
+        prepared_env / "building_blocks.json"
+    ).read_bytes()
+    assert sorted(p.name for p in (parallel / "blocks").glob("*.smi")) == sorted(
+        p.name for p in (prepared_env / "blocks").glob("*.smi")
+    )
+    for path in (prepared_env / "blocks").glob("*.smi"):
+        assert (parallel / "blocks" / path.name).read_bytes() == path.read_bytes()
+    with (
+        np.load(parallel / "bb_feature.npz") as actual,
+        np.load(prepared_env / "bb_feature.npz") as expected,
+    ):
+        assert actual.files == expected.files
+        for key in actual.files:
+            np.testing.assert_array_equal(actual[key], expected[key])
+
+
+def test_parallel_feature_failure_is_reported(tmp_path: Path) -> None:
+    blocks = tmp_path / "blocks"
+    blocks.mkdir()
+    (blocks / "1.smi").write_text('not-a-smiles\t["id"]\n')
+    with pytest.raises(ValueError):
+        features_stage(tmp_path, num_workers=2)
+    assert not (tmp_path / "bb_feature.npz").exists()
+    assert not (tmp_path / "prepare_manifest.json").exists()
+
+
+def test_loading_does_not_repeat_preparation_validation(prepared_env, monkeypatch):
+    from rdkit import Chem
+
+    from rxnflow.envs.library import load_block_libraries
+
+    def no_parse(*args, **kwargs):
+        raise AssertionError("prepared catalog must not be reparsed during load")
+
+    original = np.lib.npyio.NpzFile.__getitem__
+
+    def no_duplicate_smiles(self, key):
+        assert not key.endswith("/smiles")
+        return original(self, key)
+
+    monkeypatch.setattr(Chem, "MolFromSmiles", no_parse)
+    monkeypatch.setattr(np.lib.npyio.NpzFile, "__getitem__", no_duplicate_smiles)
+    assert load_block_libraries(prepared_env)
+
+
+def test_batched_budgets_match_individual_masks(prepared_env):
+    import torch
+
+    from rxnflow.envs.chemistry.features import molecular_properties, parse_molecule
+
+    env = SynthesisEnv(
+        prepared_env, max_atoms=20, property_penalty={"mw": 200, "rings": 0, "logp": -1.0}
+    )
+    properties = torch.from_numpy(
+        np.stack(
+            [
+                molecular_properties(parse_molecule(smiles))
+                for smiles in ("", "[1*]CC", "[3*]c1ccccc1")
+            ]
+        )
+    )
+    for name, library in env.blocks.items():
+        indices = torch.arange(min(3, len(library)))
+        expected = torch.stack([env.block_mask(row, name, indices) for row in properties])
+        assert torch.equal(env.block_mask(properties, name, indices), expected)

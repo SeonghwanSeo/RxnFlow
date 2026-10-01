@@ -3,20 +3,17 @@ from pathlib import Path
 import pytest
 import yaml
 
-from rxnflow import (
+from rxnflow.config import (
     Config,
     DataConfig,
     GenerationConfig,
-    QEDReward,
     RewardConfig,
-    RewardFunction,
-    Sample,
     SubsamplingConfig,
-    evaluate_rewards,
+    TrainingConfig,
 )
-from rxnflow.config import TrainingConfig
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.types import Trajectory
+from rxnflow.gflownet.types import Sample, Trajectory
+from rxnflow.reward import QEDReward, RewardFunction, evaluate_rewards
 
 
 class AtomCountReward(RewardFunction):
@@ -90,8 +87,15 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
         Config(
             data=DataConfig(env_dir="example"), property_penalty={"unknown": 1}
         ).validate()
-    with pytest.raises(ValueError, match="must be positive"):
-        Config(data=DataConfig(env_dir="example"), property_penalty={"mw": 0}).validate()
+    Config(
+        data=DataConfig(env_dir="example"),
+        property_penalty={"rings": 0, "hbd": 0, "logp": -1.0},
+    ).validate()
+    for bound in (float("inf"), float("nan")):
+        with pytest.raises(ValueError, match="must be finite"):
+            Config(
+                data=DataConfig(env_dir="example"), property_penalty={"mw": bound}
+            ).validate()
 
     invalid_settings = tmp_path / "invalid-settings.yaml"
     invalid_settings.write_text("data:\n  env_dir: example\nreward:\n  settings: []\n")
@@ -112,8 +116,8 @@ def test_checked_in_minimal_and_complete_configs_load() -> None:
     assert complete.reward == RewardConfig(exponent=32.0, floor=1e-4, settings={})
     assert minimal.property_penalty == {"mw": 500.0}
     assert complete.property_penalty == {}
-    assert minimal.training.batch_size == 128
-    assert minimal.training.replay_batch_size == 128
+    assert minimal.training.batch_size == 64
+    assert minimal.training.replay_batch_size == 64
     assert evaluate_rewards(QEDReward(**minimal.reward.settings), ["CCO"])[0][0] > 0
     assert list(complete.to_file_dict()) == [
         "data",
@@ -149,3 +153,27 @@ def test_qed_and_custom_reward_alignment() -> None:
     assert filtered == [3.0, 0.0]
     with pytest.raises(ValueError, match="non-negative"):
         evaluate_rewards(BrokenReward(), ["CCO"])
+
+
+def test_replay_wraparound_matches_fifo_and_restarts() -> None:
+    import random
+    from collections import deque
+
+    buffer = ReplayBuffer(7)
+    reference = deque(maxlen=7)
+    for start in range(0, 30, 5):
+        items = [
+            Trajectory(steps=[], final_smiles=str(i)) for i in range(start, start + 5)
+        ]
+        buffer.add(items)
+        reference.extend(items)
+        assert buffer.sample(20, random.Random(0)) == list(reference)
+        assert buffer.sample(3, random.Random(11)) == random.Random(11).sample(
+            list(reference), 3
+        )
+    restored = ReplayBuffer(7)
+    restored.load_state_dict(buffer.state_dict())
+    next_item = Trajectory(steps=[], final_smiles="new")
+    buffer.add([next_item])
+    restored.add([next_item])
+    assert restored.sample(4, random.Random(7)) == buffer.sample(4, random.Random(7))

@@ -8,7 +8,7 @@ from collections.abc import Callable
 
 from rdkit.Chem import QED
 
-from rxnflow.sample import Sample, SampleInput, as_sample
+from rxnflow.gflownet.types import Sample, SampleInput, as_sample
 
 SampleFilter = Callable[[Sample], bool]
 

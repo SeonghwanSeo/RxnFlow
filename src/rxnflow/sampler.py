@@ -8,23 +8,33 @@ from pathlib import Path
 
 import torch
 
-from rxnflow._version import __version__
+from rxnflow import __version__
 from rxnflow.config import Config
-from rxnflow.envs import SynthesisEnv
-from rxnflow.gflownet.runtime import PolicyRuntime, resolve_device, trajectory_sample
+from rxnflow.envs.env import SynthesisEnv
+from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device, trajectory_sample
+from rxnflow.gflownet.types import SamplingResult, Trajectory
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, SampleFilter, evaluate_rewards
-from rxnflow.types import SamplingResult, Trajectory
 
 
 class RxnFlowSampler:
     def __init__(
         self,
-        config: Config,
         checkpoint: str | Path,
         reward: RewardFunction | None = None,
+        device: str | None = None,
         sample_filter: SampleFilter | None = None,
     ):
+        # Load once on CPU: sampling needs only EMA weights, not the optimizer
+        # and replay tensors copied to the GPU with the entire checkpoint.
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        if payload["rxnflow_version"] != __version__:
+            raise ValueError(
+                f"checkpoint was created by RxnFlow {payload['rxnflow_version']!r}"
+            )
+        config = Config.from_dict(payload["config"])
+        if device is not None:
+            config.device = device
         config.validate()
         self.config = config
         self.reward = reward
@@ -38,49 +48,16 @@ class RxnFlowSampler:
             0,
             config.property_penalty,
         )
-        self.model = RxnFlowModel(self.env, config.model).to(self.device).eval()
-        payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
-        if payload.get("rxnflow_version") != __version__:
-            raise ValueError(
-                f"checkpoint was created by RxnFlow {payload.get('rxnflow_version')!r}; "
-                f"this installation is RxnFlow {__version__}"
-            )
-        checkpoint_config = dict(payload["config"])
-        runtime_config = config.to_dict()
-        checkpoint_config.pop("device", None)
-        runtime_config.pop("device", None)
-        if checkpoint_config != runtime_config:
-            raise ValueError(
-                "sampling configuration differs from the resolved checkpoint configuration"
-            )
-        if payload.get("environment") != self.env.signature:
+        if payload["environment"] != self.env.signature:
             raise ValueError(
                 "prepared environment differs from the checkpoint environment"
             )
+        self.model = RxnFlowModel(self.env, config.model).to(self.device).eval()
         self.model.load_state_dict(payload["sampling_model"])
         self.generator = torch.Generator(device="cpu").manual_seed(config.seed)
-        self.runtime = PolicyRuntime(
+        self.policy = SynthesisPolicy(
             self.env, self.model, config, self.device, self.generator
         )
-
-    @classmethod
-    def from_checkpoint(
-        cls,
-        checkpoint: str | Path,
-        reward: RewardFunction | None = None,
-        device: str | None = None,
-        sample_filter: SampleFilter | None = None,
-    ) -> RxnFlowSampler:
-        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-        if payload.get("rxnflow_version") != __version__:
-            raise ValueError(
-                f"checkpoint was created by RxnFlow {payload.get('rxnflow_version')!r}; "
-                f"this installation is RxnFlow {__version__}"
-            )
-        config = Config.from_dict(payload["config"])
-        if device is not None:
-            config.device = device
-        return cls(config, checkpoint, reward, sample_filter)
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
         actions = [self.env.action_to_dict(step.action) for step in trajectory.steps]
@@ -113,12 +90,16 @@ class RxnFlowSampler:
         attempts = 0
         maximum_attempts = max(100, count * 100)
         while len(trajectories) < count and attempts < maximum_attempts:
-            trajectory = self.runtime.rollout(
-                sampling_temperature, 0.0, analyze_backward=False
+            batch_size = min(
+                self.config.training.batch_size,
+                count - len(trajectories),
+                maximum_attempts - attempts,
             )
-            attempts += 1
-            if trajectory.valid:
-                trajectories.append(trajectory)
+            batch = self.policy.rollouts(
+                batch_size, sampling_temperature, 0.0, analyze_backward=False
+            )
+            attempts += batch_size
+            trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
         if len(trajectories) != count:
             raise RuntimeError(
                 f"generated only {len(trajectories)} valid samples in {maximum_attempts} attempts"

@@ -1,4 +1,4 @@
-"""Fixed-shape molecular graph construction for model input.
+"""Fixed-shape model tensors derived from the state's RDKit molecule.
 
 Every ``GraphData`` has length ``L = Config.data.max_atoms + 1``: heavy atoms
 plus one reserved dummy-handle slot. RDKit excludes dummies from its heavy-atom
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 from rdkit import Chem
 from torch import Tensor
@@ -19,13 +20,12 @@ from rxnflow.envs.chemistry.features import (
     heavy_atom_count,
     molecular_properties,
     normalize_molecular_properties,
-    parse_molecule,
 )
 
 # NOTE: For general/common usage, we allocate 100 atom & synthon types,
 # which is more than enough for most practical applications.
-ATOM_TYPES = list(range(100))
-SYNTHON_TYPES = list(range(100))
+ATOM_TYPES = tuple(range(100))
+SYNTHON_TYPES = tuple(range(100))
 # Atom/type one-hots, degree, charge and four continuous/boolean features.
 NODE_FEATURE_DIM = len(ATOM_TYPES) + 1 + 7 + 6 + 4 + len(SYNTHON_TYPES) + 1
 BOND_FEATURE_DIM = 7
@@ -83,58 +83,12 @@ class GraphBatch:
         )
 
 
-def _one_hot(value: int, choices: list[int]) -> list[float]:
-    result = [0.0] * (len(choices) + 1)
-    result[choices.index(value) if value in choices else -1] = 1.0
-    return result
-
-
-def _atom_features(atom: Chem.Atom) -> Tensor:
-    degree = min(atom.GetDegree(), 6)
-    charge = max(-2, min(3, atom.GetFormalCharge()))
-    values = _one_hot(atom.GetAtomicNum(), ATOM_TYPES)
-    values.extend([float(degree == index) for index in range(7)])
-    values.extend([float(charge == index) for index in range(-2, 4)])
-    values.extend(
-        [
-            float(atom.GetIsAromatic()),
-            atom.GetMass() / 100.0 if atom.GetAtomicNum() else 0.0,
-            atom.GetTotalNumHs(includeNeighbors=True) / 4.0,
-            min(int(atom.GetHybridization()) / 8.0, 1.0),
-        ]
-    )
-    values.extend(
-        _one_hot(atom.GetIsotope() if atom.GetAtomicNum() == 0 else 0, SYNTHON_TYPES)
-    )
-    return torch.tensor(values, dtype=torch.float32)
-
-
-def _bond_features(bond: Chem.Bond) -> Tensor:
-    bond_types = [
-        Chem.BondType.SINGLE,
-        Chem.BondType.DOUBLE,
-        Chem.BondType.TRIPLE,
-        Chem.BondType.AROMATIC,
-    ]
-    values = [float(bond.GetBondType() == bond_type) for bond_type in bond_types]
-    values.extend(
-        [
-            float(bond.GetIsConjugated()),
-            float(bond.IsInRing()),
-            float(bond.GetStereo() != Chem.BondStereo.STEREONONE),
-        ]
-    )
-    return torch.tensor(values, dtype=torch.float32)
-
-
 def molecule_to_graph_data(
-    smiles: str,
+    mol: Chem.Mol | None,
     max_atoms: int,
     reaction_count: int,
+    properties: np.ndarray | None = None,
 ) -> GraphData:
-    mol = parse_molecule(smiles)
-    if smiles and mol is None:
-        raise ValueError(f"invalid graph SMILES: {smiles}")
     atom_count = heavy_atom_count(mol)
     if atom_count > max_atoms:
         raise ValueError(
@@ -144,32 +98,66 @@ def molecule_to_graph_data(
     if mol is not None and sum(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()) > 1:
         raise ValueError("a synthesis state can have at most one dummy handle")
     capacity = max_atoms + 1
-    node_features = torch.zeros((capacity, NODE_FEATURE_DIM), dtype=torch.float32)
-    node_mask = torch.zeros(capacity, dtype=torch.bool)
-    adjacency = torch.zeros((capacity, capacity), dtype=torch.bool)
-    bond_features = torch.zeros(
-        (capacity, capacity, BOND_FEATURE_DIM), dtype=torch.float32
-    )
+    node_features = np.zeros((capacity, NODE_FEATURE_DIM), dtype=np.float32)
+    node_mask = np.zeros(capacity, dtype=np.bool_)
+    adjacency = np.zeros((capacity, capacity), dtype=np.bool_)
+    bond_features = np.zeros((capacity, capacity, BOND_FEATURE_DIM), dtype=np.float32)
     if mol is not None:
         atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() != 1]
         index_map = {atom.GetIdx(): index for index, atom in enumerate(atoms)}
+        # Fill plain arrays; creating/assigning a tiny Torch tensor per atom
+        # and bond is substantially more work than wrapping each finished array.
+        degree_start = len(ATOM_TYPES) + 1
+        charge_start = degree_start + 7
+        scalar_start = charge_start + 6
+        synthon_start = scalar_start + 4
         for index, atom in enumerate(atoms):
-            node_features[index] = _atom_features(atom)
+            number = atom.GetAtomicNum()
+            isotope = atom.GetIsotope() if number == 0 else 0
+            node_features[index, min(number, len(ATOM_TYPES))] = 1
+            node_features[index, degree_start + min(atom.GetDegree(), 6)] = 1
+            node_features[
+                index, charge_start + max(-2, min(3, atom.GetFormalCharge())) + 2
+            ] = 1
+            node_features[index, scalar_start:synthon_start] = (
+                float(atom.GetIsAromatic()),
+                atom.GetMass() / 100.0 if number else 0.0,
+                atom.GetTotalNumHs(includeNeighbors=True) / 4.0,
+                min(int(atom.GetHybridization()) / 8.0, 1.0),
+            )
+            node_features[index, synthon_start + min(isotope, len(SYNTHON_TYPES))] = 1
             node_mask[index] = True
         for bond in mol.GetBonds():
+            # Explicit isotopic H atoms can survive RDKit's RemoveHs, but the
+            # model representation only allocates heavy-atom and dummy slots.
+            if (
+                bond.GetBeginAtomIdx() not in index_map
+                or bond.GetEndAtomIdx() not in index_map
+            ):
+                continue
             begin = index_map[bond.GetBeginAtomIdx()]
             end = index_map[bond.GetEndAtomIdx()]
             adjacency[begin, end] = adjacency[end, begin] = True
-            feature = _bond_features(bond)
+            feature = (
+                bond.GetBondType() == Chem.BondType.SINGLE,
+                bond.GetBondType() == Chem.BondType.DOUBLE,
+                bond.GetBondType() == Chem.BondType.TRIPLE,
+                bond.GetBondType() == Chem.BondType.AROMATIC,
+                bond.GetIsConjugated(),
+                bond.IsInRing(),
+                bond.GetStereo() != Chem.BondStereo.STEREONONE,
+            )
             bond_features[begin, end] = bond_features[end, begin] = feature
 
     return GraphData(
-        node_features=node_features,
-        node_mask=node_mask,
-        adjacency=adjacency,
-        bond_features=bond_features,
+        node_features=torch.from_numpy(node_features),
+        node_mask=torch.from_numpy(node_mask),
+        adjacency=torch.from_numpy(adjacency),
+        bond_features=torch.from_numpy(bond_features),
         mol_features=torch.from_numpy(
-            normalize_molecular_properties(molecular_properties(mol))
+            normalize_molecular_properties(
+                molecular_properties(mol) if properties is None else properties
+            )
         ),
         reaction_count=reaction_count,
         remaining_capacity=(max_atoms - atom_count) / max_atoms,
