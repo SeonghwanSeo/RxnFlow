@@ -26,10 +26,13 @@ rxnflow-prepare \
   --building-blocks /path/to/enamine_stock.smi \
   --template-dir data/templates \
   --env-dir /path/to/prepared/enamine \
-  --num-workers 4
+  --num-workers 4 \
+  --min-library-size 10
 ```
 
 Preparation applies the 35 typed synthon conversions in `synthon.yaml`. One-site products become bricks and two-site products become linkers, including pairs of the same type. Protected handles count as sites. Both conversion orders are considered for linkers. Each linker is stored in both attachment orientations. The incoming site is marked `[*]` (isotope 0); its chemical type is the first component of the ordered library key `A-B`, and the other site retains isotope B. Bricks use the same marker with a single-type library key; FirstBlock restores that type in the state. Symmetry-equivalent orientations are deduplicated. Identical canonical synthons aggregate their Enamine IDs; different representations of the same source molecule remain distinct blocks.
+
+`--min-library-size N` keeps libraries with at least N unique oriented synthon rows after all conversion batches are merged and deduplicated, before feature generation. The default is 1; use 10 for the full catalog. Multiple source IDs for the same synthon count as one row. The cutoff applies to both bricks and linkers. `convert_stage(..., min_library_size=N)` exposes the same option in Python. The conversion manifest records `min_library_size`, retained `block_counts`, and `excluded_block_counts`. Filtering changes the action space and environment signature; checkpoints trained on the unfiltered catalog must not be reused with the filtered environment.
 
 The prepared environment contains:
 

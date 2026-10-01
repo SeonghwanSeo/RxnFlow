@@ -16,6 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--num-workers", type=int, default=1, help="Preparation processes (default: 1)"
     )
+    parser.add_argument(
+        "--min-library-size",
+        type=int,
+        default=1,
+        help="Minimum unique oriented synthons per library (default: 1)",
+    )
     return parser
 
 
@@ -25,7 +31,13 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("--num-workers must be at least 1")
     if args.env_dir.exists():
         raise SystemExit(f"{args.env_dir} already exists")
-    convert_stage(args.building_blocks, args.env_dir, args.template_dir, args.num_workers)
+    convert_stage(
+        args.building_blocks,
+        args.env_dir,
+        args.template_dir,
+        num_workers=args.num_workers,
+        min_library_size=args.min_library_size,
+    )
     features_stage(args.env_dir, args.num_workers)
 
 

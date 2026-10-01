@@ -191,9 +191,12 @@ def convert_stage(
     env_dir: str | Path,
     template_dir: str | Path,
     num_workers: int = 1,
+    min_library_size: int = 1,
 ) -> None:
     if num_workers < 1:
         raise ValueError("num_workers must be at least 1")
+    if min_library_size < 1:
+        raise ValueError("min_library_size must be at least 1")
     env_path = Path(env_dir)
     source_path = Path(building_blocks)
     template_path = Path(template_dir)
@@ -229,6 +232,16 @@ def convert_stage(
                 for smiles, identifiers in values.items():
                     target.setdefault(smiles, set()).update(identifiers)
 
+    # Count unique oriented synthons after merging all source batches. Supplier
+    # IDs and repeated source rows do not increase a library's size.
+    excluded_counts = {
+        name: len(values)
+        for name, values in blocks.items()
+        if len(values) < min_library_size
+    }
+    if len(excluded_counts) == len(blocks):
+        raise ValueError("no block libraries meet min_library_size")
+
     env_path.mkdir(parents=True, exist_ok=True)
     block_dir = env_path / "blocks"
     block_dir.mkdir(exist_ok=True)
@@ -236,7 +249,7 @@ def convert_stage(
         old.unlink()
     counts: dict[str, int] = {}
     for block_type, values in sorted(blocks.items()):
-        if not values:
+        if len(values) < min_library_size:
             continue
         output = block_dir / f"{block_type}.smi"
         temporary = output.with_suffix(".tmp")
@@ -246,9 +259,6 @@ def convert_stage(
                 handle.write(f"{smiles}\t{identifiers}\n")
         temporary.replace(output)
         counts[block_type] = len(values)
-    if not counts:
-        raise ValueError("synthon conversion produced no block libraries")
-
     # One source record can map to many synthons, and identical synthons may
     # have several suppliers' IDs. Keep this provenance outside the MDP state.
     (env_path / "building_blocks.json").write_text(
@@ -261,7 +271,15 @@ def convert_stage(
     (env_path / "bb_feature.npz").unlink(missing_ok=True)
     manifest = {"format": MANIFEST_FORMAT, "stages": {}}
     (env_path / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
-    _complete_stage(env_path, "convert", {"block_counts": counts})
+    _complete_stage(
+        env_path,
+        "convert",
+        {
+            "block_counts": counts,
+            "min_library_size": min_library_size,
+            "excluded_block_counts": excluded_counts,
+        },
+    )
 
 
 def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:

@@ -290,7 +290,10 @@ def test_budget_tolerance_and_nonpositive_bounds(prepared_env: Path) -> None:
     assert not env.block_mask(state_properties, name).any()
 
 
-def test_parallel_preparation_matches_serial(prepared_env: Path, tmp_path: Path) -> None:
+@pytest.mark.parametrize("min_library_size", [1, 2])
+def test_parallel_preparation_matches_serial(
+    prepared_env: Path, tmp_path: Path, min_library_size: int
+) -> None:
     root = Path(__file__).parents[1]
     source = (root / "tests/fixtures/enamine_stock.smi").read_text()
     # Cross the conversion batch boundary and check that duplicate provenance
@@ -298,22 +301,48 @@ def test_parallel_preparation_matches_serial(prepared_env: Path, tmp_path: Path)
     stock = tmp_path / "stock.smi"
     stock.write_text(source + (source.splitlines()[0] + "\n") * 512)
     parallel = tmp_path / "parallel"
-    convert_stage(stock, parallel, root / "data/templates", num_workers=2)
-    features_stage(parallel, num_workers=2)
+    from rxnflow.cli.prepare import main
+
+    main(
+        [
+            "--building-blocks", str(stock),
+            "--env-dir", str(parallel),
+            "--template-dir", str(root / "data/templates"),
+            "--num-workers", "2",
+            "--min-library-size", str(min_library_size),
+        ]
+    )
     assert (parallel / "building_blocks.json").read_bytes() == (
         prepared_env / "building_blocks.json"
     ).read_bytes()
-    assert sorted(p.name for p in (parallel / "blocks").glob("*.smi")) == sorted(
-        p.name for p in (prepared_env / "blocks").glob("*.smi")
-    )
-    for path in (prepared_env / "blocks").glob("*.smi"):
+    counts = json.loads((prepared_env / "prepare_manifest.json").read_text())[
+        "stages"
+    ]["convert"]["block_counts"]
+    retained = {name: count for name, count in counts.items() if count >= min_library_size}
+    excluded = {name: count for name, count in counts.items() if count < min_library_size}
+    if min_library_size > 1:
+        assert retained and excluded
+    stage = json.loads((parallel / "prepare_manifest.json").read_text())["stages"][
+        "convert"
+    ]
+    assert stage["min_library_size"] == min_library_size
+    assert stage["block_counts"] == retained
+    assert stage["excluded_block_counts"] == excluded
+    assert {p.stem for p in (parallel / "blocks").glob("*.smi")} == set(retained)
+    for name in retained:
+        path = prepared_env / "blocks" / f"{name}.smi"
         assert (parallel / "blocks" / path.name).read_bytes() == path.read_bytes()
     with (
         np.load(parallel / "bb_feature.npz") as actual,
         np.load(prepared_env / "bb_feature.npz") as expected,
     ):
-        assert actual.files == expected.files
-        for key in actual.files:
+        expected_keys = [
+            key
+            for key in expected.files
+            if key == "format" or key.split("/")[0] in retained
+        ]
+        assert actual.files == expected_keys
+        for key in expected_keys:
             np.testing.assert_array_equal(actual[key], expected[key])
 
 

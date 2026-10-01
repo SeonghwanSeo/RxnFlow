@@ -1,5 +1,19 @@
 # 구현·성능 검토 — 2026-10-02
 
+## 현재 milestone
+
+Env·library, MDP·masking/backward, 모델·학습 구현과 1차 runtime 최적화를 완료했다. 사용자 코드 검토와 현재 full catalog의 장기·다중 seed 학습 및 품질 평가는 남아 있다. 학습은 중단 상태이며, 이전 전체 학습의 마지막 기록은 step318/checkpoint300이다. 짧은 pilot과 runtime 측정은 수렴·성능 우위 검증으로 간주하지 않는다.
+
+후속 runtime 측정에서 gnode7 GPU0,64 fresh+64 replay,ratio0.01/min10 조건의 전체 step 중앙값은1.82초(워밍업 제외5회,1.74–1.98초), env 로딩은10.89초, peak Torch allocated memory는744MiB였다. 이 측정은 최소 library size 필터 적용 전의1,095개 library 환경 기준이다. 원시 기록은 로컬 `runs/runtime_d039792/`에 있다.
+
+이후 `--min-library-size`를 추가했다(default1). Full catalog에는10을 적용해895개 library(35brick/860linker),2,056,409행을 유지하고200개 library/903행을 제외했다. 생존 행의 순서와 feature 값은 보존했다. 이전 checkpoint와는 library index가 달라 새 학습이 필요하다. Unfiltered env 백업은 사용자 요청으로 삭제했다. 최신 quick49개와 gnode7 filtered full-set CPU 학습·restart·sampling 통합1개가 통과했다. 필터 적용 후 GPU runtime은 아직 측정하지 않았다.
+
+Property masking의 일괄 계산도 비교했다.158개 unique state,649개 library,19,234개 sampled row에서 유효 index가 동일했으며10회 중앙값은 library별93.9ms/일괄93.3ms였다. Gathering·comparison·nonzero 추출을 포함한 CPU 비교다. 일괄 계산은 조합을36만에서304만으로 늘리면서 의미 있는 속도 이득이 없어 기존 library별 구현을 유지했다. 기록은 로컬 `runs/property_mask_batch/`에 있다.
+
+다음 순서는 사용자 코드 검토·필요한 리팩토링 후, 현재 catalog에서 새 학습을 시작하고 유효 생성률·reward·다양성/중복·경로 길이·seed 편차를 평가하는 것이다. 추가 production UniReaction의 수기 화학 검토는 별도 보류 항목이다.
+
+## 당시 코드 감사 범위
+
 현재 `src/rxnflow` 전체를 읽고, 로컬에 있는 아래 네 reference의 대응 경로를 비교했다. Reference checkout과 branch는 변경하지 않았다. 학습·benchmark·production env 재생성·heavy run은 실행하지 않았다. 아래 결과는 코드 검토 및 작은 synthetic fixture의 CPU quick 테스트에 근거하며, GPU 속도 향상 수치는 아직 없다.
 
 | Reference | 확인한 commit | 주요 비교 대상 |
