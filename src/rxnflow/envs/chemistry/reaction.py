@@ -70,10 +70,10 @@ class Reaction:
             )
         return products[0] if products else None
 
-    def run_reverse(
-        self, product: Chem.Mol, limit: int = 3
-    ) -> list[tuple[Chem.Mol, ...]]:
-        return _run(self.reverse_reaction, (product,))[:limit]
+    def run_reverse(self, product: Chem.Mol) -> list[tuple[Chem.Mol, ...]]:
+        # _run already enumerates and deduplicates every RDKit match. Truncating
+        # here can discard the only decomposition whose block is in the catalog.
+        return _run(self.reverse_reaction, (product,))
 
 
 class UniReaction(Reaction):

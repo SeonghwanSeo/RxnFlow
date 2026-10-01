@@ -33,7 +33,7 @@ Property budget 합은 정확한 terminal property 검사가 아니다. 특히 s
 
 ## Backward와 확률의 범위
 
-성공한 전이마다 생성 경로를 known branch로 먼저 넣는다. Reverse SMARTS에서 rule별 최대 두 canonical precursor set을 추가하며, BiReaction의 block은 실제 oriented catalog row에 있어야 한다. 후보를 forward로 다시 실행해 동일 생성물을 만드는지 확인한다. 시작 brick까지 연결되는 경로를 재귀적으로 찾고 짧은 깊이로 가지치기한다.
+성공한 전이마다 생성 경로를 known branch로 먼저 넣는다. Reverse SMARTS에서 rule별 중복 제거된 canonical precursor set을 모두 추가하며, BiReaction의 block은 실제 oriented catalog row에 있어야 한다. 후보를 forward로 다시 실행해 동일 생성물을 만드는지 확인한다. 시작 brick까지 연결되는 경로를 반응 횟수 상한 내에서 재귀적으로 찾는다. 후속 감사에서 두 후보 제한과 최소 깊이 가지치기가 경로를 누락함을 확인해 제거했다.
 
 Parent branch의 weight는 그 parent에서 시작점까지의 leaf 경로에 대해 `Σ C^(-depth)`이며, `C`는 전체 catalog/reaction에서 계산한 기준 action 수다. 이 weight들을 정규화해 `PB`를 얻고 `(action, parent_smiles)`로 실제 branch를 찾는다. Search가 모든 경로를 열거하거나 forward budget mask 및 정확히 동일한 reaction count까지 검증하지는 않는다. 이것은 사용자가 허용한 근사 범위이며, 정확한 현재 MDP의 backward distribution이라는 주장은 하지 않는다. 실패한 전이에는 reverse chemistry를 수행하지 않는다.
 

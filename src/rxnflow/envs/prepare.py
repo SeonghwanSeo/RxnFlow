@@ -119,7 +119,7 @@ def _conversion_templates(
 def _convert_batch(
     records: list[tuple[str, str]], specs: list[SynthonSpec]
 ) -> dict[str, dict[str, set[str]]]:
-    # Each task owns its RDKit reactions and deduplicates a bounded source batch.
+    # Each worker reuses its RDKit reactions and deduplicates a bounded source batch.
     # The parent merges source-ID sets across batches before writing sorted rows.
     conversions = _conversion_templates(tuple(specs))
     blocks: dict[str, dict[str, set[str]]] = {}

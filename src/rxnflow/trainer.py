@@ -259,6 +259,13 @@ class RxnFlowTrainer:
                 "learning_rate": self.optimizer.param_groups[0]["lr"],
                 "mean_reward": sum(value.reward for value in fresh) / len(fresh),
                 "valid_fraction": sum(value.valid for value in fresh) / len(fresh),
+                # These describe raw rollout attempts, before retry/filtering.
+                # In particular, uniqueness is among valid terminal molecules.
+                "unique_fraction": len({value.final_smiles for value in fresh if value.valid})
+                / max(1, sum(value.valid for value in fresh)),
+                "mean_reactions": sum(
+                    max(0, len(value.steps) - 1) for value in fresh
+                ) / len(fresh),
                 **reward_metrics,
                 "rollout_seconds": rollout_seconds,
                 "step_seconds": perf_counter() - started,

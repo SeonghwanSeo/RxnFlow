@@ -30,6 +30,13 @@ class RetrosynthesisTree:
 
 
 class RetrosynthesisSearch:
+    """Enumerate catalog-supported routes within the supplied reaction budget.
+
+    A shorter route must not prune another branch: that made the result depend
+    on template traversal order. Depth alone bounds search (including cycles).
+    This is exhaustive over the supplied SMARTS within that bound, not over
+    all possible chemistry. Backward weights remain the depth-based heuristic.
+    """
     def __init__(self, env):
         self.uni_reactions = env.uni_reactions
         self.bi_reactions = env.bi_reactions
@@ -40,7 +47,6 @@ class RetrosynthesisSearch:
         self.brick_types = set(env.brick_types)
         self._memo: dict[tuple[str, int], RetrosynthesisTree | None] = {}
         self._max_depth = 0
-        self._min_depth = 0
 
     def run(
         self,
@@ -48,19 +54,12 @@ class RetrosynthesisSearch:
         max_reactions: int,
         known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
     ) -> RetrosynthesisTree | None:
-        self._max_depth = self._min_depth = max_reactions + 1
-        if known_branches:
-            self._min_depth = min(
-                min(child.leaf_depths()) + 1 for _, child in known_branches
-            )
+        self._max_depth = max_reactions + 1  # Include FirstBlock.
         self._memo = {}
         mol = Chem.MolFromSmiles(smiles) if smiles else None
         if mol is None:
             return None
         return self._dfs(mol, Chem.MolToSmiles(mol), 1, known_branches)
-
-    def _check_depth(self, depth: int) -> bool:
-        return depth <= self._max_depth and depth <= self._min_depth
 
     def _dfs(
         self,
@@ -69,7 +68,7 @@ class RetrosynthesisSearch:
         depth: int,
         known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
     ) -> RetrosynthesisTree | None:
-        if not self._check_depth(depth):
+        if depth > self._max_depth:
             return None
         key = (canonical, depth)
         if known_branches is None and key in self._memo:
@@ -100,14 +99,13 @@ class RetrosynthesisSearch:
                     if (action, "") not in branch_keys:
                         branches.append((action, RetrosynthesisTree("")))
                         branch_keys.add((action, ""))
-                    self._min_depth = min(self._min_depth, depth)
 
-        if self._check_depth(depth + 1):
+        if depth < self._max_depth:
             for name, reaction in self.uni_reactions.items():
                 expected = () if reaction.output_type is None else (reaction.output_type,)
                 if signature != expected:
                     continue
-                for products in reaction.run_reverse(mol, 2):
+                for products in reaction.run_reverse(mol):
                     if len(products) != 1:
                         continue
                     precursor = products[0]
@@ -129,7 +127,7 @@ class RetrosynthesisSearch:
                         branch_keys.add((action, parent_smiles))
 
             for name, action in self.bi_reactions.items():
-                for child_mol, block_mol in action.run_reverse(mol, 2):
+                for child_mol, block_mol in action.run_reverse(mol):
                     child_canonical = Chem.MolToSmiles(child_mol)
                     block_canonical = Chem.MolToSmiles(block_mol)
                     if typed_dummy_isotopes(child_mol) != (action.state_type,):

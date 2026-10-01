@@ -91,7 +91,7 @@ Graph는 `max_atoms + 1`개의 고정 node slot을 사용한다. RDKit heavy ato
 
 ## 학습과 검증 범위
 
-Backward는 생성된 parent branch를 보존하고, reverse rule마다 최대 두 canonical precursor set을 추가 탐색한다. 후보는 forward 반응으로 실제 생성물을 다시 만드는지 확인한다. 동일 action이 서로 다른 parent에서 나온 경우 backward 확률을 구분한다. 기존 깊이 가중과 최소 깊이 가지치기는 실용적인 근사로 유지한다.
+Backward는 생성된 parent branch를 보존하고, 각 reverse rule의 중복 제거된 canonical precursor set을 모두 탐색한다. 후보는 catalog 존재 여부와 forward 재실행으로 확인한다. 반응 횟수 상한까지만 탐색하며, 짧은 경로를 먼저 찾았다는 이유로 다른 경로를 제거하지 않는다. 동일 action이 서로 다른 parent에서 나온 경우 backward 확률을 구분한다. 깊이 가중 확률은 실용적인 근사로 유지하며, 모든 역경로에 대해 state별 property budget/반응 횟수의 정확한 MDP 역전이를 증명하는 구현은 아니다.
 
 TB/replay는 관측 action의 block을 반드시 포함한다. 그 외 block은 uniform sampling을 적용하고 conditional inclusion probability로 분모를 보정한다. 나머지 모집단이 있으면 최소 한 개를 샘플링한다. 방향이 고정된 block row 하나가 해당 block action의 sampling 단위다. Sampling temperature·random exploration·importance temperature는 생성 정책에 적용한다.
 

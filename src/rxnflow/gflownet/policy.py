@@ -113,6 +113,7 @@ class SynthesisPolicy:
         # Each library records (query row, sampled columns, output offset).
         block_groups = {}
         unary_queries, unary_outputs = [], []
+        # 1. Prepare unique graphs and shared library draws, then budget masks.
         keys = [(state.smiles, state.reaction_count) for state in states]
         available = [self.env.available_groups(state) for state in states]
         library_states = {}
@@ -142,6 +143,7 @@ class SynthesisPolicy:
                     sample.log_importance[columns],
                     columns,
                 )
+        # 2. Pack eligible state/reaction/block groups and observed replay rows.
         output_count = 0
         for state_index, key in enumerate(keys):
             observed = None if required is None else required[state_index]
@@ -198,6 +200,7 @@ class SynthesisPolicy:
         if not output_count:
             empty = torch.empty(0, device=self.device)
             return [ActionLogits([], empty, empty) for _ in states]
+        # 3. Encode states and score the packed action space.
         if self.model.training:
             # Preserve independent dropout for each occurrence during training.
             batch = GraphBatch.from_graphs([graphs[key] for key in keys]).to(self.device)
@@ -218,57 +221,7 @@ class SynthesisPolicy:
         )
         logits = embeddings.new_zeros(output_count)
         if block_groups:
-            fingerprints, descriptors, types = [], [], []
-            matrix_queries, matrix_indices, output_indices = [], [], []
-            sizes = []
-            for name, entries in block_groups.items():
-                library = self.env.blocks[name]
-                indices = shared_samples[name].indices
-                fingerprints.append(library.fingerprints[indices])
-                descriptors.append(library.properties[indices])
-                types.append(
-                    torch.full(
-                        (len(indices),),
-                        self.env.block_type_to_index[name],
-                        dtype=torch.long,
-                    )
-                )
-                matrix_queries.extend(query for query, _, _ in entries)
-                selected_count = 0
-                for row, (_, columns, offset) in enumerate(entries):
-                    matrix_indices.append(row * len(indices) + columns)
-                    output_indices.append(torch.arange(offset, offset + len(columns)))
-                    selected_count += len(columns)
-                sizes.append((len(indices), len(entries), selected_count))
-            blocks = torch.nn.functional.normalize(
-                self.model.encode_block_features(
-                    torch.cat(fingerprints).to(self.device, dtype=torch.float32),
-                    torch.cat(descriptors).to(self.device),
-                    torch.cat(types).to(self.device),
-                ),
-                dim=-1,
-            )
-            matrix_queries = torch.tensor(matrix_queries, device=self.device)
-            matrix_indices = torch.cat(matrix_indices).to(self.device)
-            output_indices = torch.cat(output_indices).to(self.device)
-            values = []
-            block_offset = query_offset = selected_offset = 0
-            for n_blocks, n_queries, n_selected in sizes:
-                # Same matrix scoring as RxnFlow master/CGFlow. Masked rows
-                # are gathered afterwards; no [candidate_count, hidden] copies.
-                scores = (
-                    queries[matrix_queries[query_offset : query_offset + n_queries]]
-                    @ blocks[block_offset : block_offset + n_blocks].T
-                )
-                values.append(
-                    scores.flatten()[
-                        matrix_indices[selected_offset : selected_offset + n_selected]
-                    ]
-                )
-                block_offset += n_blocks
-                query_offset += n_queries
-                selected_offset += n_selected
-            logits = logits.index_copy(0, output_indices, torch.cat(values))
+            logits = self._score_blocks(queries, shared_samples, block_groups, output_count)
         if unary_queries:
             logits = logits.index_copy(
                 0,
@@ -286,6 +239,67 @@ class SynthesisPolicy:
                 strict=True,
             )
         ]
+
+    def _score_blocks(self, queries, shared_samples, block_groups, output_count):
+        """Encode sampled rows once, score each library, and gather valid pairs.
+
+        block_groups maps a library to (query index, valid columns, output offset).
+        Keeping this tensor path separate makes candidate_batch's state/action
+        indexing readable without changing its sampling or masking order.
+        """
+        logits = queries.new_zeros(output_count)
+        fingerprints, descriptors, types = [], [], []
+        matrix_queries, matrix_indices, output_indices = [], [], []
+        sizes = []
+        for name, entries in block_groups.items():
+            library = self.env.blocks[name]
+            indices = shared_samples[name].indices
+            fingerprints.append(library.fingerprints[indices])
+            descriptors.append(library.properties[indices])
+            types.append(
+                torch.full(
+                    (len(indices),),
+                    self.env.block_type_to_index[name],
+                    dtype=torch.long,
+                )
+            )
+            matrix_queries.extend(query for query, _, _ in entries)
+            selected_count = 0
+            for row, (_, columns, offset) in enumerate(entries):
+                matrix_indices.append(row * len(indices) + columns)
+                output_indices.append(torch.arange(offset, offset + len(columns)))
+                selected_count += len(columns)
+            sizes.append((len(indices), len(entries), selected_count))
+        blocks = torch.nn.functional.normalize(
+            self.model.encode_block_features(
+                torch.cat(fingerprints).to(self.device, dtype=torch.float32),
+                torch.cat(descriptors).to(self.device),
+                torch.cat(types).to(self.device),
+            ),
+            dim=-1,
+        )
+        matrix_queries = torch.tensor(matrix_queries, device=self.device)
+        matrix_indices = torch.cat(matrix_indices).to(self.device)
+        output_indices = torch.cat(output_indices).to(self.device)
+        values = []
+        block_offset = query_offset = selected_offset = 0
+        for n_blocks, n_queries, n_selected in sizes:
+            # Same matrix scoring as RxnFlow master/CGFlow. Masked rows
+            # are gathered afterwards; no [candidate_count, hidden] copies.
+            scores = (
+                queries[matrix_queries[query_offset : query_offset + n_queries]]
+                @ blocks[block_offset : block_offset + n_blocks].T
+            )
+            values.append(
+                scores.flatten()[
+                    matrix_indices[selected_offset : selected_offset + n_selected]
+                ]
+            )
+            block_offset += n_blocks
+            query_offset += n_queries
+            selected_offset += n_selected
+        logits = logits.index_copy(0, output_indices, torch.cat(values))
+        return logits
 
     def candidates(
         self, state: MoleculeState, required: RxnAction | None = None
