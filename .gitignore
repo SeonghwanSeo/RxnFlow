@@ -113,6 +113,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Local vendor catalogs are inputs to rxnflow-prepare, never repository data.
+data/building_blocks/*.smi
+!data/building_blocks/.gitkeep
+
 # Spyder project settings
 .spyderproject
 .spyproject

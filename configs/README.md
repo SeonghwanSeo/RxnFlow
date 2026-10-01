@@ -1,63 +1,17 @@
 # Configuration guide
 
-RxnFlow merges each YAML file with its built-in defaults, so omitted fields do not need to be copied into an application configuration.
+RxnFlow merges a YAML file with built-in defaults. `qed.yaml` is the minimal example and `template.yaml` lists every supported option.
 
-## Which file to use
+`data.env_dir` points to a prepared Enamine synthon environment. `data.max_atoms` is the fixed RDKit heavy-atom capacity; graph tensors reserve one additional slot for the single dummy handle. Molecules are never truncated.
 
-- `qed.yaml` is the minimal application example. Normally, set `data.env_dir`, choose `run.output_dir`, and start training.
-- `template.yaml` exposes every supported option. Copy it only when tuning the model, replay, optimizer, reward transformation, or sampling policy.
+`generation.min_reactions` and `generation.max_reactions` count only UniReaction and BiReaction actions. FirstBlock does not contribute. The defaults allow one to three reactions. A zero-site product terminates immediately; before the minimum, terminating actions are masked. On the last allowed reaction, only brick closures or terminal UniReactions are allowed. There is no Stop action.
 
-The bundled command `rxnflow-train` always uses `QEDReward`. A custom reward is selected explicitly in Python by passing a different `RewardFunction`. The top-level `reward` section contains both trajectory-balance scaling and the arguments for that selected reward:
+`subsampling.sampling_ratio` and `subsampling.min_sampling` control uniform candidate sampling within each compatible block library. `importance_temp` scales the inclusion-probability correction used during online action selection. All distinct site outcomes of a sampled block share its inclusion probability. TB/replay forces inclusion of the observed block and uses conditional inclusion probabilities for the other sampled blocks. A subsample with no feasible continuation produces an invalid trajectory; there is no retry or full-library fallback.
 
-```yaml
-reward:
-  exponent: 32.0
-  floor: 0.0001
-  settings: {}
-```
+The shallow top-level `property_penalty` mapping accepts `mw`, `tpsa`, `hbd`, `hba`, `logp`, `rotatable_bonds`, `rings`, `aromatic_rings`, and `heavy_atoms`. These are hard upper bounds checked on each actual candidate product before scoring, for FirstBlock, UniReaction, and BiReaction. Intermediate descriptors describe the synthon, with dummy isotope labels excluded from mass. Terminal descriptors describe the final molecule. They are not additive reactant estimates or reward penalties.
 
-`reward.exponent` and `reward.floor` control how numerical rewards enter the trajectory-balance loss. `reward.settings` is expanded as keyword arguments to the reward constructor. YAML never imports or selects a custom reward class.
+`reward.exponent` and `reward.floor` control trajectory-balance reward scaling. `reward.settings` is expanded into the explicitly selected local `RewardFunction` constructor; YAML never imports a reward class.
 
-## Settings to choose first
+`training.retrosynthesis_workers` controls the local CPU process pool used to calculate backward probabilities. Set it to `0` for synchronous execution.
 
-1. `data.env_dir` must point to a prepared eMolecules environment.
-2. `run.output_dir` is where logs, resolved configuration, and checkpoints are written.
-3. `reward.exponent` strongly affects objective optimization. The bundled QED example uses 32.
-4. `data.max_atoms` is the maximum RDKit heavy-atom count. The default is 50.
-5. `training.steps` and `training.batch_size` determine the main training budget. `training.replay_batch_size` adds replayed trajectories to each optimization step; reduce both batch sizes when compute or memory is limited.
-6. `subsampling.sampling_ratio` controls the fraction of the block library considered per decision. Lower values reduce compute and increase estimator variance.
-7. Leave `run.device: auto` unless a specific CPU or CUDA device is required.
-
-## Optional molecular limits
-
-The top-level `property_penalty` mapping applies hard upper bounds before block scoring. For example:
-
-```yaml
-property_penalty:
-  mw: 500
-  tpsa: 140
-```
-
-Supported properties are `mw`, `tpsa`, `hbd`, `hba`, `logp`, `rotatable_bonds`, `rings`, `aromatic_rings`, and `heavy_atoms`. These additive pre-reaction estimates are followed by exact product validation.
-
-## Advanced settings
-
-- `model` changes graph-transformer capacity.
-- `subsampling.min_sampling` protects small price tiers; `importance_temp` controls the online sampling correction.
-- `training.learning_rate` and `training.weight_decay` configure AdamW.
-- `training.replay_batch_size` and `training.replay_capacity` configure replay. Set `replay_capacity: 0` to disable replay entirely.
-- `reward.exponent` and `reward.floor` configure reward scaling.
-- `reward.settings` contains keyword arguments for the explicitly selected reward constructor.
-- `training.sampling_temperature` and `training.random_action_prob` configure trajectory exploration.
-- `training.ema_decay` configures the sampling model update.
-- `training.checkpoint_every` and `training.log_every` set output intervals.
-
-At startup, RxnFlow writes a complete resolved configuration to `run.output_dir/config.yaml`. Use that file when restarting so the checkpoint configuration remains exact.
-
-For a custom reward, keep its implementation and selection in Python:
-
-```python
-config = Config.from_file("config.yaml")
-reward = CustomReward(**config.reward.settings)
-trainer = RxnFlowTrainer(config, reward)
-```
+At startup RxnFlow writes the complete resolved config into `run.output_dir/config.yaml`. Restart requires the exact current config and prepared environment signature.

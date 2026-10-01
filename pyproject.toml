@@ -50,4 +50,4 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
-markers = ["heavy: requires representative eMolecules data and substantial compute"]
+markers = ["heavy: requires the local Enamine stock catalog and substantial compute"]

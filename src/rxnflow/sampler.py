@@ -10,11 +10,10 @@ import torch
 
 from rxnflow._version import __version__
 from rxnflow.config import Config
-from rxnflow.core.generation import PolicyRuntime, trajectory_sample
 from rxnflow.envs import SynthesisEnv
+from rxnflow.gflownet.runtime import PolicyRuntime, resolve_device, trajectory_sample
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, SampleFilter, evaluate_rewards
-from rxnflow.trainer import resolve_device
 from rxnflow.types import SamplingResult, Trajectory
 
 
@@ -31,7 +30,14 @@ class RxnFlowSampler:
         self.reward = reward
         self.sample_filter = sample_filter
         self.device = resolve_device(config.device)
-        self.env = SynthesisEnv(config.data.env_dir, config.data.max_atoms)
+        self.env = SynthesisEnv(
+            config.data.env_dir,
+            config.data.max_atoms,
+            config.generation.min_reactions,
+            config.generation.max_reactions,
+            0,
+            config.property_penalty,
+        )
         self.model = RxnFlowModel(self.env, config.model).to(self.device).eval()
         payload = torch.load(checkpoint, map_location=self.device, weights_only=False)
         if payload.get("rxnflow_version") != __version__:
@@ -77,14 +83,10 @@ class RxnFlowSampler:
         return cls(config, checkpoint, reward, sample_filter)
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
-        workflow_index = trajectory.steps[0].action.workflow_index
         actions = [self.env.action_to_dict(step.action) for step in trajectory.steps]
-        intermediates = [
-            step.product_smiles for step in trajectory.steps if step.product_smiles
-        ]
+        intermediates = [step.product_smiles for step in trajectory.steps]
         return SamplingResult(
             smiles=trajectory.final_smiles,
-            workflow=self.env.workflow_label(workflow_index),
             trajectory=actions,
             intermediates=intermediates,
             metadata={"valid": trajectory.valid},
@@ -111,7 +113,9 @@ class RxnFlowSampler:
         attempts = 0
         maximum_attempts = max(100, count * 100)
         while len(trajectories) < count and attempts < maximum_attempts:
-            trajectory = self.runtime.rollout(sampling_temperature, 0.0)
+            trajectory = self.runtime.rollout(
+                sampling_temperature, 0.0, analyze_backward=False
+            )
             attempts += 1
             if trajectory.valid:
                 trajectories.append(trajectory)
@@ -145,14 +149,17 @@ class RxnFlowSampler:
             with destination.open("w", newline="", encoding="utf-8") as handle:
                 writer = csv.DictWriter(
                     handle,
-                    fieldnames=["smiles", "workflow", "trajectory", "intermediates"],
+                    fieldnames=[
+                        "smiles",
+                        "trajectory",
+                        "intermediates",
+                    ],
                 )
                 writer.writeheader()
                 for result in results:
                     writer.writerow(
                         {
                             "smiles": result.smiles,
-                            "workflow": result.workflow,
                             "trajectory": json.dumps(
                                 result.trajectory, separators=(",", ":")
                             ),

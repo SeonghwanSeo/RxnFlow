@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import random
 from pathlib import Path
@@ -13,21 +12,12 @@ from torch.nn import functional as F
 
 from rxnflow._version import __version__
 from rxnflow.config import Config
-from rxnflow.core.generation import PolicyRuntime, trajectory_sample
-from rxnflow.core.replay import ReplayBuffer
 from rxnflow.envs import SynthesisEnv
+from rxnflow.gflownet.replay import ReplayBuffer
+from rxnflow.gflownet.runtime import PolicyRuntime, resolve_device, trajectory_sample
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, SampleFilter, evaluate_rewards
 from rxnflow.types import Trajectory
-
-
-def resolve_device(value: str) -> torch.device:
-    if value == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(value)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is unavailable")
-    return device
 
 
 def sum_by_trajectory(values: Tensor, indices: Tensor, count: int) -> Tensor:
@@ -53,9 +43,17 @@ class RxnFlowTrainer:
         torch.manual_seed(config.seed)
         self.python_rng = random.Random(config.seed)
         self.generator = torch.Generator(device="cpu").manual_seed(config.seed)
-        self.env = SynthesisEnv(config.data.env_dir, config.data.max_atoms)
+        self.env = SynthesisEnv(
+            config.data.env_dir,
+            config.data.max_atoms,
+            config.generation.min_reactions,
+            config.generation.max_reactions,
+            config.training.retrosynthesis_workers,
+            config.property_penalty,
+        )
         self.model = RxnFlowModel(self.env, config.model).to(self.device)
-        self.sampling_model = copy.deepcopy(self.model).to(self.device).eval()
+        self.sampling_model = RxnFlowModel(self.env, config.model).to(self.device).eval()
+        self.sampling_model.load_state_dict(self.model.state_dict())
         self.optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=config.training.learning_rate,
@@ -152,6 +150,14 @@ class RxnFlowTrainer:
     def _loss(self, trajectories: list[Trajectory]) -> Tensor:
         log_probabilities: list[Tensor] = []
         trajectory_indices: list[int] = []
+        backward_flows = torch.tensor(
+            [
+                sum(step.log_backward for step in trajectory.steps)
+                for trajectory in trajectories
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
         for trajectory_index, trajectory in enumerate(trajectories):
             for transition in trajectory.steps:
                 log_probabilities.append(
@@ -174,7 +180,7 @@ class RxnFlowTrainer:
             device=self.device,
         )
         log_reward = rewards.log() * self.config.reward.exponent
-        residual = self.model.log_z + forward_flow - log_reward
+        residual = self.model.log_z + forward_flow - backward_flows - log_reward
         return F.smooth_l1_loss(residual, torch.zeros_like(residual))
 
     @torch.no_grad()
@@ -192,13 +198,11 @@ class RxnFlowTrainer:
         log_path = self.output_dir / "training.jsonl"
         while self.step < final_step:
             self.sampling_model.eval()
-            fresh = [
-                self.sampling_runtime.rollout(
-                    self.config.training.sampling_temperature,
-                    self.config.training.random_action_prob,
-                )
-                for _ in range(self.config.training.batch_size)
-            ]
+            fresh = self.sampling_runtime.rollouts(
+                self.config.training.batch_size,
+                self.config.training.sampling_temperature,
+                self.config.training.random_action_prob,
+            )
             reward_metrics = self._assign_rewards(fresh)
             self.replay.add(fresh)
             batch = fresh + self.replay.sample(

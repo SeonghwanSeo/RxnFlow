@@ -6,6 +6,7 @@ import yaml
 from rxnflow import (
     Config,
     DataConfig,
+    GenerationConfig,
     QEDReward,
     RewardConfig,
     RewardFunction,
@@ -14,7 +15,7 @@ from rxnflow import (
     evaluate_rewards,
 )
 from rxnflow.config import TrainingConfig
-from rxnflow.core.replay import ReplayBuffer
+from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.types import Trajectory
 
 
@@ -53,6 +54,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert saved["property_penalty"] == {"mw": 500.0}
     assert "property_limits" not in saved["data"]
     assert saved["training"]["learning_rate"] == 1e-4
+    assert saved["generation"] == {"min_reactions": 1, "max_reactions": 3}
 
     minimal = tmp_path / "minimal.yaml"
     minimal.write_text(
@@ -80,10 +82,14 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
         RewardConfig(exponent=0).validate()
     with pytest.raises(ValueError):
         RewardConfig(floor=0).validate()
+    with pytest.raises(ValueError, match="at least"):
+        GenerationConfig(min_reactions=2, max_reactions=1).validate()
     with pytest.raises(ValueError, match="mapping"):
         RewardConfig(settings=[]).validate()  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="unknown property_penalty"):
-        Config(data=DataConfig(env_dir="example"), property_penalty={"unknown": 1}).validate()
+        Config(
+            data=DataConfig(env_dir="example"), property_penalty={"unknown": 1}
+        ).validate()
     with pytest.raises(ValueError, match="must be positive"):
         Config(data=DataConfig(env_dir="example"), property_penalty={"mw": 0}).validate()
 
@@ -115,6 +121,7 @@ def test_checked_in_minimal_and_complete_configs_load() -> None:
         "reward",
         "property_penalty",
         "subsampling",
+        "generation",
         "model",
         "training",
     ]

@@ -13,7 +13,7 @@ RUN_FIELDS = ("output_dir", "seed", "device")
 
 @dataclass
 class DataConfig:
-    """Prepared eMolecules environment and graph capacity settings."""
+    """Prepared Enamine synthon environment and graph capacity settings."""
 
     env_dir: str = ""
     max_atoms: int = 50
@@ -25,7 +25,7 @@ class DataConfig:
 
 @dataclass
 class SubsamplingConfig:
-    """Tier-stratified building-block action-space sampling."""
+    """Uniform building-block action-space sampling."""
 
     sampling_ratio: float = 0.1
     min_sampling: int = 50
@@ -74,6 +74,22 @@ class ModelConfig:
 
 
 @dataclass
+class GenerationConfig:
+    """Dynamic synthesis trajectory limits."""
+
+    min_reactions: int = 1
+    max_reactions: int = 3
+
+    def validate(self) -> None:
+        if self.min_reactions < 0:
+            raise ValueError("generation.min_reactions must be non-negative")
+        if self.max_reactions < max(1, self.min_reactions):
+            raise ValueError(
+                "generation.max_reactions must be at least 1 and generation.min_reactions"
+            )
+
+
+@dataclass
 class TrainingConfig:
     steps: int = 1_000
     batch_size: int = 128
@@ -86,6 +102,7 @@ class TrainingConfig:
     ema_decay: float = 0.99
     checkpoint_every: int = 100
     log_every: int = 10
+    retrosynthesis_workers: int = 4
 
     def validate(self) -> None:
         positive_ints = {
@@ -101,6 +118,8 @@ class TrainingConfig:
             raise ValueError("training.replay_batch_size must be non-negative")
         if self.replay_capacity < 0:
             raise ValueError("training.replay_capacity must be non-negative")
+        if self.retrosynthesis_workers < 0:
+            raise ValueError("training.retrosynthesis_workers must be non-negative")
         if self.learning_rate <= 0 or self.sampling_temperature <= 0:
             raise ValueError("learning_rate and sampling_temperature must be positive")
         if not 0 <= self.random_action_prob <= 1:
@@ -121,6 +140,7 @@ class Config:
     reward: RewardConfig = field(default_factory=RewardConfig)
     property_penalty: dict[str, float] = field(default_factory=dict)
     subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)
+    generation: GenerationConfig = field(default_factory=GenerationConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
     output_dir: str = "runs/rxnflow"
@@ -130,7 +150,7 @@ class Config:
     def validate(self) -> None:
         self.data.validate()
         self.reward.validate()
-        from rxnflow.chemistry import PROPERTY_NAMES
+        from rxnflow.envs.chemistry.features import PROPERTY_NAMES
 
         if not isinstance(self.property_penalty, dict):
             raise ValueError("property_penalty must be a mapping")
@@ -140,11 +160,12 @@ class Config:
         if any(value <= 0 for value in self.property_penalty.values()):
             raise ValueError("property_penalty values must be positive")
         self.subsampling.validate()
+        self.generation.validate()
         self.model.validate()
         self.training.validate()
         if not self.data.env_dir:
             raise ValueError(
-                "data.env_dir must point to a prepared eMolecules environment"
+                "data.env_dir must point to a prepared Enamine synthon environment"
             )
         if not self.output_dir:
             raise ValueError("run.output_dir must not be empty")
@@ -169,6 +190,7 @@ class Config:
             "reward": asdict(self.reward),
             "property_penalty": dict(self.property_penalty),
             "subsampling": asdict(self.subsampling),
+            "generation": asdict(self.generation),
             "model": asdict(self.model),
             "training": asdict(self.training),
         }
@@ -203,6 +225,7 @@ class Config:
             reward=RewardConfig(**raw["reward"]),
             property_penalty=dict(raw["property_penalty"]),
             subsampling=SubsamplingConfig(**raw["subsampling"]),
+            generation=GenerationConfig(**raw["generation"]),
             model=ModelConfig(**raw["model"]),
             training=TrainingConfig(**raw["training"]),
             output_dir=str(raw["output_dir"]),

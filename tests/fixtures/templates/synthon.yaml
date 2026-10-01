@@ -1,8 +1,0 @@
-- name: amine
-  smi_file: amine.csv
-  original: "[N;D1:1]"
-  convert: "[N:1]-[100At]"
-- name: acid
-  smi_file: acid.csv
-  original: "[C:1](=[O:2])[O;D1:3]"
-  convert: "[C:1](=[O:2])-[101At]"

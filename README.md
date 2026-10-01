@@ -1,150 +1,151 @@
-[![Python versions](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![license: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
-
 # RxnFlow
 
-RxnFlow is a generative flow network for designing molecules through the eMolecules eXplore–Synple reaction space. It provides local data preparation, QED optimization, custom reward injection, checkpoint restart, and molecule sampling using PyTorch and RDKit.
+RxnFlow trains a generative flow network over an Enamine-derived synthon reaction space. Molecules are assembled through dynamically selected FirstBlock, UniReaction, and BiReaction actions using a local PyTorch and RDKit runtime.
 
-The research project is described in [Generative Flows on Synthetic Pathway for Drug Design](https://arxiv.org/abs/2410.04542). This repository is developed from work with HITS-AI and eMolecules.
+The research project is described in [Generative Flows on Synthetic Pathway for Drug Design](https://arxiv.org/abs/2410.04542).
 
-## Requirements and installation
+The synthon environment owns its chemistry and catalog preparation under `envs/`; model code and GFlowNet execution live in `models/` and `gflownet/`. See [project layout](docs/project-layout.md) for the source map and dependency boundaries.
 
-RxnFlow requires Python 3.10 or newer.
+## Installation
+
+RxnFlow is under development toward its initial `v1.0.0` release and requires Python 3.10. There is one current environment, config, and checkpoint format; regenerate older artifacts.
 
 ```bash
 python3.10 -m venv .venv
-. .venv/bin/activate
-python -m pip install -e .
+.venv/bin/pip install -e '.[dev]'
 ```
 
-For development tools, use `uv sync --extra dev`.
+The implementation uses native PyTorch tensors and does not require PyTorch Geometric or compiled scatter extensions.
 
-## Prepare eMolecules data
+## Prepare the Enamine synthon environment
 
-RxnFlow supports the eMolecules eXplore–Synple library. Access and licensing information is available from the [official eMolecules virtual-compounds page](https://www.emolecules.com/virtual-compounds). Source records are user-supplied and are not included in this repository.
-
-Prepare an environment with the included Synple and eXplore templates:
+Supply an Enamine stock file with one `SMILES<TAB>ID` record per line. Vendor records are local inputs and are not part of this repository.
 
 ```bash
-rxnflow-prepare all \
-  --raw-data-dir /path/to/emolecules/records \
-  --env-dir /path/to/prepared/emolecules \
-  --template-dir data/templates/emolecules/synple \
-  --template-dir data/templates/emolecules/explore
+rxnflow-prepare \
+  --building-blocks /path/to/enamine_stock.smi \
+  --template-dir data/templates \
+  --env-dir /path/to/prepared/enamine
 ```
 
-Preparation is resumable. Use `--force` to rebuild completed stages. The expected input columns and template format are documented in [data/README.md](data/README.md).
+Preparation applies the 35 typed synthon conversions in `synthon.yaml`. One-site products become bricks and two-site products become linkers, including pairs of the same type. Protected handles count as sites. Both conversion orders are considered for linkers. Identical canonical synthons aggregate their Enamine IDs; different representations of the same source molecule remain distinct blocks.
 
-## Configure training
+The prepared environment contains:
 
-Copy the minimal [QED configuration](configs/qed.yaml) and set `data.env_dir` and `run.output_dir`:
+```text
+prepared/enamine/
+├── blocks/
+│   ├── 1.smi
+│   ├── 1-1.smi
+│   └── ...
+├── building_blocks.json
+├── bb_feature.npz
+├── synthon.yaml
+├── reaction.yaml
+└── prepare_manifest.json
+```
+
+Each `blocks/*.smi` row is `synthon SMILES<TAB>JSON array of source IDs`. `building_blocks.json` maps each ID to its standardized source BB SMILES; it is provenance, not a parallel molecular state. The NPZ feature file uses flat `<type>/smiles`, `<type>/properties`, `<type>/fingerprints`, and `<type>/heavy_atoms` arrays, plus a format marker. Feature rows include their aligned SMILES. The CLI performs conversion followed by feature generation and requires a new output directory. There are no resume/force options or `all` stage selector. In Python, `convert_stage` and `features_stage` can be imported from `rxnflow.envs.prepare` and called directly. Re-conversion invalidates prior features. Rebuild after changing source files or templates.
+
+## Train
+
+Set the prepared environment and output directory in a config:
 
 ```yaml
 data:
-  env_dir: /path/to/prepared/emolecules
+  env_dir: /path/to/prepared/enamine
   max_atoms: 50
+
+generation:
+  min_reactions: 1
+  max_reactions: 3
 
 run:
   output_dir: runs/qed
   device: auto
   seed: 0
-
-reward:
-  exponent: 32.0
-  settings: {}
-
-property_penalty:
-  mw: 500
-
-subsampling:
-  sampling_ratio: 0.1
-
-training:
-  steps: 1000
-  batch_size: 128
-  replay_batch_size: 128
 ```
 
-`max_atoms` is the maximum number of heavy atoms in generated molecules. `property_penalty` contains optional hard upper bounds such as `mw`, `tpsa`, and `logp`; use `{}` for no property constraints. Reduce `batch_size`, `replay_batch_size`, or `sampling_ratio` when compute or memory is limited.
-
-The complete set of options is shown in [configs/template.yaml](configs/template.yaml) and explained in the [configuration guide](configs/README.md).
-
-## Train with QED
+Then start local QED optimization:
 
 ```bash
 rxnflow-train --config configs/qed.yaml
 ```
 
-The equivalent Python API is:
+A trajectory starts with a one-site brick and grows one intermediate. Each BiReaction consumes one site from the intermediate and one from a catalog block. A linker leaves one site; a brick leaves none and terminates the trajectory. UniReaction acts directly on the marked site and its required neighboring substructure, producing either one site (continue) or none (terminate). Termination is immediate; terminal molecules cannot reactivate. There is no Stop or terminal restoration.
 
-```python
-from rxnflow import Config, QEDReward, RxnFlowTrainer
+`min_reactions` and `max_reactions` count UniReaction and BiReaction, excluding FirstBlock. Before the minimum, terminating actions are masked. At the final allowed reaction, only terminating actions remain. No feasible sampled action means an invalid trajectory, not automatic capping. For example, three reactions allow brick → linker coupling → Boc deprotection → brick coupling. Distinct products from different reaction sites are separate actions identified by canonical product SMILES; symmetry-equivalent matches are merged.
 
-config = Config.from_file("configs/qed.yaml")
-reward = QEDReward(**config.reward.settings)
-checkpoint = RxnFlowTrainer(config, reward).run()
-```
+Building blocks are uniformly subsampled per library with inclusion-probability correction. All distinct products of those sampled blocks are enumerated and checked before scoring. `data.max_atoms` and the optional top-level `property_penalty` bounds apply to the resulting synthon at every step, including the dummy-free terminal product. Reactant descriptors are not summed. Dummy isotope labels do not contribute fictitious mass; intermediate descriptors still describe an abstraction, not a restored real molecule.
 
-Every run writes its resolved configuration and checkpoints under `run.output_dir`.
+Graph tensors reserve `max_atoms` RDKit heavy-atom slots plus one dummy slot. Molecules are never truncated. The policy scores state/reaction/block features plus outcome fingerprints and properties, allowing it to choose among positional products.
 
-## Use a custom reward
+Training uses trajectory balance, replay, an EMA sampling model, and restartable checkpoints. Backward analysis preserves the generated route and adds forward-verified candidates from a depth-pruned reverse search with at most two canonical precursor sets per rule. Its depth-weighted probabilities are a bounded heuristic, not exhaustive route enumeration. TB/replay always includes the observed block in the subsampled denominator and corrects the remaining population. Invalid trajectories receive zero raw reward and the configured training reward floor.
 
-Implement `RewardFunction.score` and construct the reward explicitly in Python. Each `Sample` provides canonical `smiles` and an RDKit `mol`.
+## Custom rewards
+
+Rewards are explicit local Python objects implementing `RewardFunction`:
 
 ```python
 from rxnflow import Config, RewardFunction, RxnFlowTrainer, Sample
 
 
-class HeavyAtomReward(RewardFunction):
-    def __init__(self, scale: float = 40.0):
-        self.scale = scale
-
+class CarbonReward(RewardFunction):
     def score(self, samples: list[Sample]) -> list[float]:
-        return [sample.mol.GetNumHeavyAtoms() / self.scale for sample in samples]
+        return [
+            sum(atom.GetAtomicNum() == 6 for atom in sample.mol.GetAtoms()) / 50
+            for sample in samples
+        ]
 
 
 config = Config.from_file("config.yaml")
-reward = HeavyAtomReward(**config.reward.settings)
-RxnFlowTrainer(config, reward).run()
+trainer = RxnFlowTrainer(config, CarbonReward())
+trainer.run()
 ```
 
-Place constructor keyword arguments under `reward.settings`. YAML does not select or import the reward class. Rewards must be finite and non-negative; invalid molecules receive zero.
+`reward.settings` is passed to the selected reward constructor. YAML does not import or choose a reward class.
 
-## Restart training
-
-Restart with the resolved configuration written by the original run:
-
-```bash
-rxnflow-train \
-  --config runs/qed/config.yaml \
-  --restart runs/qed/checkpoint_latest.pt \
-  --steps 500
-```
-
-Restart requires the same RxnFlow version, reward implementation, prepared environment, and resolved configuration.
-
-## Sample molecules
+## Sample
 
 ```bash
 rxnflow-sample \
   --checkpoint runs/qed/checkpoint_latest.pt \
   --num-samples 100 \
-  --output samples.json \
-  --format json \
-  --qed
+  --output samples.json
 ```
 
-Supported output formats are SMILES (`smi`), CSV, and structured JSON.
+Structured results contain dummy-free `smiles`, `trajectory`, `intermediates`, optional `reward`, and `metadata`. Each trajectory action includes its selected `product_smiles`. Block actions additionally record brick/linker role, catalog index, synthon SMILES, structured `block_ids`, and the corresponding source BB structures. `intermediates` contains every action product, including FirstBlock and the terminal product. There is no separate terminal `synthon_smiles`: the final internal state is already the output molecule.
 
-## Development checks
+## Reaction templates
+
+`reaction.yaml` contains 38 bimolecular rules and four synthon-level unary rules. Each unary definition declares `input_type`, `output_type` (`null` for terminal), and forward/reverse SMARTS. Reverse rules enumerate candidate precursors, not experimental reverse protocols.
+
+| UniReaction | Input representation | Output representation | Terminal |
+| --- | --- | --- | --- |
+| Boc deprotection | `R-N-[33*]` | `R-N-[1*]` | No |
+| Methyl ester hydrolysis | `R-[34*]` | `R-[3*]` | No |
+| Ethyl ester hydrolysis | `R-[35*]` | `R-[3*]` | No |
+| Nitrile → tetrazole | `R-[11*]` | `R-c1nnn[nH]1` | Yes |
+
+For types 3, 11, 34, and 35, the marker represents the entire acid, nitrile, or ester handle, respectively. For 33, nitrogen is retained and the Boc group is abstracted. No whole-molecule site recognition runs after a reaction: the remaining marked handle is carried by the product SMARTS. Additional production unary chemistry and halogen exchange remain separate curation work. See [the implementation review guide](docs/linear-synthesis.md) for the state/action contract and current type inventory.
+
+`real.txt` and `real_raw.txt` are retained as provenance and curation references. They are not runtime inputs.
+
+## Validation
 
 ```bash
 ./test.sh quick
-./test.sh heavy
 ```
 
-The heavy suite uses representative eMolecules data supplied through `RXNFLOW_RAW_DATA` or an existing environment supplied through `RXNFLOW_ENV_DIR`.
+The heavy suite accepts either an existing prepared environment or a local Enamine stock file:
 
-## Acknowledgements
+```bash
+RXNFLOW_ENV_DIR=/path/to/prepared/enamine ./test.sh heavy
+RXNFLOW_ENAMINE_STOCK=/path/to/enamine_stock.smi ./test.sh heavy
+```
 
-We thank HITS-AI and eMolecules for their collaboration on the eXplore–Synple environment and RxnFlow development.
+Set `RXNFLOW_FULL_PREPARE=1` to process the complete stock file instead of the representative prefix used by the heavy test.
+
+## License
+
+See [LICENSE](LICENSE).

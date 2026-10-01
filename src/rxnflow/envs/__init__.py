@@ -1,5 +1,6 @@
-from .building_block import BlockLibrary
-from .env import SynthesisEnv
-from .workflow import Protocol, Workflow
+"""Synthon environment: chemistry, catalog preparation, and state transitions."""
 
-__all__ = ["BlockLibrary", "Protocol", "SynthesisEnv", "Workflow"]
+from .env import ActionGroup, SynthesisEnv
+from .library import BlockLibrary
+
+__all__ = ["ActionGroup", "BlockLibrary", "SynthesisEnv"]

@@ -13,6 +13,7 @@ def test_removed_dependencies_and_layers_are_absent() -> None:
         str(path.relative_to(root)) for path in root.glob("src/gflownet")
     }
     assert not (root / "src/rxnflow/envs/action.py").exists()
+    assert not (root / "src/rxnflow/envs/workflow.py").exists()
     package_text = "\n".join(
         path.read_text() for path in (root / "src/rxnflow").rglob("*.py")
     )
@@ -23,6 +24,9 @@ def test_removed_dependencies_and_layers_are_absent() -> None:
         "PIGNet",
         "UniDock",
         "reward_server",
+        "eMolecules",
+        "TieredActionSpace",
+        "SET_WORKFLOW",
     ):
         assert removed not in package_text
 

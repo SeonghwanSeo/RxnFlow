@@ -1,14 +1,13 @@
 import torch
 
 from rxnflow.config import SubsamplingConfig
-from rxnflow.envs.building_block import BlockLibrary
-from rxnflow.policy import TieredActionSpace, block_penalty, corrected_log_probability
+from rxnflow.gflownet.categorical import corrected_log_probability
+from rxnflow.gflownet.subsampling import UniformActionSpace
 
 
-def test_ratio_one_preserves_non_contiguous_global_indices() -> None:
-    tiers = torch.tensor([3, 1, 3, 5, 1])
-    action_space = TieredActionSpace(
-        tiers, SubsamplingConfig(sampling_ratio=1.0, min_sampling=50)
+def test_ratio_one_preserves_global_indices() -> None:
+    action_space = UniformActionSpace(
+        5, SubsamplingConfig(sampling_ratio=1.0, min_sampling=50)
     )
     sample = action_space.sample(torch.Generator().manual_seed(1))
     assert sample.indices.tolist() == [0, 1, 2, 3, 4]
@@ -16,41 +15,31 @@ def test_ratio_one_preserves_non_contiguous_global_indices() -> None:
     assert torch.all(sample.log_importance == 0)
 
 
-def test_tier_allocation_reproducibility_and_importance() -> None:
-    tiers = torch.tensor([1] * 10 + [3] * 4 + [7] * 2)
+def test_uniform_reproducibility_and_importance() -> None:
     config = SubsamplingConfig(sampling_ratio=0.25, min_sampling=2, importance_temp=0.5)
-    action_space = TieredActionSpace(tiers, config)
+    action_space = UniformActionSpace(16, config)
     first = action_space.sample(torch.Generator().manual_seed(9))
     second = action_space.sample(torch.Generator().manual_seed(9))
     assert torch.equal(first.indices, second.indices)
-    assert len(first.indices) == sum(action_space.allocation().values())
+    assert len(first.indices) == 4
     assert torch.allclose(
         first.log_importance, first.inclusion_probability.reciprocal().log()
     )
     assert first.indices.unique().numel() == first.indices.numel()
 
 
-def test_capacity_penalty_and_corrected_probability() -> None:
-    library = BlockLibrary(
-        block_type="x",
-        smiles=["C", "CC", "CCC"],
-        identifiers=["1", "2", "3"],
-        tiers=torch.tensor([1, 1, 2]),
-        properties=torch.zeros((3, 9)),
-        fingerprints=torch.zeros((3, 678)),
-        heavy_atoms=torch.tensor([1, 2, 3]),
+def test_observed_block_is_included_with_conditional_weights() -> None:
+    space = UniformActionSpace(8, SubsamplingConfig(sampling_ratio=0.25, min_sampling=1))
+    sample = space.sample(torch.Generator().manual_seed(0), required_index=3)
+    assert 3 in sample.indices.tolist()
+    assert sample.inclusion_probability[sample.indices == 3].item() == 1
+    assert torch.allclose(
+        sample.inclusion_probability[sample.indices != 3], torch.tensor([1 / 7])
     )
-    penalty = block_penalty(
-        library,
-        torch.tensor([2, 0]),
-        current_heavy_atoms=49,
-        max_heavy_atoms=50,
-    )
-    assert penalty.tolist() == [-torch.inf, 0.0]
     selected = torch.tensor(1.0, requires_grad=True)
+    sampled = torch.stack([selected, selected * 0])
     probability = corrected_log_probability(
-        selected, torch.tensor([0.0, 0.5]), torch.log(torch.tensor([2.0, 2.0]))
+        selected, sampled, torch.log(torch.tensor([1.0, 7.0]))
     )
     probability.backward()
-    assert selected.grad is not None
-    assert probability <= 0
+    assert selected.grad is not None and probability <= 0

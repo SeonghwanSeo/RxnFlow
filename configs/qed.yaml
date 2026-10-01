@@ -1,7 +1,6 @@
 # Minimal QED training configuration.
-# All omitted settings use the defaults documented in template.yaml.
 data:
-  env_dir: /path/to/prepared/emolecules
+  env_dir: /path/to/prepared/enamine
   max_atoms: 50
 
 run:
@@ -9,21 +8,21 @@ run:
   device: auto
   seed: 0
 
-# QED has no constructor settings. Exponent strongly controls optimization.
 reward:
   exponent: 32.0
   settings: {}
 
-# Optional hard upper bounds applied when choosing building blocks.
 property_penalty:
   mw: 500
 
-# Change this first when the building-block action space is too large.
 subsampling:
   sampling_ratio: 0.1
 
+generation:
+  min_reactions: 1
+  max_reactions: 3
+
 training:
   steps: 1000
-  # Fresh and replayed trajectories used for each optimization step.
   batch_size: 128
   replay_batch_size: 128

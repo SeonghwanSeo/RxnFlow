@@ -1,4 +1,4 @@
-"""RxnFlow policy and state-flow model."""
+"""RxnFlow dynamic reaction policy and state-flow model."""
 
 from __future__ import annotations
 
@@ -7,14 +7,14 @@ import math
 import torch
 from torch import Tensor, nn
 
-from rxnflow.chemistry import (
+from rxnflow.config import ModelConfig
+from rxnflow.envs import SynthesisEnv
+from rxnflow.envs.chemistry.features import (
     FINGERPRINT_DIM,
     PROPERTY_DIM,
-    normalize_molecular_properties,
+    PROPERTY_SCALE,
 )
-from rxnflow.config import ModelConfig
-from rxnflow.data.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
-from rxnflow.envs import SynthesisEnv
+from rxnflow.envs.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
 
 from .graph_transformer import GraphTransformer
 
@@ -23,8 +23,6 @@ class RxnFlowModel(nn.Module):
     def __init__(self, env: SynthesisEnv, config: ModelConfig):
         super().__init__()
         hidden = config.hidden_dim
-        max_protocols = max(len(workflow.protocols) for workflow in env.workflows)
-        max_tier = max(int(library.tiers.max()) for library in env.blocks.values())
         self.env = env
         self.graph_encoder = GraphTransformer(
             node_dim=NODE_FEATURE_DIM,
@@ -34,14 +32,10 @@ class RxnFlowModel(nn.Module):
             num_heads=config.num_heads,
             num_layers=config.num_layers,
             dropout=config.dropout,
-            num_workflows=len(env.workflows),
-            max_protocols=max_protocols,
-            num_action_kinds=4,
+            max_reactions=env.max_reactions,
         )
-        self.workflow_head = nn.Linear(hidden, len(env.workflows))
-        self.protocol_embedding = nn.Embedding(len(env.protocol_names), hidden)
-        self.block_type_embedding = nn.Embedding(len(env.block_types), hidden // 4)
-        self.tier_embedding = nn.Embedding(max_tier + 1, hidden // 4)
+        self.action_embedding = nn.Embedding(len(env.action_names), hidden)
+        self.block_type_embedding = nn.Embedding(len(env.block_types), hidden // 2)
         block_input = FINGERPRINT_DIM + PROPERTY_DIM + hidden // 2
         self.block_encoder = nn.Sequential(
             nn.Linear(block_input, hidden),
@@ -49,18 +43,40 @@ class RxnFlowModel(nn.Module):
             nn.Linear(hidden, hidden),
             nn.LayerNorm(hidden),
         )
+        self.scalar_head = nn.Sequential(
+            nn.Linear(hidden * 2, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 1),
+        )
         self.block_query = nn.Sequential(
             nn.Linear(hidden * 2, hidden),
             nn.GELU(),
             nn.Linear(hidden, hidden),
         )
+        # Distinct positional outcomes of the same reaction/block must have
+        # distinct scores. Encode their product chemistry as well as the input
+        # block; a reaction embedding alone cannot choose a regioisomer.
+        self.outcome_encoder = nn.Sequential(
+            nn.Linear(FINGERPRINT_DIM + PROPERTY_DIM, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+            nn.LayerNorm(hidden),
+        )
+        self.outcome_query = nn.Linear(hidden * 2, hidden)
         self.log_z = nn.Parameter(torch.tensor(0.0))
 
     def encode_graphs(self, batch: GraphBatch) -> Tensor:
         return self.graph_encoder(batch)
 
-    def score_workflows(self, state_embedding: Tensor) -> Tensor:
-        return self.workflow_head(state_embedding)
+    def _action(self, name: str, device: torch.device) -> Tensor:
+        index = torch.tensor(
+            [self.env.action_to_index[name]], dtype=torch.long, device=device
+        )
+        return self.action_embedding(index)
+
+    def score_scalar(self, state_embedding: Tensor, action_name: str) -> Tensor:
+        action = self._action(action_name, state_embedding.device)
+        return self.scalar_head(torch.cat([state_embedding, action], dim=-1))[0, 0]
 
     def _encode_blocks(
         self, block_type: str, indices: Tensor, device: torch.device
@@ -68,48 +84,48 @@ class RxnFlowModel(nn.Module):
         library = self.env.blocks[block_type]
         cpu_indices = indices.detach().cpu().to(torch.long)
         fingerprints = library.fingerprints[cpu_indices].to(device)
-        properties = normalize_molecular_properties(library.properties[cpu_indices]).to(device)
-        tiers = library.tiers[cpu_indices].to(device)
+        properties = library.properties[cpu_indices].to(device)
+        properties = properties / properties.new_tensor(PROPERTY_SCALE)
         type_index = self.env.block_type_to_index[block_type]
-        types = torch.full_like(tiers, type_index)
+        types = torch.full((len(indices),), type_index, dtype=torch.long, device=device)
         return self.block_encoder(
             torch.cat(
-                [
-                    fingerprints,
-                    properties,
-                    self.block_type_embedding(types),
-                    self.tier_embedding(tiers),
-                ],
-                dim=-1,
+                [fingerprints, properties, self.block_type_embedding(types)], dim=-1
             )
         )
 
     def score_blocks(
         self,
         state_embedding: Tensor,
-        protocol_name: str,
+        action_name: str,
         block_type: str,
         indices: Tensor,
     ) -> Tensor:
         assert indices.ndim == 1 and state_embedding.shape[0] == 1
-        protocol_index = torch.tensor(
-            [self.env.protocol_to_index[protocol_name]],
-            dtype=torch.long,
-            device=state_embedding.device,
-        )
-        protocol = self.protocol_embedding(protocol_index)
-        query = self.block_query(torch.cat([state_embedding, protocol], dim=-1))
+        action = self._action(action_name, state_embedding.device)
+        query = self.block_query(torch.cat([state_embedding, action], dim=-1))
         blocks = self._encode_blocks(block_type, indices, state_embedding.device)
         return torch.matmul(blocks, query.squeeze(0)) / math.sqrt(query.shape[-1])
 
-    def score_one_block(
+    def score_outcomes(
         self,
         state_embedding: Tensor,
-        protocol_name: str,
-        block_type: str,
-        block_index: int,
+        action_name: str,
+        properties: Tensor,
+        fingerprints: Tensor,
     ) -> Tensor:
-        index = torch.tensor(
-            [block_index], dtype=torch.long, device=state_embedding.device
+        device = state_embedding.device
+        action = self._action(action_name, device)
+        query = self.outcome_query(torch.cat([state_embedding, action], dim=-1))
+        properties = properties.to(device)
+        properties = properties / properties.new_tensor(PROPERTY_SCALE)
+        outcomes = self.outcome_encoder(
+            torch.cat(
+                [
+                    properties,
+                    fingerprints.to(device),
+                ],
+                dim=-1,
+            )
         )
-        return self.score_blocks(state_embedding, protocol_name, block_type, index)[0]
+        return outcomes @ query.squeeze(0) / math.sqrt(query.shape[-1])

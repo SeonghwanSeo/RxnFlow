@@ -13,7 +13,7 @@ def corrected_log_probability(
     estimate = torch.logsumexp(
         sampled_logits + log_importance.to(sampled_logits.device), dim=0
     )
-    return torch.clamp(selected_logit - estimate, max=0.0)
+    return selected_logit - estimate
 
 
 def sample_position(

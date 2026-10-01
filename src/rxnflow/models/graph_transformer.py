@@ -7,7 +7,7 @@ import math
 import torch
 from torch import Tensor, nn
 
-from rxnflow.data.graph import GraphBatch
+from rxnflow.envs.graph import GraphBatch
 
 
 class EdgeAwareAttention(nn.Module):
@@ -73,9 +73,7 @@ class GraphTransformer(nn.Module):
         num_heads: int,
         num_layers: int,
         dropout: float,
-        num_workflows: int,
-        max_protocols: int,
-        num_action_kinds: int,
+        max_reactions: int,
     ):
         super().__init__()
         self.edge_dim = edge_dim
@@ -86,9 +84,7 @@ class GraphTransformer(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
         )
         self.capacity_projection = nn.Linear(1, hidden_dim)
-        self.workflow_embedding = nn.Embedding(num_workflows + 1, hidden_dim)
-        self.order_embedding = nn.Embedding(max_protocols + 2, hidden_dim)
-        self.action_embedding = nn.Embedding(num_action_kinds, hidden_dim)
+        self.reaction_count_embedding = nn.Embedding(max_reactions + 1, hidden_dim)
         self.condition_norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList(
             [
@@ -101,14 +97,10 @@ class GraphTransformer(nn.Module):
 
     def forward(self, batch: GraphBatch) -> Tensor:
         nodes = self.node_projection(batch.node_features) * batch.node_mask.unsqueeze(-1)
-        workflow = self.workflow_embedding((batch.workflow_index + 1).clamp(min=0))
-        order = self.order_embedding((batch.protocol_order + 1).clamp(min=0))
-        action = self.action_embedding(batch.action_kind)
+        reaction_count = self.reaction_count_embedding(batch.reaction_count)
         mol_condition = self.mol_projection(batch.mol_features)
         capacity = self.capacity_projection(batch.remaining_capacity.unsqueeze(-1))
-        condition = self.condition_norm(
-            mol_condition + capacity + workflow + order + action
-        )
+        condition = self.condition_norm(mol_condition + capacity + reaction_count)
         x = torch.cat([nodes, condition.unsqueeze(1)], dim=1)
 
         batch_size, node_count = batch.node_mask.shape
