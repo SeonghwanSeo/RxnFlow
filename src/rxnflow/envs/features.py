@@ -1,4 +1,4 @@
-"""RDKit parsing and molecular/building-block descriptors."""
+"""RDKit parsing and molecular/synthon descriptors."""
 
 from __future__ import annotations
 
@@ -89,12 +89,12 @@ def normalize_molecular_properties(values: np.ndarray) -> np.ndarray:
     return values / PROPERTY_SCALE
 
 
-def block_fingerprint(mol: Chem.Mol) -> np.ndarray:
+def synthon_fingerprint(mol: Chem.Mol) -> np.ndarray:
     """Concatenate isotope-aware Morgan counts and MACCS bits into 678 bytes."""
     invariants = rdMolDescriptors.GetConnectivityInvariants(mol)
     # Default Morgan invariants ignore dummy isotopes. Supply the categorical
     # label explicitly, so active/latent types and their positions remain
-    # visible to the block encoder (without fake atom masses).
+    # visible to the synthon encoder (without fake atom masses).
     for atom in mol.GetAtoms():
         if atom.GetAtomicNum() == 0:
             invariants[atom.GetIdx()] = atom.GetIsotope()
@@ -112,8 +112,8 @@ def block_fingerprint(mol: Chem.Mol) -> np.ndarray:
     return np.concatenate([morgan_array.astype(np.uint8), maccs_array[1:]])
 
 
-def block_feature_row(smiles: str) -> tuple[np.ndarray, np.ndarray, int]:
+def synthon_feature_row(smiles: str) -> tuple[np.ndarray, np.ndarray, int]:
     mol = parse_molecule(smiles)
     if mol is None:
-        raise ValueError(f"invalid building-block SMILES: {smiles}")
-    return molecular_properties(mol), block_fingerprint(mol), heavy_atom_count(mol)
+        raise ValueError(f"invalid synthon SMILES: {smiles}")
+    return molecular_properties(mol), synthon_fingerprint(mol), heavy_atom_count(mol)

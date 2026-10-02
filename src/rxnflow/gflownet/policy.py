@@ -40,8 +40,8 @@ def resolve_device(value: str) -> torch.device:
 @dataclass
 class ActionLogits:
     subspace: ActionSubspace
-    logits: torch.Tensor  # [state, sampled block], or [state, 1] for UniReaction
-    log_importance: torch.Tensor  # [sampled block]
+    logits: torch.Tensor  # [state, sampled synthon], or [state, 1] for UniReaction
+    log_importance: torch.Tensor  # [sampled synthon]
 
 
 class SubsamplingPolicy:
@@ -154,7 +154,7 @@ class RxnFlowPolicy:
         # subspaces use the deterministic singleton range under None.
         num_actions = {
             None: 1,
-            **{name: len(library) for name, library in env.blocks.items()},
+            **{name: len(library) for name, library in env.synthons.items()},
         }
         self.subsampling = {
             name: SubsamplingPolicy(
@@ -178,11 +178,11 @@ class RxnFlowPolicy:
         """
         assert states
         # 1. Build state features and collect compatible reaction/library rows.
-        graphs: dict[tuple[str, int], GraphData] = {}
-        properties: dict[tuple[str, int], NDArray[np.float32]] = {}
-        keys = [(state.smiles, state.reaction_count) for state in states]
+        graphs: dict[tuple[str, int, int], GraphData] = {}
+        properties: dict[tuple[str, int, int], NDArray[np.float32]] = {}
+        keys = [(state.smiles, state.num_reactions, state.num_synthons) for state in states]
         # Metadata contains only state rows and library names, never candidate
-        # objects or per-state arrays of valid block indices.
+        # objects or per-state arrays of valid synthon indices.
         action_rows: dict[str, set[int]] = {}  # reaction -> batch rows
         # reaction -> library -> batch rows
         action_libraries: dict[str, dict[str, list[int]]] = {}
@@ -193,23 +193,27 @@ class RxnFlowPolicy:
                 mol_properties = molecular_properties(state.mol)
                 properties[key] = mol_properties
                 graphs[key] = molecule_to_graph_data(
-                    state.mol, self.env.max_atoms, state.reaction_count, mol_properties
+                    state.mol,
+                    self.env.max_atoms,
+                    state.num_reactions,
+                    mol_properties,
+                    num_synthons=state.num_synthons,
                 )
             for subspace in self.env.get_action_space(state):
-                name, block_type = subspace.name
+                name, synthon_type = subspace.name
                 action_types[name] = subspace.action_type
                 action_rows.setdefault(name, set()).add(row)
-                if block_type is not None:
+                if synthon_type is not None:
                     action_libraries.setdefault(name, {}).setdefault(
-                        block_type, []
+                        synthon_type, []
                     ).append(row)
-                library_rows.setdefault(block_type, set()).add(row)
+                library_rows.setdefault(synthon_type, set()).add(row)
         # 2. Draw each library once and apply additive budgets to sampled rows.
         descriptors = np.stack([properties[key] for key in keys])
         samples: dict[str | None, NDArray[np.int64]] = {}
         log_importance: dict[str | None, float] = {}
         masks: dict[str, NDArray[np.bool_]] = {}  # library -> [batch, sampled actions]
-        # Each entry contains fingerprints, properties and block type indices.
+        # Each entry contains fingerprints, properties and synthon type indices.
         features: list[
             tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]
         ] = []
@@ -219,29 +223,29 @@ class RxnFlowPolicy:
                 library_name
             ].sample()
             if library_name is None:
-                continue  # Unary actions share subsampling, but have no block features.
+                continue  # Unary actions share subsampling, but have no synthon features.
             indices = samples[library_name]
             row_indices = sorted(rows)
             mask = np.zeros((len(states), len(indices)), dtype=np.bool_)
-            mask[row_indices] = self.env.get_block_mask(
+            mask[row_indices] = self.env.get_synthon_mask(
                 descriptors[row_indices], library_name, indices
             )
             masks[library_name] = mask
-            library_data = self.env.blocks[library_name]
+            library_data = self.env.synthons[library_name]
             features.append(
                 (
                     library_data.fingerprints[indices],
                     library_data.properties[indices],
                     np.full(
                         (len(indices),),
-                        self.env.block_type_to_index[library_name],
+                        self.env.library_to_index[library_name],
                         dtype=np.int64,
                     ),
                 )
             )
             sizes.append(len(indices))
 
-        # 3. Encode conditions, state graphs, and all sampled blocks in batches.
+        # 3. Encode conditions, state graphs, and all sampled synthons in batches.
         # Graph/property preprocessing is shared, but identical molecules may
         # have different beta/preferences and need separate neural encodings.
         cond_info = self.model.encode_cond(beta, preferences)
@@ -250,11 +254,11 @@ class RxnFlowPolicy:
             cond_info,
         )
         logit_scale = self.model.logit_scale(cond_info)
-        block_embs: dict[str, torch.Tensor] = {}
+        synthon_embs: dict[str, torch.Tensor] = {}
         if features:
             fps, props, types = zip(*features, strict=True)
             encoded = F.normalize(
-                self.model.block_embedding(
+                self.model.synthon_embedding(
                     torch.from_numpy(np.concatenate(fps)).to(
                         self.device, dtype=torch.float32
                     ),
@@ -263,7 +267,7 @@ class RxnFlowPolicy:
                 ),
                 dim=-1,
             )
-            block_embs = dict(zip(masks, encoded.split(sizes), strict=True))
+            synthon_embs = dict(zip(masks, encoded.split(sizes), strict=True))
 
         # 4. Score by reaction, apply masks, and split columns into subspaces.
         action_logits: list[ActionLogits] = []
@@ -276,9 +280,9 @@ class RxnFlowPolicy:
             if libraries:
                 # Compute the reaction query and matrix product once, then split
                 # columns into library subspaces without recomputing embeddings.
-                blocks = torch.cat([block_embs[n] for n in libraries])
-                scores = state_emb @ blocks.T
-                logits = graph_emb.new_full((len(states), len(blocks)), -torch.inf)
+                synthons = torch.cat([synthon_embs[n] for n in libraries])
+                scores = state_emb @ synthons.T
+                logits = graph_emb.new_full((len(states), len(synthons)), -torch.inf)
                 logits = logits.index_copy(0, row_indices, scores)
                 allowed: list[NDArray[np.bool_]] = []
                 weight_parts: list[torch.Tensor] = []
@@ -342,33 +346,33 @@ class RxnFlowPolicy:
         by_reaction, by_library = {}, {}
         for row, action in enumerate(actions):
             name = (
-                "first_block"
-                if action.action_type == ActionType.FIRST_BLOCK
+                "first_synthon"
+                if action.action_type == ActionType.FIRST_SYNTHON
                 else action.reaction
             )
             by_reaction.setdefault(name, []).append(row)
-            if action.block_type is not None:
-                by_library.setdefault(action.block_type, []).append(row)
-        # 2. Gather and encode only the blocks selected by those actions.
-        block_rows, features = [], []
+            if action.synthon_type is not None:
+                by_library.setdefault(action.synthon_type, []).append(row)
+        # 2. Gather and encode only the synthons selected by those actions.
+        synthon_rows, features = [], []
         for name, rows in by_library.items():
-            indices = np.array([actions[i].block_index for i in rows], dtype=np.int64)
-            library = self.env.blocks[name]
-            block_rows.extend(rows)
+            indices = np.array([actions[i].synthon_index for i in rows], dtype=np.int64)
+            library = self.env.synthons[name]
+            synthon_rows.extend(rows)
             features.append(
                 (
                     library.fingerprints[indices],
                     library.properties[indices],
                     np.full(
-                        (len(rows),), self.env.block_type_to_index[name], dtype=np.int64
+                        (len(rows),), self.env.library_to_index[name], dtype=np.int64
                     ),
                 )
             )
-        blocks = graph_emb.new_zeros((len(actions), self.config.model.num_block_emb))
+        synthons = graph_emb.new_zeros((len(actions), self.config.model.num_synthon_emb))
         if features:
             fp, prop, typ = zip(*features, strict=True)
             values = F.normalize(
-                self.model.block_embedding(
+                self.model.synthon_embedding(
                     torch.from_numpy(np.concatenate(fp)).to(
                         self.device, dtype=torch.float32
                     ),
@@ -377,8 +381,8 @@ class RxnFlowPolicy:
                 ),
                 dim=-1,
             )
-            blocks = blocks.index_copy(
-                0, torch.tensor(block_rows, device=self.device), values
+            synthons = synthons.index_copy(
+                0, torch.tensor(synthon_rows, device=self.device), values
             )
         # 3. Score each reaction and restore the original action order.
         logits = graph_emb.new_zeros(len(actions))
@@ -390,7 +394,7 @@ class RxnFlowPolicy:
             values = (
                 state_emb.squeeze(1)
                 if actions[rows[0]].action_type == ActionType.UNI_REACTION
-                else (state_emb * blocks[indices]).sum(1)
+                else (state_emb * synthons[indices]).sum(1)
             )
             logits = logits.index_copy(0, indices, values)
         return logits
@@ -458,7 +462,7 @@ class RxnFlowPolicy:
         denominator = 0.0
         for trajectory in trajectories:
             # Exclude the root edge: the weight measures remaining actions to
-            # the empty state. FirstBlock therefore has weight N**0 = 1.
+            # the empty state. FirstSynthon therefore has weight N**0 = 1.
             weight = self.env.num_total_actions ** (-(len(trajectory) - 1))
             denominator += weight
             if trajectory[0] == (action, parent_smiles):
@@ -516,6 +520,19 @@ class RxnFlowPolicy:
         def collect_backward() -> None:
             for index, routes in self.env.retro_analyzer.result():
                 transition = steps[index][-1]
+                state = states[index]
+                # Counts are part of the state: routes with a different number
+                # of synthons/reactions reach another state, even for identical SMILES.
+                routes = [
+                    route
+                    for route in routes
+                    if len(route) == state.num_reactions + 1
+                    and sum(
+                        action.action_type != ActionType.UNI_REACTION
+                        for action, _ in route
+                    )
+                    == state.num_synthons
+                ]
                 value = self.calc_bck_logprob(
                     transition.action, routes, transition.state.smiles
                 )
@@ -524,7 +541,7 @@ class RxnFlowPolicy:
                 transition.log_p_B = value
                 backward_trajectories[index] = routes
 
-        # 2. Advance active trajectories: FirstBlock plus max_reactions reactions.
+        # 2. Advance active trajectories: FirstSynthon plus max_reactions reactions.
         for _ in range(self.env.max_reactions + 1):
             active = [
                 i
@@ -566,7 +583,7 @@ class RxnFlowPolicy:
                     self.env.retro_analyzer.submit(
                         index,
                         next_state.smiles,
-                        next_state.reaction_count,
+                        next_state.num_reactions,
                         [
                             [(action, state.smiles), *route]
                             for route in backward_trajectories[index]

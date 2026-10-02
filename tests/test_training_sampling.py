@@ -115,14 +115,14 @@ def test_training_restart_sampling_and_output_formats(
         assert record["reward"] == pytest.approx(
             sum(row["reward"] for row in fresh) / len(fresh)
         )
-        # This fixture always selects FirstBlock; the path log omits it while
+        # This fixture always selects FirstSynthon; the path log omits it while
         # the training length metric still counts all selected actions.
         assert record["traj_lens"] == pytest.approx(
             sum(len(row["traj"]) + 1 for row in fresh) / len(fresh)
         )
         assert record["num_online"] == len(fresh)
         assert (
-            not {"reaction_counts", "action_counts", "mean_reactions", "invalid_reasons"}
+            not {"num_reactionss", "action_counts", "mean_reactions", "invalid_reasons"}
             & record.keys()
         )
         assert record["iteration_time"] >= record["sampling_time"] >= 0
@@ -135,18 +135,18 @@ def test_training_restart_sampling_and_output_formats(
     for row in samples:
         assert "steps" not in row
         for transition in row["traj"]:
-            assert set(transition) == {"state", "reaction", "block_smiles"}
+            assert set(transition) == {"state", "reaction", "synthon_smiles"}
             assert isinstance(transition["state"], str) and transition["state"]
-            assert transition["reaction"] != "FIRST_BLOCK"
+            assert transition["reaction"] != "FIRST_SYNTHON"
             if transition["reaction"] in restarted.env.uni_reactions:
-                assert transition["block_smiles"] is None
+                assert transition["synthon_smiles"] is None
             else:
                 assert transition["reaction"] in restarted.env.bi_reactions
-                assert transition["block_smiles"]
-            if transition["block_smiles"] is not None:
+                assert transition["synthon_smiles"]
+            if transition["synthon_smiles"] is not None:
                 assert any(
-                    transition["block_smiles"] in library.smiles
-                    for library in restarted.env.blocks.values()
+                    transition["synthon_smiles"] in library.smiles
+                    for library in restarted.env.synthons.values()
                 )
 
     sampler = RxnFlowSampler(restarted_checkpoint, reward=QEDReward())
@@ -174,7 +174,7 @@ def test_training_restart_sampling_and_output_formats(
     assert len(smi_path.read_text().splitlines()) == 3
     with csv_path.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert json.loads(rows[0]["trajectory"])[0]["action_type"] == "FIRST_BLOCK"
+    assert json.loads(rows[0]["trajectory"])[0]["action_type"] == "FIRST_SYNTHON"
     assert "*" not in rows[0]["smiles"]
     structured = json.loads(json_path.read_text())
     assert structured[0]["intermediates"]
@@ -193,7 +193,7 @@ def test_trajectory_balance_uses_backward_probability(
         steps=[
             Transition(
                 state=State(),
-                action=Action(ActionType.FIRST_BLOCK),
+                action=Action(ActionType.FIRST_SYNTHON),
                 product_smiles="[1*]N",
                 log_p_B=-2.0,
             )
@@ -218,7 +218,7 @@ def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path
     )
     batch = [
         Trajectory(
-            steps=[Transition(State(), Action(ActionType.FIRST_BLOCK), "C", pb)],
+            steps=[Transition(State(), Action(ActionType.FIRST_SYNTHON), "C", pb)],
             final_smiles="C",
             reward=reward,
             valid=valid,
@@ -294,7 +294,7 @@ def test_restart_reproduces_next_update_with_dropout(
         assert torch.equal(value, expected_ema[key]), key
 
 
-def test_oriented_block_scoring_and_observed_action_log_probability(
+def test_oriented_synthon_scoring_and_observed_action_log_probability(
     prepared_env, tmp_path
 ):
     from rxnflow.core.errors import NoValidActions
@@ -303,13 +303,13 @@ def test_oriented_block_scoring_and_observed_action_log_probability(
     state = State.from_smiles("[3*]C")
     from rxnflow.core.errors import InvalidTransition
 
-    spec = (ActionType.BI_REACTION, "amide_coupling_block_first", "1-1")
+    spec = (ActionType.BI_REACTION, "amide_coupling_synthon_first", "1-1")
     assert any(
         subspace.action_type == spec[0] and subspace.name == (spec[1], spec[2])
         for subspace in trainer.env.get_action_space(state)
     )
     actions = []
-    for i in range(len(trainer.env.blocks["1-1"])):
+    for i in range(len(trainer.env.synthons["1-1"])):
         action = Action(*spec, i)
         try:
             trainer.env.step(state, action)
@@ -323,7 +323,7 @@ def test_oriented_block_scoring_and_observed_action_log_probability(
     )
     assert torch.isfinite(probability) and probability <= 0
     (-probability).backward()
-    assert trainer.model.mlp_block[0].weight.grad is not None
+    assert trainer.model.mlp_synthon[0].weight.grad is not None
     with pytest.raises(NoValidActions):
         trainer.policy.sample_action(
             State.from_smiles("[33*]NCC", trainer.env.max_reactions - 1),
@@ -345,24 +345,24 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
     config.property_penalty = {"mw": 100.0}
     trainer = RxnFlowTrainer(config, QEDReward())
     env = trainer.env
-    name = next(n for n in env.brick_types if len(env.blocks[n]) > 1)
+    name = next(n for n in env.brick_types if len(env.synthons[n]) > 1)
     mw = PROPERTY_NAMES.index("mw")
-    for library in env.blocks.values():
+    for library in env.synthons.values():
         library.properties[:, mw] = 200.0
-    target = len(env.blocks[name]) - 1
-    env.blocks[name].properties[target, mw] = 50.0
+    target = len(env.synthons[name]) - 1
+    env.synthons[name].properties[target, mw] = 50.0
     monkeypatch.setattr(
         env,
         "_apply_action",
         lambda *args: pytest.fail("candidate scoring executed chemistry"),
     )
-    original = env.get_block_mask
+    original = env.get_synthon_mask
 
-    def mask(properties, block_type, indices=None):
+    def mask(properties, synthon_type, indices=None):
         assert indices is not None
-        return original(properties, block_type, indices)
+        return original(properties, synthon_type, indices)
 
-    monkeypatch.setattr(env, "get_block_mask", mask)
+    monkeypatch.setattr(env, "get_synthon_mask", mask)
     found = missed = 0
     for seed in range(20):
         trainer.policy.rng.bit_generator.state = np.random.default_rng(
@@ -384,10 +384,10 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
         position = int(valid.nonzero().flatten()[0])
         assert valid.sum() == 1
         action = group.subspace.action_at(position)
-        assert action.block_type == name and action.block_index == target
+        assert action.synthon_type == name and action.synthon_index == target
         count = trainer.policy.subsampling[name].num_sampling
         assert group.log_importance[position].item() == pytest.approx(
-            math.log(len(env.blocks[name]) / count)
+            math.log(len(env.synthons[name]) / count)
         )
     assert found and missed
 
@@ -400,12 +400,12 @@ def test_failed_selected_action_is_retained_for_tb(
     trainer = RxnFlowTrainer(config, QEDReward())
     # Reactant budget fits (4 + 1), but the amidation inserts two more atoms.
     state = State.from_smiles("[1*]NCCN")
-    index = trainer.env.blocks["3"].smiles.index("*C")
+    index = trainer.env.synthons["3"].smiles.index("*C")
     action = Action(
         ActionType.BI_REACTION,
         reaction="amide_coupling_state_first",
-        block_type="3",
-        block_index=index,
+        synthon_type="3",
+        synthon_index=index,
     )
     monkeypatch.setattr(trainer.env, "initial_state", lambda: state)
     monkeypatch.setattr(
@@ -442,7 +442,7 @@ def test_batched_scores_and_gradients_match_scalar_reference(
     states = [
         State(),
         State.from_smiles("[3*]C"),
-        State.from_smiles("[3*]C", reaction_count=trainer.env.max_reactions - 1),
+        State.from_smiles("[3*]C", num_reactions=trainer.env.max_reactions - 1),
         State.from_smiles("[11*]C"),
         State.from_smiles("[33*]NCC"),
     ]
@@ -455,7 +455,10 @@ def test_batched_scores_and_gradients_match_scalar_reference(
             GraphBatch.from_graphs(
                 [
                     molecule_to_graph_data(
-                        state.mol, trainer.env.max_atoms, state.reaction_count
+                        state.mol,
+                        trainer.env.max_atoms,
+                        state.num_reactions,
+                        num_synthons=state.num_synthons,
                     )
                 ]
             ),
@@ -465,7 +468,10 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                     GraphBatch.from_graphs(
                         [
                             molecule_to_graph_data(
-                                state.mol, trainer.env.max_atoms, state.reaction_count
+                                state.mol,
+                                trainer.env.max_atoms,
+                                state.num_reactions,
+                                num_synthons=state.num_synthons,
                             )
                         ]
                     ).node_mask
@@ -487,11 +493,11 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                         logit_scale=model.logit_scale(_condition(model, 1)),
                     )
                     if action.action_type == ActionType.UNI_REACTION
-                    else model.get_block_logits(
+                    else model.get_synthon_logits(
                         embedding,
                         group.subspace.name[0],
-                        action.block_type,
-                        torch.tensor([action.block_index]),
+                        action.synthon_type,
+                        torch.tensor([action.synthon_index]),
                         logit_scale=model.logit_scale(_condition(model, 1)),
                     )[0]
                 )
@@ -539,12 +545,12 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
         preferences=torch.ones(len([initial, initial]), 1),
     )
     assert len(draws) == len(set(draws))
-    assert queries == ["first_block"]  # Shared across all first-block libraries.
-    assert len(categorical.action_logits) == len(trainer.env.brick_types)
+    assert queries == ["first_synthon"]  # Shared across all first-synthon libraries.
+    assert len(categorical.action_logits) == len(trainer.env.initial_action_space)
     assert all(s.sample_indices is None for s in trainer.env.initial_action_space)
     for group in categorical.action_logits:
         torch.testing.assert_close(group.logits[0], group.logits[1])
-    # Unary-only batches take the same sampling path, without block features or RNG.
+    # Unary-only batches take the same sampling path, without synthon features or RNG.
     draws.clear()
     before = trainer.rng.bit_generator.state
     unary = trainer.policy.forward(
@@ -564,7 +570,7 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
         beta=torch.ones(len([dead, initial])),
         preferences=torch.ones(len([dead, initial]), 1),
     )
-    assert choices[0] is None and choices[1].action_type == ActionType.FIRST_BLOCK
+    assert choices[0] is None and choices[1].action_type == ActionType.FIRST_SYNTHON
 
 
 def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypatch):
@@ -574,7 +580,7 @@ def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypa
         tiny_config(prepared_env, tmp_path / "index-actions"), QEDReward()
     )
     initial = trainer.env.initial_state()
-    observed = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
+    observed = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     constructed = []
 
     def record_action(*args, **kwargs):
@@ -620,7 +626,7 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     )
     state = trainer.env.initial_state()
     actions = [
-        Action(ActionType.FIRST_BLOCK, block_type="1", block_index=i) for i in (0, 1)
+        Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=i) for i in (0, 1)
     ]
     categorical = trainer.policy.forward(
         [state, state],
@@ -639,11 +645,11 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     )
     numerator = torch.stack(
         [
-            trainer.model.get_block_logits(
+            trainer.model.get_synthon_logits(
                 categorical.graph_emb[i : i + 1],
-                "first_block",
+                "first_synthon",
                 "1",
-                torch.tensor([a.block_index]),
+                torch.tensor([a.synthon_index]),
                 logit_scale=trainer.model.logit_scale(_condition(trainer.model, 1)),
             )[0]
             for i, a in enumerate(actions)
@@ -671,8 +677,7 @@ def test_sampler_loads_checkpoint_once_on_cpu(prepared_env, tmp_path, monkeypatc
     )
     checkpoint = trainer.save_checkpoint()
     assert (
-        checkpoint.read_bytes()
-        == (trainer.checkpoint_dir / "latest.ckpt").read_bytes()
+        checkpoint.read_bytes() == (trainer.checkpoint_dir / "latest.ckpt").read_bytes()
     )
     original = torch.load
     calls = []
@@ -695,13 +700,13 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     events, pending = [], []
     initial = trainer.env.initial_state()
     middle = State.from_smiles("[1*]N")
-    terminal = State.from_smiles("NC", reaction_count=1, terminated=True)
-    first = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
+    terminal = State.from_smiles("NC", num_reactions=1, terminated=True)
+    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     last = Action(
         ActionType.BI_REACTION,
-        reaction="amide_coupling_block_first",
-        block_type="3",
-        block_index=0,
+        reaction="amide_coupling_synthon_first",
+        synthon_type="3",
+        synthon_index=0,
     )
 
     def choose(states, *args):

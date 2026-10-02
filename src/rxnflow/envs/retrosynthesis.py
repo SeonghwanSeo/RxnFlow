@@ -26,9 +26,9 @@ class Worker:
     def __init__(self, env: SynthesisEnv):
         self.uni_reactions = env.uni_reactions
         self.bi_reactions = env.bi_reactions
-        self.block_search = {
-            block_type: {smiles: index for index, smiles in enumerate(library.smiles)}
-            for block_type, library in env.blocks.items()
+        self.synthon_search = {
+            synthon_type: {smiles: index for index, smiles in enumerate(library.smiles)}
+            for synthon_type, library in env.synthons.items()
         }
         self.brick_types = set(env.brick_types)
         self._memo: dict[tuple[str, int], list[BackwardTrajectory]] = {}
@@ -40,7 +40,7 @@ class Worker:
         max_reactions: int,
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
-        self._max_depth = max_reactions + 1  # Include FirstBlock.
+        self._max_depth = max_reactions + 1  # Include FirstSynthon.
         self._memo = {}
         mol = Chem.MolFromSmiles(smiles) if smiles else None
         if mol is None:
@@ -65,7 +65,7 @@ class Worker:
         # rediscovering their action/parent pair during this root search.
         branch_keys = {trajectory[0] for trajectory in trajectories}
 
-        # 2. Look for a direct FirstBlock origin by restoring the catalog marker.
+        # 2. Look for a direct FirstSynthon origin by restoring the catalog marker.
         signature = typed_dummy_isotopes(mol)
         if len(signature) == 1:
             site_type = signature[0]
@@ -74,14 +74,14 @@ class Worker:
                 if atom.GetAtomicNum() == 0:
                     atom.SetIsotope(0)
             brick_smiles = Chem.MolToSmiles(brick)
-            block_type = str(site_type)
-            if block_type in self.brick_types:
-                block_index = self.block_search[block_type].get(brick_smiles)
-                if block_index is not None:
+            synthon_type = str(site_type)
+            if synthon_type in self.brick_types:
+                synthon_index = self.synthon_search[synthon_type].get(brick_smiles)
+                if synthon_index is not None:
                     action = Action(
-                        ActionType.FIRST_BLOCK,
-                        block_type=block_type,
-                        block_index=block_index,
+                        ActionType.FIRST_SYNTHON,
+                        synthon_type=synthon_type,
+                        synthon_index=synthon_index,
                     )
                     if (action, "") not in branch_keys:
                         trajectories.append([(action, "")])
@@ -116,35 +116,35 @@ class Worker:
                         )
                         branch_keys.add((action, parent_smiles))
 
-            # 4. Reverse couplings, recover the oriented block, and find its row.
+            # 4. Reverse couplings, recover the oriented synthon, and find its row.
             for name, action in self.bi_reactions.items():
-                for child_mol, block_mol in action.run_reverse(mol):
+                for child_mol, synthon_mol in action.run_reverse(mol):
                     child_canonical = Chem.MolToSmiles(child_mol)
-                    block_canonical = Chem.MolToSmiles(block_mol)
+                    synthon_canonical = Chem.MolToSmiles(synthon_mol)
                     if typed_dummy_isotopes(child_mol) != (action.state_type,):
                         continue
                     # Reverse products carry the incoming isotope-0 attachment
                     # and (for linkers) the remaining type. Together with the
                     # reaction's incoming type this determines one library.
-                    block_sites = typed_dummy_isotopes(block_mol)
-                    if not block_sites or block_sites[0] != 0:
+                    synthon_sites = typed_dummy_isotopes(synthon_mol)
+                    if not synthon_sites or synthon_sites[0] != 0:
                         continue
-                    block_type = "-".join(map(str, (action.block_type, *block_sites[1:])))
-                    library = self.block_search.get(block_type)
+                    synthon_type = "-".join(map(str, (action.synthon_type, *synthon_sites[1:])))
+                    library = self.synthon_search.get(synthon_type)
                     if library is None:
                         continue
-                    block_index = library.get(block_canonical)
-                    if block_index is None:
+                    synthon_index = library.get(synthon_canonical)
+                    if synthon_index is None:
                         continue
                     reverse_action = Action(
                         ActionType.BI_REACTION,
                         reaction=name,
-                        block_type=block_type,
-                        block_index=block_index,
+                        synthon_type=synthon_type,
+                        synthon_index=synthon_index,
                     )
                     if (reverse_action, child_canonical) in branch_keys:
                         continue
-                    forward_product = action.run_forward(child_mol, block_mol)
+                    forward_product = action.run_forward(child_mol, synthon_mol)
                     if (
                         forward_product is None
                         or Chem.MolToSmiles(forward_product) != canonical

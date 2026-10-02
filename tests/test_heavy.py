@@ -53,7 +53,7 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
         pytest.skip("set RXNFLOW_ENV_DIR or RXNFLOW_ENAMINE_STOCK")
 
     env = SynthesisEnv(env_dir, max_atoms=50, retrosynthesis_workers=0)
-    assert env.bi_reactions and env.blocks and env.brick_types
+    assert env.bi_reactions and env.synthons and env.brick_types
     indices, _ = SubsamplingPolicy(
         1_000_000,
         0.01,

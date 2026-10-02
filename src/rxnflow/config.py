@@ -40,7 +40,7 @@ class DataConfig:
 
 @dataclass
 class SubsamplingConfig:
-    """Uniform building-block action-space sampling."""
+    """Uniform synthon action-space sampling."""
 
     sampling_ratio: float = 0.05
     min_sampling: int = 50
@@ -89,21 +89,21 @@ class ModelConfig:
     # Residual GINE width/depth; readout concatenates mean and virtual-node features.
     num_emb: int = 128
     num_layers: int = 4
-    num_block_emb: int = 128
+    num_synthon_emb: int = 128
     # Total Linear layers, including the output layer.
     num_mlp_layers: int = 2
-    num_mlp_layers_block: int = 2
+    num_mlp_layers_synthon: int = 2
     dropout: float = 0.0
 
     def validate(self) -> None:
         if self.num_emb <= 0 or self.num_layers <= 0:
             raise ValueError("model dimensions must be positive")
         if (
-            self.num_block_emb <= 0
+            self.num_synthon_emb <= 0
             or self.num_mlp_layers < 1
-            or self.num_mlp_layers_block < 1
+            or self.num_mlp_layers_synthon < 1
         ):
-            raise ValueError("invalid block dimension or MLP depth")
+            raise ValueError("invalid synthon dimension or MLP depth")
         if not 0 <= self.dropout < 1:
             raise ValueError("model.dropout must be in [0, 1)")
 
@@ -112,11 +112,18 @@ class ModelConfig:
 class GenerationConfig:
     """Dynamic synthesis trajectory limits."""
 
+    min_synthons: int = 2
+    max_synthons: int = 3
+    min_reactions: int = 1
     max_reactions: int = 3
 
     def validate(self) -> None:
-        if self.max_reactions < 1:
-            raise ValueError("generation.max_reactions must be at least 1")
+        if not 1 <= self.min_synthons <= self.max_synthons:
+            raise ValueError("generation requires 1 <= min_synthons <= max_synthons")
+        if not 1 <= self.min_reactions <= self.max_reactions:
+            raise ValueError("generation requires 1 <= min_reactions <= max_reactions")
+        if self.min_synthons > self.max_reactions + 1:
+            raise ValueError("min_synthons cannot be reached within max_reactions")
 
 
 @dataclass
@@ -126,14 +133,14 @@ class TrainingConfig:
     replay_batch_size: int = 64
     replay_capacity: int = 10_000
     learning_rate: float = 1e-4
-    log_z_learning_rate: float = 1e-1
+    log_z_learning_rate: float = 1e-3
     lr_decay_steps: float = 20_000
     weight_decay: float = 1e-8
     # Additional softmax temperature, separate from reward exponent beta.
     sampling_temperature: float = 1.0
     random_action_prob: float = 0.05
     ema_decay: float = 0.99
-    checkpoint_every: int = 100
+    checkpoint_every: int = 500
     log_every: int = 10
     retrosynthesis_workers: int = 4
 

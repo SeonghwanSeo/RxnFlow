@@ -91,12 +91,12 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
     )
     assert not torch.allclose(bond_embeddings[0], bond_embeddings[1])
 
-    block_type = env.brick_types[0]
-    indices = torch.arange(min(2, len(env.blocks[block_type])))
-    logits = model.get_block_logits(
+    synthon_type = env.brick_types[0]
+    indices = torch.arange(min(2, len(env.synthons[synthon_type])))
+    logits = model.get_synthon_logits(
         start_embedding,
-        "first_block",
-        block_type,
+        "first_synthon",
+        synthon_type,
         indices,
         logit_scale=model.logit_scale(_condition(model, 1)),
     )
@@ -116,15 +116,15 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
 
 
 def test_dummy_type_is_categorical_not_molecular_mass() -> None:
-    from rxnflow.envs.features import block_feature_row
+    from rxnflow.envs.features import synthon_feature_row
 
-    first, fingerprint_one, _ = block_feature_row("[1*]NCC")
-    protected, fingerprint_protected, _ = block_feature_row("[33*]NCC")
+    first, fingerprint_one, _ = synthon_feature_row("[1*]NCC")
+    protected, fingerprint_protected, _ = synthon_feature_row("[33*]NCC")
     assert np.array_equal(first, protected)
     # Typed labels still belong to the chemistry features used by the policy.
     assert not np.array_equal(fingerprint_one, fingerprint_protected)
 
-    fingerprints = [block_feature_row(f"[{site}*]CC")[1] for site in (0, 1, 2)]
+    fingerprints = [synthon_feature_row(f"[{site}*]CC")[1] for site in (0, 1, 2)]
     assert all(fp.dtype == np.uint8 and fp.nbytes == 678 for fp in fingerprints)
     assert len({fp[:512].tobytes() for fp in fingerprints}) == 3
 
@@ -133,7 +133,7 @@ def test_morgan_counts_saturate_before_uint8_conversion() -> None:
     from rdkit import Chem
     from rdkit.Chem import rdFingerprintGenerator
 
-    from rxnflow.envs.features import block_fingerprint
+    from rxnflow.envs.features import synthon_fingerprint
 
     # A deliberately long synthetic chain exercises counts above one byte.
     mol = Chem.MolFromSmiles("C" * 300)
@@ -143,13 +143,13 @@ def test_morgan_counts_saturate_before_uint8_conversion() -> None:
         .GetNonzeroElements()
     )
     assert max(raw.values()) > 255
-    fingerprint = block_fingerprint(mol)
+    fingerprint = synthon_fingerprint(mol)
     for index, count in raw.items():
         assert int(fingerprint[index]) == min(count, 255)
     assert set(fingerprint[512:]) <= {0, 1}
 
 
-def test_dot_scores_ignore_block_norm_and_train_both_action_scales(
+def test_dot_scores_ignore_synthon_norm_and_train_both_action_scales(
     prepared_env, monkeypatch
 ) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=20)
@@ -161,22 +161,22 @@ def test_dot_scores_ignore_block_norm_and_train_both_action_scales(
             len(GraphBatch.from_graphs([molecule_to_graph_data(None, 20, 0)]).node_mask),
         ),
     )
-    block_type = env.brick_types[0]
+    synthon_type = env.brick_types[0]
     indices = torch.arange(2)
-    blocks = torch.randn(2, model.emb_type.embedding_dim)
-    monkeypatch.setattr(model, "get_block_emb", lambda *args: blocks)
-    before = model.get_block_logits(
+    synthons = torch.randn(2, model.emb_type.embedding_dim)
+    monkeypatch.setattr(model, "get_synthon_emb", lambda *args: synthons)
+    before = model.get_synthon_logits(
         state,
-        "first_block",
-        block_type,
+        "first_synthon",
+        synthon_type,
         indices,
         logit_scale=model.logit_scale(_condition(model, 1)),
     )
-    blocks = blocks * torch.tensor([[0.1], [100.0]])
-    after = model.get_block_logits(
+    synthons = synthons * torch.tensor([[0.1], [100.0]])
+    after = model.get_synthon_logits(
         state,
-        "first_block",
-        block_type,
+        "first_synthon",
+        synthon_type,
         indices,
         logit_scale=model.logit_scale(_condition(model, 1)),
     )

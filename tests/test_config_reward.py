@@ -66,7 +66,12 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert saved["property_penalty"] == {"mw": 500.0}
     assert "property_limits" not in saved["data"]
     assert saved["training"]["learning_rate"] == 1e-4
-    assert saved["generation"] == {"max_reactions": 3}
+    assert saved["generation"] == {
+        "min_synthons": 2,
+        "max_synthons": 3,
+        "min_reactions": 1,
+        "max_reactions": 3,
+    }
 
     minimal = tmp_path / "minimal.yaml"
     minimal.write_text(
@@ -94,7 +99,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
         RewardConfig(beta=0).validate()
     with pytest.raises(ValueError):
         RewardConfig(floor=0).validate()
-    with pytest.raises(ValueError, match="at least"):
+    with pytest.raises(ValueError, match="min_reactions"):
         GenerationConfig(max_reactions=0).validate()
     with pytest.raises(ValueError, match="mapping"):
         RewardConfig(settings=[]).validate()  # type: ignore[arg-type]
@@ -237,7 +242,7 @@ def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
 
     from rxnflow.core.types import Action, ActionType, State, Transition
 
-    state = State.from_smiles("[1*]N[C@@H](C)C/C=C/C", reaction_count=1)
+    state = State.from_smiles("[1*]N[C@@H](C)C/C=C/C", num_reactions=1)
     trajectory = Trajectory(
         steps=[
             Transition(

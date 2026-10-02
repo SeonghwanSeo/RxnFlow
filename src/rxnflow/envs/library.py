@@ -1,4 +1,4 @@
-"""Aligned synthon building-block libraries."""
+"""Aligned synthon libraries."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 
 
 @dataclass
-class BlockLibrary:
-    block_type: str
+class SynthonLibrary:
+    synthon_type: str
     smiles: list[str]
     identifiers: list[list[str]]
     properties: NDArray[np.float32]
@@ -27,7 +27,7 @@ class BlockLibrary:
 
     @cached_property
     def site_types(self) -> tuple[int, ...]:
-        return tuple(int(value) for value in self.block_type.split("-"))
+        return tuple(int(value) for value in self.synthon_type.split("-"))
 
     @property
     def is_brick(self) -> bool:
@@ -44,9 +44,9 @@ class BlockLibrary:
             raise ValueError("heavy_atoms must be uint8; regenerate the environment")
         count = len(self.smiles)
         if count == 0:
-            raise ValueError(f"building-block type {self.block_type!r} is empty")
+            raise ValueError(f"synthon library {self.synthon_type!r} is empty")
         if len(self.identifiers) != count:
-            raise ValueError(f"identifier alignment failed for {self.block_type}")
+            raise ValueError(f"identifier alignment failed for {self.synthon_type}")
         expected = {
             "properties": (count, PROPERTY_DIM),
             "fingerprints": (count, FINGERPRINT_DIM),
@@ -56,7 +56,7 @@ class BlockLibrary:
             value = getattr(self, name)
             if tuple(value.shape) != shape:
                 raise ValueError(
-                    f"{self.block_type}.{name} has shape {tuple(value.shape)}, expected {shape}"
+                    f"{self.synthon_type}.{name} has shape {tuple(value.shape)}, expected {shape}"
                 )
         # Preparation validates molecules, attachment labels and feature values.
         # Runtime checks only schema/shape, without rescanning every feature or
@@ -84,25 +84,25 @@ def read_smiles_file(path: Path) -> tuple[list[str], list[list[str]]]:
     return smiles, identifiers
 
 
-def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
+def load_synthon_libraries(env_dir: Path) -> dict[str, SynthonLibrary]:
     """Load aligned NumPy features and source IDs without reparsing molecules."""
-    feature_path = env_dir / "bb_feature.npz"
-    block_dir = env_dir / "blocks"
-    if not feature_path.is_file() or not block_dir.is_dir():
+    feature_path = env_dir / "synthon_features.npz"
+    synthon_dir = env_dir / "synthons"
+    if not feature_path.is_file() or not synthon_dir.is_dir():
         raise FileNotFoundError(
-            "prepared environment requires blocks/*.smi and bb_feature.npz"
+            "prepared environment requires synthons/*.smi and synthon_features.npz"
         )
-    libraries: dict[str, BlockLibrary] = {}
+    libraries: dict[str, SynthonLibrary] = {}
     with np.load(feature_path) as arrays:
-        if arrays["format"].item() != "rxnflow-bb-feature":
+        if arrays["format"].item() != "rxnflow-synthon-feature":
             raise ValueError(
-                "unsupported bb_feature.npz format; regenerate the environment"
+                "unsupported synthon_features.npz format; regenerate the environment"
             )
-        files = sorted(block_dir.glob("*.smi"))
+        files = sorted(synthon_dir.glob("*.smi"))
         feature_types = {key.split("/")[0] for key in arrays.files if key != "format"}
         if {path.stem for path in files} != feature_types:
             raise ValueError(
-                "SMILES files and bb_feature.npz block types are not aligned"
+                "SMILES files and synthon_features.npz synthon types are not aligned"
             )
         for path in files:
             smiles, identifiers = read_smiles_file(path)
@@ -110,8 +110,8 @@ def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
             # invalidates features on reconversion. Avoid decompressing a second
             # full SMILES copy merely to compare trusted prepared rows.
             # Keep catalog data in NumPy. Only sampled model inputs become tensors.
-            library = BlockLibrary(
-                block_type=path.stem,
+            library = SynthonLibrary(
+                synthon_type=path.stem,
                 smiles=smiles,
                 identifiers=identifiers,
                 properties=arrays[f"{path.stem}/properties"],
@@ -121,5 +121,5 @@ def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
             library.validate()
             libraries[path.stem] = library
     if not libraries:
-        raise ValueError(f"no building-block libraries in {block_dir}")
+        raise ValueError(f"no synthon libraries in {synthon_dir}")
     return libraries

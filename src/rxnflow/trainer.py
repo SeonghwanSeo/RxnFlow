@@ -60,6 +60,9 @@ class RxnFlowTrainer:
             config.generation.max_reactions,
             config.training.retrosynthesis_workers,
             config.property_penalty,
+            min_synthons=config.generation.min_synthons,
+            max_synthons=config.generation.max_synthons,
+            min_reactions=config.generation.min_reactions,
         )
         self.model = RxnFlowModel(self.env, config.model, len(self.objectives)).to(
             self.device
@@ -394,7 +397,7 @@ class RxnFlowTrainer:
                     {value.final_smiles for value in fresh if value.valid}
                 )
                 / max(1, sum(value.valid for value in fresh)),
-                # Selected actions per generated trajectory, including FirstBlock
+                # Selected actions per generated trajectory, including FirstSynthon
                 # and a failed selected action. Empty action spaces add no step.
                 "traj_lens": sum(len(value.steps) for value in fresh) / len(fresh),
                 **reward_metrics,
@@ -412,19 +415,19 @@ class RxnFlowTrainer:
                     for transition in value.steps:
                         action = transition.action
                         # The first reaction's state already contains the initial brick.
-                        if action.action_type == ActionType.FIRST_BLOCK:
+                        if action.action_type == ActionType.FIRST_SYNTHON:
                             continue
-                        block_smiles = None
-                        if action.block_type is not None:
-                            assert action.block_index is not None
-                            block_smiles = self.env.blocks[action.block_type].smiles[
-                                action.block_index
+                        synthon_smiles = None
+                        if action.synthon_type is not None:
+                            assert action.synthon_index is not None
+                            synthon_smiles = self.env.synthons[action.synthon_type].smiles[
+                                action.synthon_index
                             ]
                         traj.append(
                             {
                                 "state": transition.state.smiles,
                                 "reaction": action.reaction,
-                                "block_smiles": block_smiles,
+                                "synthon_smiles": synthon_smiles,
                             }
                         )
                     sample = {

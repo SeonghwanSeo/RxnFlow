@@ -17,25 +17,28 @@ reward:
   floor: 0.0001
   settings: {}
 
-# Optional upper bounds on additive state + block property estimates.
+# Optional upper bounds on additive state + synthon property estimates.
 property_penalty: {}
 
-# Uniform sampling within each compatible synthon block library.
+# Uniform sampling within each compatible synthon synthon library.
 subsampling:
   sampling_ratio: 0.05
   min_sampling: 50
   importance_temp: 1.0
 
-# FirstBlock is excluded. The final allowed reaction must consume the last site.
+# FirstSynthon is excluded. The final allowed reaction must consume the last site.
 generation:
+  min_synthons: 2
+  max_synthons: 3
+  min_reactions: 1
   max_reactions: 3
 
 model:
   num_emb: 128
   num_layers: 4
-  num_block_emb: 128
+  num_synthon_emb: 128
   num_mlp_layers: 2  # Total Linear layers, including output.
-  num_mlp_layers_block: 2
+  num_mlp_layers_synthon: 2
   dropout: 0.0
 
 training:
@@ -44,12 +47,12 @@ training:
   replay_batch_size: 64
   replay_capacity: 10000
   learning_rate: 0.0001
-  log_z_learning_rate: 0.1
+  log_z_learning_rate: 0.001
   lr_decay_steps: 20000
   weight_decay: 0.00000001
   sampling_temperature: 1.0
   random_action_prob: 0.05
   ema_decay: 0.99
-  checkpoint_every: 100
+  checkpoint_every: 500
   log_every: 10
   retrosynthesis_workers: 4

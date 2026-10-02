@@ -42,29 +42,30 @@ class RxnFlowModel(nn.Module):
             num_emb=num_emb,
             num_layers=cfg.num_layers,
             max_reactions=env.max_reactions,
+            max_synthons=env.max_synthons,
         )
         # Mean pooling and the virtual node can have different scales.
         self.norm_mean = nn.LayerNorm(num_emb)
         self.norm_virtual = nn.LayerNorm(num_emb)
         self.emb_rxn = nn.Embedding(len(env.action_names), num_emb)
-        self.emb_type = nn.Embedding(len(env.block_types), cfg.num_block_emb)
+        self.emb_type = nn.Embedding(len(env.library_names), cfg.num_synthon_emb)
         # Project each feature, then normalize only in the fusion MLP.
-        # Properties are scaled before projection in block_embedding.
-        self.lin_fp = nn.Linear(FINGERPRINT_DIM, cfg.num_block_emb)
-        self.lin_prop = nn.Linear(PROPERTY_DIM, cfg.num_block_emb)
-        self.mlp_block = mlp(
-            cfg.num_block_emb * 3,
-            cfg.num_block_emb,
-            cfg.num_block_emb,
-            cfg.num_mlp_layers_block,
+        # Properties are scaled before projection in synthon_embedding.
+        self.lin_fp = nn.Linear(FINGERPRINT_DIM, cfg.num_synthon_emb)
+        self.lin_prop = nn.Linear(PROPERTY_DIM, cfg.num_synthon_emb)
+        self.mlp_synthon = mlp(
+            cfg.num_synthon_emb * 3,
+            cfg.num_synthon_emb,
+            cfg.num_synthon_emb,
+            cfg.num_mlp_layers_synthon,
             layernorm=True,
         )
         # Concatenate the 2H state and H reaction embeddings. Each head learns
         # their joint projection while the graph encoding is shared by reactions.
-        self.mlp_firstblock = mlp(
+        self.mlp_firstsynthon = mlp(
             3 * num_emb,
             num_emb,
-            cfg.num_block_emb,
+            cfg.num_synthon_emb,
             cfg.num_mlp_layers,
             layernorm=True,
             dropout=cfg.dropout,
@@ -72,7 +73,7 @@ class RxnFlowModel(nn.Module):
         self.mlp_birxn = mlp(
             3 * num_emb,
             num_emb,
-            cfg.num_block_emb,
+            cfg.num_synthon_emb,
             cfg.num_mlp_layers,
             layernorm=True,
             dropout=cfg.dropout,
@@ -136,31 +137,31 @@ class RxnFlowModel(nn.Module):
     ) -> torch.Tensor:
         return self.forward_mdp(graph_emb, action_name, logit_scale)[0, 0]
 
-    def get_block_emb(
-        self, block_type: str, indices: torch.Tensor, device: torch.device
+    def get_synthon_emb(
+        self, synthon_type: str, indices: torch.Tensor, device: torch.device
     ) -> torch.Tensor:
-        library = self.env.blocks[block_type]
+        library = self.env.synthons[synthon_type]
         cpu_indices = indices.detach().cpu().to(torch.long).numpy()
         fp = torch.from_numpy(library.fingerprints[cpu_indices]).to(
             device, dtype=torch.float32
         )
         prop = torch.from_numpy(library.properties[cpu_indices]).to(device)
-        type_index = self.env.block_type_to_index[block_type]
-        block_types = torch.full(
+        type_index = self.env.library_to_index[synthon_type]
+        synthon_types = torch.full(
             (len(indices),), type_index, dtype=torch.long, device=device
         )
-        return self.block_embedding(fp, prop, block_types)
+        return self.synthon_embedding(fp, prop, synthon_types)
 
-    def block_embedding(
-        self, fp: torch.Tensor, prop: torch.Tensor, block_types: torch.Tensor
+    def synthon_embedding(
+        self, fp: torch.Tensor, prop: torch.Tensor, synthon_types: torch.Tensor
     ) -> torch.Tensor:
         prop = prop / self.property_scale
-        return self.mlp_block(
+        return self.mlp_synthon(
             torch.cat(
                 [
                     self.lin_fp(fp),
                     self.lin_prop(prop),
-                    self.emb_type(block_types),
+                    self.emb_type(synthon_types),
                 ],
                 dim=-1,
             )
@@ -169,28 +170,28 @@ class RxnFlowModel(nn.Module):
     def forward_mdp(
         self, graph_emb: torch.Tensor, action_name: str, logit_scale: torch.Tensor
     ) -> torch.Tensor:
-        """Return a block-query vector or unary logit for one reaction and batch."""
+        """Return a synthon-query vector or unary logit for one reaction and batch."""
         # Add reaction identity after graph encoding so all reactions share the GNN.
         index = self.env.action_to_index[action_name]
         rxn_emb = self.emb_rxn.weight[index].expand(graph_emb.shape[0], -1)
         state_rxn_emb = torch.cat([graph_emb, rxn_emb], dim=-1)
-        if action_name == "first_block":
-            head = self.mlp_firstblock
+        if action_name == "first_synthon":
+            head = self.mlp_firstsynthon
         elif action_name in self.env.uni_reactions:
             head = self.mlp_unirxn
         else:
             head = self.mlp_birxn
         return head(state_rxn_emb) * logit_scale[:, None]
 
-    def get_block_logits(
+    def get_synthon_logits(
         self,
         graph_emb: torch.Tensor,
         action_name: str,
-        block_type: str,
+        synthon_type: str,
         indices: torch.Tensor,
         logit_scale: torch.Tensor,
     ) -> torch.Tensor:
         assert indices.ndim == 1 and graph_emb.shape[0] == 1
         state_emb = self.forward_mdp(graph_emb, action_name, logit_scale)
-        block_emb = self.get_block_emb(block_type, indices, graph_emb.device)
-        return F.normalize(block_emb, dim=-1) @ state_emb.squeeze(0)
+        synthon_emb = self.get_synthon_emb(synthon_type, indices, graph_emb.device)
+        return F.normalize(synthon_emb, dim=-1) @ state_emb.squeeze(0)

@@ -26,7 +26,7 @@ class UnexpectedUnaryReaction:
 @pytest.fixture
 def policy(prepared_env):
     env = SynthesisEnv(prepared_env)
-    config = Config(model=ModelConfig(num_emb=8, num_layers=1, num_block_emb=8))
+    config = Config(model=ModelConfig(num_emb=8, num_layers=1, num_synthon_emb=8))
     model = RxnFlowModel(env, config.model, num_objectives=1)
     return RxnFlowPolicy(
         env, model, config, torch.device("cpu"), np.random.default_rng(0)
@@ -36,7 +36,7 @@ def policy(prepared_env):
 def test_depth_weighted_backward_probability(policy) -> None:
     selected = Action(ActionType.UNI_REACTION, reaction="selected")
     alternative = Action(ActionType.UNI_REACTION, reaction="alternative")
-    first = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
+    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     routes = [
         [(selected, "one"), (first, "")],
         [(selected, "one"), (alternative, "two"), (first, "")],
@@ -56,12 +56,12 @@ def test_known_routes_are_preserved_and_reaction_budget_bounds_dfs() -> None:
     env = SimpleNamespace(
         uni_reactions={"unexpected": UnexpectedUnaryReaction()},
         bi_reactions={},
-        blocks={"1": SimpleNamespace(smiles=["*C"])},
+        synthons={"1": SimpleNamespace(smiles=["*C"])},
         brick_types=["1"],
     )
     analyzer = Worker(env)
     routes = analyzer.run(brick, max_reactions=0)
-    first = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
+    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     assert routes == [[(first, "")]]
     # Seeding an already discoverable branch must not duplicate its mass.
     assert analyzer.run(brick, max_reactions=0, known_trajectories=routes) == routes
@@ -69,7 +69,7 @@ def test_known_routes_are_preserved_and_reaction_budget_bounds_dfs() -> None:
     generated = Action(ActionType.UNI_REACTION, reaction="generated")
     known = [[(generated, brick), *route] for route in routes]
     empty_env = SimpleNamespace(
-        uni_reactions={}, bi_reactions={}, blocks={}, brick_types=[]
+        uni_reactions={}, bi_reactions={}, synthons={}, brick_types=[]
     )
     worker = Worker(empty_env)
     assert worker.run("CC", max_reactions=2, known_trajectories=known) == known
@@ -90,15 +90,15 @@ def test_reverse_search_finds_catalog_match_after_second_decomposition() -> None
     env = SimpleNamespace(
         uni_reactions={},
         bi_reactions={"join": reaction},
-        blocks={name: SimpleNamespace(smiles=["*CCC"]) for name in ("1", "2")},
+        synthons={name: SimpleNamespace(smiles=["*CCC"]) for name in ("1", "2")},
         brick_types=["1", "2"],
     )
     routes = Worker(env).run("CCCCCC", max_reactions=1)
     assert len(routes) == 1
     action, parent = routes[0][0]
-    assert action.block_type == "2" and parent == "[1*]CCC"
+    assert action.synthon_type == "2" and parent == "[1*]CCC"
     assert routes[0][-1] == (
-        Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0),
+        Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0),
         "",
     )
 
@@ -115,22 +115,22 @@ def test_short_route_does_not_hide_longer_route_within_budget() -> None:
     env = SimpleNamespace(
         uni_reactions={"close": close, "activate": activate},
         bi_reactions={},
-        blocks={name: SimpleNamespace(smiles=["*CC"]) for name in ("1", "33")},
+        synthons={name: SimpleNamespace(smiles=["*CC"]) for name in ("1", "33")},
         brick_types=["1", "33"],
     )
     analyzer = Worker(env)
     assert [len(route) for route in analyzer.run("CC", max_reactions=1)] == [2]
     routes = analyzer.run("CC", max_reactions=2)
     assert sorted(map(len, routes)) == [2, 3]
-    assert all(route[-1][0].action_type == ActionType.FIRST_BLOCK for route in routes)
+    assert all(route[-1][0].action_type == ActionType.FIRST_SYNTHON for route in routes)
     assert all(route[-1][1] == "" for route in routes)
 
 
 @pytest.mark.parametrize("workers", [0, 2])
 def test_worker_queue_collects_multiple_submissions(workers) -> None:
-    env = SimpleNamespace(uni_reactions={}, bi_reactions={}, blocks={}, brick_types=[])
+    env = SimpleNamespace(uni_reactions={}, bi_reactions={}, synthons={}, brick_types=[])
     analyzer = RetroSynthesisAnalyzer(env, workers=workers)
-    action = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
+    action = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     known = [[(action, "")]]
     try:
         analyzer.submit(3, "CC", 0, known)
@@ -146,7 +146,7 @@ def test_same_action_from_different_parents_has_distinct_backward_probability(
     policy,
 ) -> None:
     action = Action(ActionType.UNI_REACTION, reaction="conversion")
-    first = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
+    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     routes = [
         [(action, "first"), (first, "")],
         [(action, "second"), (first, "")],

@@ -53,14 +53,18 @@ class MPNN(nn.Module):
         num_emb,
         num_layers,
         max_reactions,
+        max_synthons,
     ):
         super().__init__()
         self.max_reactions = max_reactions
+        self.max_synthons = max_synthons
         self.x2h = mlp(x_dim, num_emb, num_emb, 2)
         self.e2h = mlp(e_dim, num_emb, num_emb, 2)
         # Environment-specific graph condition: properties, remaining capacity,
-        # reaction count. These enter message passing through the virtual node.
-        self.c2h = mlp(g_dim + 1 + max_reactions + 1, num_emb, num_emb, 2)
+        # synthon/reaction counts. These enter message passing through the virtual node.
+        self.c2h = mlp(
+            g_dim + 1 + max_reactions + 1 + max_synthons + 1, num_emb, num_emb, 2
+        )
         self.layers = nn.ModuleList([GINELayer(num_emb) for _ in range(num_layers)])
 
     def forward(self, batch: GraphBatch, cond_info: torch.Tensor) -> torch.Tensor:
@@ -70,8 +74,9 @@ class MPNN(nn.Module):
             torch.cat(
                 [
                     batch.mol_features,
+                    F.one_hot(batch.num_synthons, self.max_synthons + 1).to(node_emb.dtype),
                     batch.remaining_capacity[:, None],
-                    F.one_hot(batch.reaction_count, self.max_reactions + 1).to(
+                    F.one_hot(batch.num_reactions, self.max_reactions + 1).to(
                         node_emb.dtype
                     ),
                 ],

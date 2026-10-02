@@ -12,7 +12,7 @@ from rdkit import Chem
 
 
 class ActionType(IntEnum):
-    FIRST_BLOCK = 0
+    FIRST_SYNTHON = 0
     UNI_REACTION = 1
     BI_REACTION = 2
 
@@ -27,8 +27,9 @@ class State:
     """
 
     mol: Chem.Mol | None = field(default=None, repr=False)
-    reaction_count: int = 0
+    num_reactions: int = 0
     terminated: bool = False
+    num_synthons: int = 0
 
     @cached_property
     def smiles(self) -> str:
@@ -36,17 +37,22 @@ class State:
 
     @classmethod
     def from_smiles(
-        cls, smiles: str, reaction_count: int = 0, terminated: bool = False
+        cls,
+        smiles: str,
+        num_reactions: int = 0,
+        terminated: bool = False,
+        num_synthons: int = 1,
     ) -> State:
         mol = Chem.MolFromSmiles(smiles) if smiles else None
         if smiles and mol is None:
             raise ValueError(f"invalid state SMILES: {smiles}")
-        return cls(mol, reaction_count, terminated)
+        return cls(mol, num_reactions, terminated, num_synthons if mol is not None else 0)
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "smiles": self.smiles,
-            "reaction_count": self.reaction_count,
+            "num_reactions": self.num_reactions,
+            "num_synthons": self.num_synthons,
             "terminated": self.terminated,
         }
 
@@ -61,15 +67,15 @@ class Action:
 
     action_type: ActionType
     reaction: str | None = None
-    block_type: str | None = None
-    block_index: int | None = None
+    synthon_type: str | None = None
+    synthon_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "action_type": self.action_type.name,
             "reaction": self.reaction,
-            "block_type": self.block_type,
-            "block_index": self.block_index,
+            "synthon_type": self.synthon_type,
+            "synthon_index": self.synthon_index,
         }
 
     @classmethod
@@ -80,7 +86,7 @@ class Action:
 
 
 # Reverse-ordered edges: (forward action, parent SMILES), ending at the empty
-# state's SMILES "" through FirstBlock. The number of entries is the route length.
+# state's SMILES "" through FirstSynthon. The number of entries is the route length.
 BackwardTrajectory = list[tuple[Action, str]]
 
 
@@ -90,7 +96,7 @@ class ActionSubspace:
 
     A unary reaction uses library=None and has one action. num_actions is the
     full library size; sample_indices=None selects that full range. A sampled
-    subspace holds one array mapping columns back to original block indices.
+    subspace holds one array mapping columns back to original synthon indices.
     """
 
     name: tuple[str, str | None]
@@ -100,18 +106,18 @@ class ActionSubspace:
 
     def action_at(self, column: int) -> Action:
         reaction, library = self.name
-        block_index = None
+        synthon_index = None
         if library is not None:
-            block_index = (
+            synthon_index = (
                 column
                 if self.sample_indices is None
                 else int(self.sample_indices[column])
             )
         return Action(
             self.action_type,
-            reaction=None if self.action_type == ActionType.FIRST_BLOCK else reaction,
-            block_type=library,
-            block_index=block_index,
+            reaction=None if self.action_type == ActionType.FIRST_SYNTHON else reaction,
+            synthon_type=library,
+            synthon_index=synthon_index,
         )
 
 

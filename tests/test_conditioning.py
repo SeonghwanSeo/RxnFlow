@@ -44,7 +44,7 @@ def config_for(env_dir, output_dir):
     return Config(
         data=DataConfig(env_dir=str(env_dir), max_atoms=20),
         reward=RewardConfig(beta=("uniform", [4.0, 128.0])),
-        model=ModelConfig(num_emb=16, num_layers=1, num_block_emb=16),
+        model=ModelConfig(num_emb=16, num_layers=1, num_synthon_emb=16),
         training=TrainingConfig(
             batch_size=4,
             replay_batch_size=4,
@@ -147,7 +147,7 @@ def test_tb_uses_stored_conditions_and_objective_vector(
     trainer = RxnFlowTrainer(
         config_for(prepared_env, tmp_path / "tb"), TwoObjectiveReward()
     )
-    transition = Transition(State(), Action(ActionType.FIRST_BLOCK), "CC", -0.5)
+    transition = Transition(State(), Action(ActionType.FIRST_SYNTHON), "CC", -0.5)
     trajectories = [
         Trajectory(
             [transition, transition],

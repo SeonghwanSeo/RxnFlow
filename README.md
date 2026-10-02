@@ -20,7 +20,7 @@ pip install -e .
 
 RxnFlow uses PyTorch and RDKit. Training and sampling support CPU and CUDA; GPU execution requires a CUDA-enabled PyTorch installation.
 
-## Prepare a building-block library
+## Prepare synthon libraries
 
 Provide an Enamine building-block file with one `SMILES<TAB>ID` record per line:
 
@@ -40,7 +40,7 @@ python scripts/prepare.py \
   --min-library-size 10
 ```
 
-Use a new output directory. Preparation removes salts, excludes source building blocks above 50 heavy atoms, and creates synthon libraries with precomputed features. `--min-library-size` keeps libraries with at least that many distinct synthons; use `1` for small trial datasets. Building-block source IDs are retained for tracing generated synthesis paths. Preparation also writes `action_space.json` with action-space pairs and `signature.json` with the environment identity and the RxnFlow version used to prepare it. Keep the prepared files together and regenerate them after changing templates or building blocks; environments without these files must be regenerated.
+Use a new output directory. Preparation removes salts, excludes source building blocks above 50 heavy atoms, and creates synthon libraries in `synthons/*.smi` with precomputed features in `synthon_features.npz`. `--min-library-size` keeps libraries with at least that many distinct synthons; use `1` for small trial datasets. Building-block source IDs are retained for tracing generated synthesis paths. Preparation also writes `action_space.json` with action-space pairs and `signature.json` with the environment identity and the RxnFlow version used to prepare it. Keep the prepared files together and regenerate them after changing templates or building blocks; environments without these files must be regenerated.
 
 ## Train
 
@@ -63,6 +63,9 @@ property_penalty:
   mw: 500
 
 generation:
+  min_synthons: 2
+  max_synthons: 3
+  min_reactions: 1
   max_reactions: 3
 
 training:
@@ -77,9 +80,9 @@ Run the [QED example](examples/qed.py):
 python examples/qed.py --config configs/qed.yaml
 ```
 
-`device: auto` selects CUDA when available. `max_reactions` counts chemical reactions after the initial building block. `property_penalty` limits additive state-plus-block property estimates during action selection; it does not guarantee exact final-product property bounds. Add `hba: 10` and `hbd: 5` alongside `mw: 500` for those additional constraints.
+`device: auto` selects CUDA when available. `min_synthons`/`max_synthons` bound the number of selected synthons, including FirstSynthon. `min_reactions`/`max_reactions` count chemical reactions after FirstSynthon; deprotection consumes a reaction but no synthon. State tracks `num_synthons` and `num_reactions`. Action spaces retain only type-level paths that can terminate within both bounds, then apply molecular property masks. `property_penalty` limits additive state-plus-synthon property estimates during action selection; it does not guarantee exact final-product property bounds. Add `hba: 10` and `hbd: 5` alongside `mw: 500` for those additional constraints.
 
-The output directory contains `checkpoints/`, per-update metrics in `training.jsonl`, and fresh trajectories in `samples/step_XXXXXX.jsonl` (one file per update and one trajectory per line, including invalid attempts). Each sample contains final SMILES, rewards, conditions, validity, and a compact `traj`: each entry records the pre-action state SMILES, reaction template name, and oriented block SMILES (`null` for unary reactions). FirstBlock is omitted; the first reaction's state contains the initial brick. Resume with the same configuration and prepared environment:
+The output directory contains `checkpoints/`, per-update metrics in `training.jsonl`, and fresh trajectories in `samples/step_XXXXXX.jsonl` (one file per update and one trajectory per line, including invalid attempts). Each sample contains final SMILES, rewards, conditions, validity, and a compact `traj`: each entry records the pre-action state SMILES, reaction template name, and oriented synthon SMILES (`null` for unary reactions). FirstSynthon is omitted; the first reaction's state contains the initial brick. Resume with the same configuration and prepared environment:
 
 ```bash
 python examples/qed.py \

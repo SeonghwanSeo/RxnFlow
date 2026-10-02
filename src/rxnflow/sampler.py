@@ -50,6 +50,9 @@ class RxnFlowSampler:
             config.generation.max_reactions,
             0,
             config.property_penalty,
+            min_synthons=config.generation.min_synthons,
+            max_synthons=config.generation.max_synthons,
+            min_reactions=config.generation.min_reactions,
         )
         if payload["environment"] != self.env.signature:
             raise ValueError(

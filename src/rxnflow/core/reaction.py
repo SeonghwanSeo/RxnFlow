@@ -60,7 +60,7 @@ class Reaction:
     def run_forward(self, *reactants: Chem.Mol) -> Chem.Mol | None:
         """Return the unique connected product, or None for an infeasible match.
 
-        Incoming block orientation fixes the attachment site. Symmetry-related
+        Incoming synthon orientation fixes the attachment site. Symmetry-related
         matches are deduplicated by _run; distinct products indicate a template
         ambiguity and must not be resolved by silently picking the first one.
         """
@@ -77,7 +77,7 @@ class Reaction:
 
     def run_reverse(self, product: Chem.Mol) -> list[tuple[Chem.Mol, ...]]:
         # _run already enumerates and deduplicates every RDKit match. Truncating
-        # here can discard the only decomposition whose block is in the catalog.
+        # here can discard the only decomposition whose synthon is in the catalog.
         return _run(self.reverse_reaction, (product,))
 
 
@@ -122,10 +122,10 @@ class UniReaction(Reaction):
 
 
 class BiReaction(Reaction):
-    """A bimolecular template oriented as (state, incoming building block).
+    """A bimolecular template oriented as (state, incoming synthon).
 
-    The incoming block's unique isotope-0 dummy fixes its attachment site.
-    Its chemical type is carried by the library key and ``block_type``. The
+    The incoming synthon's unique isotope-0 dummy fixes its attachment site.
+    Its chemical type is carried by the library key and ``synthon_type``. The
     reverse template recreates that marker so catalog lookup preserves direction.
     """
 
@@ -134,12 +134,12 @@ class BiReaction(Reaction):
         name: str,
         forward: str,
         reverse: str,
-        block_types: tuple[int, int],
-        block_first: bool = False,
+        synthon_types: tuple[int, int],
+        synthon_first: bool = False,
     ) -> None:
         super().__init__(name, forward, reverse)
-        self.block_types = block_types
-        self.block_first = block_first
+        self.synthon_types = synthon_types
+        self.synthon_first = synthon_first
         if (
             self.forward_reaction.GetNumReactantTemplates() != 2
             or self.forward_reaction.GetNumProductTemplates() != 1
@@ -147,18 +147,18 @@ class BiReaction(Reaction):
             or self.reverse_reaction.GetNumProductTemplates() != 2
         ):
             raise ValueError(f"invalid bimolecular reaction shape: {self.name}")
-        if len(self.block_types) != 2 or any(value <= 0 for value in self.block_types):
-            raise ValueError(f"invalid block types for reaction {self.name}")
+        if len(self.synthon_types) != 2 or any(value <= 0 for value in self.synthon_types):
+            raise ValueError(f"invalid synthon types for reaction {self.name}")
 
-        # Reorder both directions into (state, block), then change the block's
+        # Reorder both directions into (state, synthon), then change the synthon's
         # attachment query to isotope 0 while retaining the state's typed query.
-        state_position, block_position = (1, 0) if self.block_first else (0, 1)
+        state_position, synthon_position = (1, 0) if self.synthon_first else (0, 1)
         forward = ChemicalReaction()
         reverse = ChemicalReaction()
-        for position in (state_position, block_position):
+        for position in (state_position, synthon_position):
             reactant = Chem.Mol(self.forward_reaction.GetReactantTemplate(position))
             product = Chem.Mol(self.reverse_reaction.GetProductTemplate(position))
-            if position == block_position:
+            if position == synthon_position:
                 for atom in reactant.GetAtoms():
                     if atom.GetAtomicNum() == 0 and atom.GetIsotope() > 0:
                         # [0#0] matches only the attachment marker, not a typed
@@ -178,11 +178,11 @@ class BiReaction(Reaction):
 
     @property
     def state_type(self) -> int:
-        return self.block_types[int(self.block_first)]
+        return self.synthon_types[int(self.synthon_first)]
 
     @property
-    def block_type(self) -> int:
-        return self.block_types[int(not self.block_first)]
+    def synthon_type(self) -> int:
+        return self.synthon_types[int(not self.synthon_first)]
 
 
 def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReaction]]:
@@ -199,15 +199,15 @@ def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReac
     bi = {}
     for name, value in raw["BiReaction"].items():
         # Compile each permitted direction with the state first and incoming
-        # block second, so runtime execution always uses the same argument order.
-        for block_first in [False, True] if value["ordered"] else [False]:
-            direction = "block_first" if block_first else "state_first"
+        # synthon second, so runtime execution always uses the same argument order.
+        for synthon_first in [False, True] if value["ordered"] else [False]:
+            direction = "synthon_first" if synthon_first else "state_first"
             oriented_name = f"{name}_{direction}"
             bi[oriented_name] = BiReaction(
                 name=oriented_name,
                 forward=value["forward"],
                 reverse=value["reverse"],
-                block_types=tuple(value["block_types"]),
-                block_first=block_first,
+                synthon_types=tuple(value["synthon_types"]),
+                synthon_first=synthon_first,
             )
     return uni, bi

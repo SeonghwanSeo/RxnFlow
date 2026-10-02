@@ -28,7 +28,7 @@ from rxnflow.core.synthon import (
 from rxnflow.envs.features import (
     FINGERPRINT_DIM,
     PROPERTY_DIM,
-    block_feature_row,
+    synthon_feature_row,
 )
 
 ALLOWED_ATOMIC_NUMBERS = {5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53, 85}
@@ -130,7 +130,7 @@ def _convert_batch(
     """Convert a source batch into oriented synthons with merged source IDs."""
     # 1. Reuse compiled conversions and collect one-handle products.
     conversions = _conversion_templates(tuple(specs))
-    blocks: dict[str, dict[str, set[str]]] = {}
+    synthons: dict[str, dict[str, set[str]]] = {}
     bricks: dict[int, dict[str, tuple[Chem.Mol, set[str]]]] = {
         spec.type: {} for spec in specs
     }
@@ -140,11 +140,11 @@ def _convert_batch(
         mol = Chem.MolFromSmiles(smiles)
         assert mol is not None
         for conversion in conversions:
-            block_type = conversion.spec.type
+            synthon_type = conversion.spec.type
             for product, product_mol in conversion.run_mol(mol).items():
-                if typed_dummy_isotopes(product_mol) != (block_type,):
+                if typed_dummy_isotopes(product_mol) != (synthon_type,):
                     continue
-                bricks[block_type].setdefault(product, (product_mol, set()))[1].add(
+                bricks[synthon_type].setdefault(product, (product_mol, set()))[1].add(
                     identifier
                 )
 
@@ -168,29 +168,29 @@ def _convert_batch(
                     for site, other in (sites, sites[::-1]):
                         oriented = Chem.Mol(product_mol)
                         attachment = oriented.GetAtomWithIdx(site)
-                        block_type = (
+                        synthon_type = (
                             f"{attachment.GetIsotope()}-"
                             f"{oriented.GetAtomWithIdx(other).GetIsotope()}"
                         )
                         attachment.SetIsotope(0)
                         smiles = Chem.MolToSmiles(oriented)
-                        blocks.setdefault(block_type, {}).setdefault(
+                        synthons.setdefault(synthon_type, {}).setdefault(
                             smiles, set()
                         ).update(identifiers)
 
     # 3. Store bricks with the same isotope-0 attachment marker as linkers.
-    # FirstBlock restores its chemical type from the library key.
-    for block_type, values in bricks.items():
-        key = str(block_type)
+    # FirstSynthon restores its chemical type from the library key.
+    for synthon_type, values in bricks.items():
+        key = str(synthon_type)
         for original, identifiers in values.values():
             mol = Chem.Mol(original)
             for atom in mol.GetAtoms():
                 if atom.GetAtomicNum() == 0:
                     atom.SetIsotope(0)
             smiles = Chem.MolToSmiles(mol)
-            blocks.setdefault(key, {}).setdefault(smiles, set()).update(identifiers)
+            synthons.setdefault(key, {}).setdefault(smiles, set()).update(identifiers)
 
-    return blocks
+    return synthons
 
 
 def convert_stage(
@@ -217,7 +217,7 @@ def convert_stage(
 
     specs = load_synthon_specs(template_path / "synthon.yaml")
     records = _read_enamine(source_path)
-    blocks: dict[str, dict[str, set[str]]] = {}
+    synthons: dict[str, dict[str, set[str]]] = {}
     sources: dict[str, str] = {}
 
     for smiles, identifier in records:
@@ -237,8 +237,8 @@ def convert_stage(
             pool.imap(convert, batches) if pool is not None else map(convert, batches)
         )
         for result in results:
-            for block_type, values in result.items():
-                target = blocks.setdefault(block_type, {})
+            for synthon_type, values in result.items():
+                target = synthons.setdefault(synthon_type, {})
                 for smiles, identifiers in values.items():
                     target.setdefault(smiles, set()).update(identifiers)
 
@@ -247,32 +247,32 @@ def convert_stage(
     # IDs and repeated source rows do not increase a library's size.
     excluded_counts = {
         name: len(values)
-        for name, values in blocks.items()
+        for name, values in synthons.items()
         if len(values) < min_library_size
     }
-    if len(excluded_counts) == len(blocks):
-        raise ValueError("no block libraries meet min_library_size")
+    if len(excluded_counts) == len(synthons):
+        raise ValueError("no synthon libraries meet min_library_size")
 
     # 4. Write sorted library rows, source provenance, and the active templates.
     env_path.mkdir(parents=True, exist_ok=True)
     (env_path / "signature.json").unlink(missing_ok=True)
     (env_path / "action_space.json").unlink(missing_ok=True)
-    block_dir = env_path / "blocks"
-    block_dir.mkdir(exist_ok=True)
-    for old in block_dir.glob("*.smi"):
+    synthon_dir = env_path / "synthons"
+    synthon_dir.mkdir(exist_ok=True)
+    for old in synthon_dir.glob("*.smi"):
         old.unlink()
     counts: dict[str, int] = {}
-    for block_type, values in sorted(blocks.items()):
+    for synthon_type, values in sorted(synthons.items()):
         if len(values) < min_library_size:
             continue
-        output = block_dir / f"{block_type}.smi"
+        output = synthon_dir / f"{synthon_type}.smi"
         temporary = output.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as handle:
             for smiles in sorted(values):
                 identifiers = json.dumps(sorted(values[smiles]))
                 handle.write(f"{smiles}\t{identifiers}\n")
         temporary.replace(output)
-        counts[block_type] = len(values)
+        counts[synthon_type] = len(values)
     # One source record can map to many synthons, and identical synthons may
     # have several suppliers' IDs. Keep this provenance outside the MDP state.
     (env_path / "building_blocks.json").write_text(
@@ -282,17 +282,17 @@ def convert_stage(
     shutil.copyfile(template_path / "reaction.yaml", env_path / "reaction.yaml")
 
     # 5. Invalidate features because the library row indices may have changed.
-    (env_path / "bb_feature.npz").unlink(missing_ok=True)
+    (env_path / "synthon_features.npz").unlink(missing_ok=True)
     manifest = {"format": MANIFEST_FORMAT, "stages": {}}
     (env_path / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
     _complete_stage(
         env_path,
         "convert",
         {
-            "block_counts": counts,
+            "synthon_counts": counts,
             "max_bb_atoms": MAX_BB_ATOMS,
             "min_library_size": min_library_size,
-            "excluded_block_counts": excluded_counts,
+            "excluded_synthon_counts": excluded_counts,
         },
     )
 
@@ -303,17 +303,17 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     if num_workers < 1:
         raise ValueError("num_workers must be at least 1")
     env_path = Path(env_dir)
-    block_dir = env_path / "blocks"
-    if not block_dir.is_dir():
-        raise FileNotFoundError(block_dir)
-    files = sorted(block_dir.glob("*.smi"))
+    synthon_dir = env_path / "synthons"
+    if not synthon_dir.is_dir():
+        raise FileNotFoundError(synthon_dir)
+    files = sorted(synthon_dir.glob("*.smi"))
     if not files:
-        raise ValueError(f"no .smi files in {block_dir}")
+        raise ValueError(f"no .smi files in {synthon_dir}")
     # The signature and action space must never outlive an interrupted feature rebuild.
     (env_path / "signature.json").unlink(missing_ok=True)
     (env_path / "action_space.json").unlink(missing_ok=True)
     counts: dict[str, int] = {}
-    output = env_path / "bb_feature.npz"
+    output = env_path / "synthon_features.npz"
     temporary = output.with_suffix(".tmp")
     context = get_context("spawn").Pool(num_workers) if num_workers > 1 else nullcontext()
     # 2. Calculate rows and stream one library at a time into the NPZ archive.
@@ -322,21 +322,21 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     with context as pool, ZipFile(temporary, "w", compression=ZIP_DEFLATED) as archive:
         with archive.open("format.npy", "w") as entry:
             np.lib.format.write_array(
-                entry, np.array("rxnflow-bb-feature"), allow_pickle=False
+                entry, np.array("rxnflow-synthon-feature"), allow_pickle=False
             )
         for path in files:
             smiles = _read_prepared_smiles(path)
             count = len(smiles)
             counts[path.stem] = count
             if not count:
-                raise ValueError(f"empty building-block file: {path}")
+                raise ValueError(f"empty synthon file: {path}")
             properties = np.empty((count, PROPERTY_DIM), dtype=np.float32)
             fingerprints = np.empty((count, FINGERPRINT_DIM), dtype=np.uint8)
             heavy_atoms = np.empty(count, dtype=np.uint8)
             rows = (
-                pool.imap(block_feature_row, smiles, chunksize=256)
+                pool.imap(synthon_feature_row, smiles, chunksize=256)
                 if pool is not None
-                else map(block_feature_row, smiles)
+                else map(synthon_feature_row, smiles)
             )
             for index, (prop, fingerprint, atom_count) in enumerate(rows):
                 properties[index] = prop
@@ -359,7 +359,7 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     _complete_stage(
         env_path,
         "features",
-        {"block_types": sorted(path.stem for path in block_dir.glob("*.smi"))},
+        {"synthon_types": sorted(path.stem for path in synthon_dir.glob("*.smi"))},
     )
 
 
@@ -391,9 +391,9 @@ def _write_action_space_and_signature(env_path: Path, counts: dict[str, int]) ->
             raise ValueError(f"unknown synthon type in {name}")
         reactions[reaction.input_type].append((name, None))
     for name, reaction in bi.items():
-        if not set(reaction.block_types) <= synthon_types:
+        if not set(reaction.synthon_types) <= synthon_types:
             raise ValueError(f"unknown synthon type in {name}")
-        for library in by_attachment.get(reaction.block_type, []):
+        for library in by_attachment.get(reaction.synthon_type, []):
             reactions[reaction.state_type].append((name, library))
     last = {
         site: [
@@ -408,11 +408,11 @@ def _write_action_space_and_signature(env_path: Path, counts: dict[str, int]) ->
         for site, pairs in reactions.items()
     }
     spaces = {
-        "initial": [("first_block", name) for name in bricks],
+        "initial": [("first_synthon", name) for name in bricks],
         "reaction": reactions,
         "last": last,
     }
-    action_names = ["first_block", *sorted(uni), *sorted(bi)]
+    action_names = ["first_synthon", *sorted(uni), *sorted(bi)]
     if len(set(action_names)) != len(action_names):
         raise ValueError("reaction action names must be unique")
 
@@ -428,21 +428,21 @@ def _write_action_space_and_signature(env_path: Path, counts: dict[str, int]) ->
         "synthon.yaml",
         "reaction.yaml",
         "building_blocks.json",
-        "bb_feature.npz",
+        "synthon_features.npz",
     ):
         with (env_path / name).open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
     for name in sorted(counts):
         digest.update(name.encode())
-        with (env_path / "blocks" / f"{name}.smi").open("rb") as handle:
+        with (env_path / "synthons" / f"{name}.smi").open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
     # Publish identity last: it describes all completed data, including action space.
     signature = {
         "format": "rxnflow-env",
         "rxnflow_version": __version__,
-        "block_counts": counts,
+        "synthon_counts": counts,
         "reaction_names": action_names,
         "content_sha256": digest.hexdigest(),
     }

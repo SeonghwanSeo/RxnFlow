@@ -31,12 +31,12 @@ def test_device_sampling_balances_libraries_and_keeps_property_masks():
     policy = ActionCategorical(
         [small, large, unary], torch.zeros(n, 2), logit_scale=torch.ones(n, 1)
     )
-    counts = Counter(action.block_type for action in policy.sample(1.0, 1.0, 1.0))
+    counts = Counter(action.synthon_type for action in policy.sample(1.0, 1.0, 1.0))
     for name in ("small", "large", None):
         assert abs(counts[name] / n - 1 / 3) < 0.03
     # Masking eight of nine large-library columns leaves mass 1/9 there.
     large.logits[:, 1:] = -torch.inf
-    counts = Counter(action.block_type for action in policy.sample(1.0, 1.0, 1.0))
+    counts = Counter(action.synthon_type for action in policy.sample(1.0, 1.0, 1.0))
     assert abs(counts["large"] / n - 1 / 19) < 0.02
     small.logits.fill_(-torch.inf)
     large.logits.fill_(-torch.inf)
@@ -58,7 +58,7 @@ def test_policy_sampling_matches_temperature_and_importance_weights():
     )
     policy = ActionCategorical([group], torch.zeros(n, 2), logit_scale=torch.ones(n, 1))
     actions = policy.sample(0.7, 0.0, 0.5)
-    counts = Counter(action.block_index for action in actions)
+    counts = Counter(action.synthon_index for action in actions)
     expected = ((logits + 0.5 * weights) / 0.7).softmax(0)
     assert counts[2] == 0
     assert abs(counts[0] / n - expected[0]) < 0.03
@@ -85,20 +85,20 @@ def test_full_subspace_and_sampled_copy_decode_without_mutation():
 
     from rxnflow.core.types import Action
 
-    full = ActionSubspace(("first_block", "a"), ActionType.FIRST_BLOCK, 5)
+    full = ActionSubspace(("first_synthon", "a"), ActionType.FIRST_SYNTHON, 5)
     sampled = replace(full, sample_indices=np.array([4, 1]))
     assert full.sample_indices is None
     assert full.action_at(0) == Action(
-        ActionType.FIRST_BLOCK, block_type="a", block_index=0
+        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=0
     )
     assert full.action_at(4) == Action(
-        ActionType.FIRST_BLOCK, block_type="a", block_index=4
+        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=4
     )
     assert sampled.action_at(0) == Action(
-        ActionType.FIRST_BLOCK, block_type="a", block_index=4
+        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=4
     )
     assert sampled.action_at(1) == Action(
-        ActionType.FIRST_BLOCK, block_type="a", block_index=1
+        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=1
     )
     unary = ActionSubspace(("convert", None), ActionType.UNI_REACTION, 1)
     assert unary.action_at(0) == Action(ActionType.UNI_REACTION, "convert")

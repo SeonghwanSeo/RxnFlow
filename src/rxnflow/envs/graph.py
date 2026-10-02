@@ -48,8 +48,9 @@ class GraphData:
     adjacency: Tensor
     bond_features: Tensor
     mol_features: Tensor
-    reaction_count: int
+    num_reactions: int
     remaining_capacity: float
+    num_synthons: int
 
 
 @dataclass
@@ -59,8 +60,9 @@ class GraphBatch:
     adjacency: Tensor
     bond_features: Tensor
     mol_features: Tensor
-    reaction_count: Tensor
+    num_reactions: Tensor
     remaining_capacity: Tensor
+    num_synthons: Tensor
 
     @property
     def device(self) -> torch.device:
@@ -84,8 +86,11 @@ class GraphBatch:
             adjacency=torch.stack([graph.adjacency for graph in graphs]),
             bond_features=torch.stack([graph.bond_features for graph in graphs]),
             mol_features=torch.stack([graph.mol_features for graph in graphs]),
-            reaction_count=torch.tensor(
-                [graph.reaction_count for graph in graphs], dtype=torch.long
+            num_synthons=torch.tensor(
+                [graph.num_synthons for graph in graphs], dtype=torch.long
+            ),
+            num_reactions=torch.tensor(
+                [graph.num_reactions for graph in graphs], dtype=torch.long
             ),
             remaining_capacity=torch.tensor(
                 [graph.remaining_capacity for graph in graphs], dtype=torch.float32
@@ -96,8 +101,9 @@ class GraphBatch:
 def molecule_to_graph_data(
     mol: Chem.Mol | None,
     max_atoms: int,
-    reaction_count: int,
+    num_reactions: int,
     properties: np.ndarray | None = None,
+    num_synthons: int = 0,
 ) -> GraphData:
     """Encode one state without truncating atoms or including explicit hydrogens."""
     # 1. Check graph capacity and allocate fixed-size CPU feature arrays.
@@ -188,6 +194,7 @@ def molecule_to_graph_data(
                 molecular_properties(mol) if properties is None else properties
             )
         ),
-        reaction_count=reaction_count,
+        num_reactions=num_reactions,
+        num_synthons=num_synthons,
         remaining_capacity=(max_atoms - atom_count) / max_atoms,
     )
