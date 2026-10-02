@@ -1,13 +1,10 @@
-"""RxnFlow/HSX graph-transformer equations using native Torch operations.
+"""Residual GINE message passing with graph conditioning and a virtual node.
 
-Graph inputs remain padded. Message passing uses molecular edges, virtual-node
-edges and self loops; it never builds a dense [node, node, head, hidden] tensor.
-The baseline is pre-norm GENConv(add) + TransformerConv(concat heads, root skip).
+The graph encoder uses native Torch, fixed node padding and sparse molecular
+messages. Readout concatenates the molecular mean and virtual-node embedding.
 """
 
 from __future__ import annotations
-
-import math
 
 import torch
 from torch import Tensor, nn
@@ -46,24 +43,18 @@ def graph_layer_norm(x: Tensor, valid: Tensor) -> Tensor:
     return centered / (variance[:, None, None] + 1e-5).sqrt()
 
 
-class GraphTransformerLayer(nn.Module):
-    def __init__(self, hidden: int, heads: int):
+class GINELayer(nn.Module):
+    """Pre-normalized GINE with fixed epsilon=0 and a conditioned residual.
+
+    Each layer sums ReLU(h_source + bond) into its target, adds the target's
+    own embedding once, then applies a two-Linear update MLP. No explicit
+    self-loop edges are needed: the GINE self term already accounts for them.
+    """
+
+    def __init__(self, hidden: int):
         super().__init__()
-        self.heads = heads
-        # Reference GENConv(num_layers=1, norm=None, bias=False) is one linear
-        # after sum(ReLU(x_j + edge) + 1e-7) + x_i.
-        self.gen = nn.Linear(hidden, hidden, bias=False)
-        # concat_heads=True: EACH head has H channels, not H / heads.
-        self.query = nn.Linear(2 * hidden, heads * hidden)
-        self.key = nn.Linear(2 * hidden, heads * hidden)
-        self.value = nn.Linear(2 * hidden, heads * hidden)
-        self.edge = nn.Linear(hidden, heads * hidden, bias=False)
-        self.skip = nn.Linear(2 * hidden, heads * hidden)
-        self.output = nn.Linear(heads * hidden, hidden)
+        self.update = graph_mlp(hidden, 2 * hidden, hidden, 1)
         self.condition_scale = nn.Linear(hidden, 2 * hidden)
-        # The reference conv/linear modules use their default Kaiming-uniform
-        # initialization; graph MLPs use explicit hidden/output rules above.
-        self.ff = graph_mlp(hidden, 4 * hidden, hidden, 1)
 
     def forward(
         self,
@@ -76,41 +67,22 @@ class GraphTransformerLayer(nn.Module):
     ) -> Tensor:
         batch, length, hidden = x.shape
         normalized = graph_layer_norm(x, valid).reshape(-1, hidden)
-        messages = F.relu(normalized[source] + edges) + 1e-7
+        messages = F.relu(normalized[source] + edges)
         aggregate = torch.zeros_like(normalized).index_add(0, target, messages)
-        aggregate = self.gen(aggregate + normalized)
-        joined = torch.cat([normalized, aggregate], -1)
-        q = self.query(joined).view(-1, self.heads, hidden)
-        k = self.key(joined).view(-1, self.heads, hidden)
-        v = self.value(joined).view(-1, self.heads, hidden)
-        edge = self.edge(edges).view(-1, self.heads, hidden)
-        scores = (q[target] * (k[source] + edge)).sum(-1) / math.sqrt(hidden)
-        # Native grouped softmax on incoming molecular edges. Detaching the
-        # stabilizing maximum matches the reference and avoids max gradients.
-        indices = target[:, None].expand(-1, self.heads)
-        maxima = scores.new_full((batch * length, self.heads), -torch.inf)
-        maxima.scatter_reduce_(
-            0, indices, scores.detach(), reduce="amax", include_self=True
-        )
-        exponent = (scores - maxima[target]).exp()
-        totals = torch.zeros_like(maxima).index_add(0, target, exponent)
-        alpha = exponent / (totals[target] + 1e-16)
-        values = (v[source] + edge) * alpha[..., None]
-        attended = v.new_zeros(v.shape).index_add(0, target, values).flatten(1)
-        update = self.output(attended + self.skip(joined)).view(batch, length, hidden)
+        update = self.update(normalized + aggregate).view(batch, length, hidden)
+        # Keep the existing graph-property/capacity/reaction-count conditioning.
+        # Reaction identity is still applied later, in the policy heads.
         scale, shift = self.condition_scale(condition).chunk(2, -1)
-        x = x + update * scale[:, None] + shift[:, None]
-        return x + self.ff(graph_layer_norm(x, valid))
+        return x + update * scale[:, None] + shift[:, None]
 
 
-class GraphTransformer(nn.Module):
+class MPNN(nn.Module):
     def __init__(
         self,
         node_dim,
         edge_dim,
         mol_feature_dim,
         hidden_dim,
-        num_heads,
         num_layers,
         max_reactions,
     ):
@@ -123,9 +95,7 @@ class GraphTransformer(nn.Module):
         self.c2h = graph_mlp(
             mol_feature_dim + 1 + max_reactions + 1, hidden_dim, hidden_dim, 2
         )
-        self.layers = nn.ModuleList(
-            [GraphTransformerLayer(hidden_dim, num_heads) for _ in range(num_layers)]
-        )
+        self.layers = nn.ModuleList([GINELayer(hidden_dim) for _ in range(num_layers)])
 
     def forward(self, batch: GraphBatch) -> Tensor:
         nodes = self.x2h(batch.node_features)
@@ -143,7 +113,7 @@ class GraphTransformer(nn.Module):
         )
         x = torch.cat([nodes, condition[:, None]], 1)
         valid = torch.cat([batch.node_mask, torch.ones_like(batch.node_mask[:, :1])], 1)
-        n_batch, length, hidden = x.shape
+        _, length, hidden = x.shape
         # Preserve directed bond order source -> target. Virtual edges have
         # embedded feature [1, 0, ...], as in the original implementation.
         graph, src, dst = batch.adjacency.nonzero(as_tuple=True)
@@ -157,15 +127,7 @@ class GraphTransformer(nn.Module):
         source = torch.cat([source, atom_indices, virtual_indices])
         target = torch.cat([target, virtual_indices, atom_indices])
         edges = torch.cat([edges, virtual_edges])
-        # add_self_loops(fill_value='mean'): mean of incoming edge embeddings,
-        # including virtual edges. Isolated virtual nodes receive zero.
-        sums = edges.new_zeros((n_batch * length, hidden)).index_add(0, target, edges)
-        counts = edges.new_zeros(n_batch * length).index_add(
-            0, target, edges.new_ones(len(target))
-        )
-        loops = valid.flatten().nonzero().flatten()
-        edges = torch.cat([edges, sums[loops] / counts[loops, None].clamp_min(1)])
-        source, target = torch.cat([source, loops]), torch.cat([target, loops])
+        # GINE includes its own self term; use only bond and virtual edges.
         for layer in self.layers:
             x = layer(x, condition, valid, source, target, edges)
         count = batch.node_mask.sum(1, keepdim=True).clamp_min(1)

@@ -3,6 +3,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import torch
+from rdkit import Chem
 
 from rxnflow.config import ModelConfig
 from rxnflow.envs.chemistry.features import heavy_atom_count, parse_molecule
@@ -51,9 +52,7 @@ def _permute_graph(graph, permutation: torch.Tensor):
 
 def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(
-        env, ModelConfig(hidden_dim=32, num_heads=4, num_layers=2, dropout=0.0)
-    )
+    model = RxnFlowModel(env, ModelConfig(hidden_dim=32, num_layers=2, dropout=0.0))
     model.eval()
     graph = molecule_to_graph_data(None, env.max_atoms, 0)
     start_embedding = model.encode_graphs(GraphBatch.from_graphs([graph]))
@@ -122,7 +121,7 @@ def test_dot_scores_ignore_block_norm_and_train_both_action_scales(
     prepared_env, monkeypatch
 ) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=20)
-    model = RxnFlowModel(env, ModelConfig(hidden_dim=32, num_heads=4, num_layers=1))
+    model = RxnFlowModel(env, ModelConfig(hidden_dim=32, num_layers=1))
     state = model.encode_graphs(
         GraphBatch.from_graphs([molecule_to_graph_data(None, 20, 0)])
     )
@@ -141,16 +140,12 @@ def test_dot_scores_ignore_block_norm_and_train_both_action_scales(
     (-probability).backward()
     for name in ("first_block", "nitrile_to_tetrazole"):
         assert model.logit_temperature.grad[env.action_to_index[name]].abs() > 0
-    torch.testing.assert_close(
-        model.temperature, torch.full_like(model.temperature, 0.2)
-    )
+    torch.testing.assert_close(model.temperature, torch.full_like(model.temperature, 0.2))
 
 
 def test_chirality_and_graph_padding_are_preserved(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(
-        env, ModelConfig(hidden_dim=16, num_heads=2, num_layers=2)
-    ).eval()
+    model = RxnFlowModel(env, ModelConfig(hidden_dim=16, num_layers=2)).eval()
     graphs = [
         molecule_to_graph_data(parse_molecule(s), 12, 1)
         for s in ("N[C@H](C)O", "N[C@@H](C)O")
@@ -167,9 +162,7 @@ def test_chirality_and_graph_padding_are_preserved(prepared_env):
 
 def test_graph_encoder_distinguishes_bond_stereoisomers(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(
-        env, ModelConfig(hidden_dim=16, num_heads=2, num_layers=2)
-    ).eval()
+    model = RxnFlowModel(env, ModelConfig(hidden_dim=16, num_layers=2)).eval()
     # Same atoms and connectivity; only double-bond stereo differs (E/Z/none).
     graphs = [
         molecule_to_graph_data(parse_molecule(s), 12, 1)
@@ -184,66 +177,43 @@ def test_graph_encoder_distinguishes_bond_stereoisomers(prepared_env):
         assert not torch.allclose(embeddings[i], embeddings[j])
 
 
-def test_native_graph_layer_matches_reference_equations_and_gradients():
+def test_gine_layer_matches_equations_and_gradients():
     from copy import deepcopy
 
-    from rxnflow.models.graph_transformer import GraphTransformerLayer
+    from rxnflow.models.mpnn import GINELayer
 
     torch.manual_seed(19)
-    native = GraphTransformerLayer(4, 2).double()
+    native = GINELayer(4).double()
     reference = deepcopy(native)
     x = torch.randn(2, 3, 4, dtype=torch.float64, requires_grad=True)
     condition = torch.randn(2, 4, dtype=torch.float64, requires_grad=True)
-    # The second graph includes padding; only valid vertices participate.
+    # Include an isolated valid node and padding. No self-loop edges: GINE's
+    # explicit self term must handle isolated nodes without extra messages.
     valid = torch.tensor([[True, True, True], [True, True, False]])
-    source = torch.tensor([0, 1, 1, 2, 0, 1, 2, 3, 4, 3, 4])
-    target = torch.tensor([1, 0, 2, 1, 0, 1, 2, 4, 3, 3, 4])
+    source = torch.tensor([0, 1, 3, 4])
+    target = torch.tensor([1, 0, 4, 3])
     edges = torch.randn(len(source), 4, dtype=torch.float64, requires_grad=True)
     actual = native(x, condition, valid, source, target, edges)
     rx, rc, re = [v.detach().clone().requires_grad_() for v in (x, condition, edges)]
 
-    def norm(values):
-        # Independent graph-mode normalization, using only real node values.
-        return torch.stack(
-            [
-                (g - g[m].mean()) / (g[m].var(unbiased=False) + 1e-5).sqrt()
-                for g, m in zip(values, valid, strict=True)
-            ]
-        )
-
-    normalized = norm(rx).reshape(-1, 4)
-    # GENConv(add), then TransformerConv. Explicit per-destination loops avoid
-    # sharing the native grouped scatter/softmax implementation under test.
-    aggregate = reference.gen(
-        torch.stack(
-            [
-                (normalized[source[target == i]] + re[target == i])
-                .relu()
-                .add(1e-7)
-                .sum(0)
-                + normalized[i]
-                for i in range(6)
-            ]
-        )
+    # Independent graph normalization and per-destination neighbor sums;
+    # do not reuse the native normalization or scatter implementation.
+    normalized = torch.stack(
+        [
+            (g - g[m].mean()) / (g[m].var(unbiased=False) + 1e-5).sqrt()
+            for g, m in zip(rx, valid, strict=True)
+        ]
+    ).reshape(-1, 4)
+    aggregate = torch.stack(
+        [
+            normalized[i]
+            + (normalized[source[target == i]] + re[target == i]).relu().sum(0)
+            for i in range(6)
+        ]
     )
-    joined = torch.cat([normalized, aggregate], -1)
-    q, k, v = [
-        layer(joined).reshape(6, 2, 4)
-        for layer in (reference.query, reference.key, reference.value)
-    ]
-    edge = reference.edge(re).reshape(-1, 2, 4)
-    attended = []
-    for i in range(6):
-        mask = target == i
-        keys, values = k[source[mask]] + edge[mask], v[source[mask]] + edge[mask]
-        alpha = ((q[i] * keys).sum(-1) / 2).softmax(0)
-        attended.append((alpha[..., None] * values).sum(0).flatten())
-    update = reference.output(torch.stack(attended) + reference.skip(joined)).reshape(
-        2, 3, 4
-    )
+    update = reference.update(aggregate).reshape(2, 3, 4)
     scale, shift = reference.condition_scale(rc).chunk(2, -1)
     expected = rx + update * scale[:, None] + shift[:, None]
-    expected = expected + reference.ff(norm(expected))
     torch.testing.assert_close(actual[valid], expected[valid], atol=1e-10, rtol=1e-10)
     actual_grads = torch.autograd.grad(
         actual[valid].square().sum(), (x, condition, edges, *native.parameters())
@@ -253,3 +223,20 @@ def test_native_graph_layer_matches_reference_equations_and_gradients():
     )
     for first, second in zip(actual_grads, expected_grads, strict=True):
         torch.testing.assert_close(first, second, atol=1e-9, rtol=1e-9)
+
+
+def test_mpnn_readout_is_invariant_to_atom_order_and_batch_companions(prepared_env):
+    env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
+    model = RxnFlowModel(env, ModelConfig(hidden_dim=16, num_layers=2)).eval()
+    mol = parse_molecule("CC(O)N[33*]")
+    reordered = Chem.RenumberAtoms(mol, list(reversed(range(mol.GetNumAtoms()))))
+    graphs = [
+        molecule_to_graph_data(value, 12, 1 if value is not None else 0)
+        for value in (None, mol, reordered, parse_molecule("CCO"))
+    ]
+    together = model.encode_graphs(GraphBatch.from_graphs(graphs))
+    assert torch.isfinite(together).all()
+    torch.testing.assert_close(together[1], together[2], atol=1e-5, rtol=1e-5)
+    for i, graph in enumerate(graphs):
+        alone = model.encode_graphs(GraphBatch.from_graphs([graph]))
+        torch.testing.assert_close(together[i], alone[0], atol=1e-5, rtol=1e-5)

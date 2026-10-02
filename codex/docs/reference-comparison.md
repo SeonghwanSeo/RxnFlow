@@ -1,8 +1,8 @@
 # 현재 구현과 네 reference의 섹션별 비교
 
-작성일: 2026-10-02. 비교는 중간 commit `2aac819`에서 시작했으며, 아래 현재 구현에는 이후 승인된 bond stereo·temperature 초기값·mask margin·block projection·MLP/embedding 초기화·모델 크기·clip/random 기본값 변경도 반영했다. 현재 구현은 **HSX main의 일괄 이식이 아니라, HSX 250509의 graph readout/conditioning·fusion MLP 순서 + HSX main의 block projection/similarity/TB/optimizer 구성 + RxnFlow master·CGFlow의 categorical/subsampling/backward를 결합한 구현**이다. Enamine 환경과 workflow 없는 선형 MDP는 별도로 작성했다.
+작성일: 2026-10-02. 비교는 중간 commit `2aac819`에서 시작했으며, 아래 현재 구현에는 이후 승인된 bond stereo·temperature 초기값·mask margin·block projection·MLP/embedding 초기화·모델 크기·clip/random 기본값 변경도 반영했다. 현재 구현은 **HSX main의 일괄 이식이 아니라, HSX 250509의 graph readout/conditioning·fusion MLP 순서 + HSX main의 block projection/similarity/TB/optimizer 구성 + RxnFlow master·CGFlow의 categorical/subsampling/backward를 결합한 구현**이다. Enamine 환경과 workflow 없는 선형 MDP는 별도로 작성했다. 이후 사용자 요청으로 graph backbone은 residual GINE로 교체했다. 이는 reference 수식 복원이 아닌 명시적으로 승인된 architecture 변경이다.
 
-후속 사용자 결정: property scale은 사용자가 단순한 값으로 바꾼 것이므로 유지한다. Bond stereo는 main의 categorical, temperature 초기값은 0.2, mask margin은 1%로 변경했다. FP/property projection은 main의 Linear→LayerNorm으로 단순화했다. MLP output은 Xavier, reaction/type embedding은 uniform[-0.1,0.1], graph 크기는 128/2heads/4layers, block_dim은 128로 맞췄다. Clip은 100, random은 0.1, reward floor는 1e-4다. Fusion/policy의 normalization 순서, 2H readout, GNN 이후 reaction embedding은 기존 250509 방식을 유지한다. GENConv bias와 empty state는 사용자가 추후 architecture 검토까지 보류했다. MW는 후속 사용자 선택으로 Descriptors.ExactMolWt로 변경했다. Atom feature는 아래 분석만 수행하고 변경하지 않았다.
+후속 사용자 결정: property scale은 사용자가 단순한 값으로 바꾼 것이므로 유지한다. Bond stereo는 main의 categorical, temperature 초기값은 0.2, mask margin은 1%로 변경했다. FP/property projection은 main의 Linear→LayerNorm으로 단순화했다. MLP output은 Xavier, reaction/type embedding은 uniform[-0.1,0.1], graph 크기는 GINE 128/4layers, block_dim은 128로 맞췄다. Clip은 100, random은 0.1, reward floor는 1e-4다. Fusion/policy의 normalization 순서, 2H readout, GNN 이후 reaction embedding은 기존 250509 방식을 유지한다. GENConv는 GINE로 교체되어 bias 비교는 더 이상 적용되지 않는다. Empty state는 기존 virtual node 방식이다. Anchor readout은 추가하지 않았다. MW는 후속 사용자 선택으로 Descriptors.ExactMolWt로 변경했다. Atom feature는 아래 분석만 수행하고 변경하지 않았다.
 
 이 문서는 소스와 기본 설정을 비교한 결과다. 동일하다는 판정은 명시한 수식 또는 동작 범위에 한정한다. Reference 네 개를 동일 데이터로 학습해 출력·성능을 비교한 결과가 아니며, 네 checkpoint와의 호환성을 뜻하지 않는다. 특히 “reference graph equations 복원”은 HSX main 전체 모델과의 동일성을 의미하지 않는다.
 
@@ -27,7 +27,7 @@ Reference는 위 commit의 파일을 `git show`로 읽었다. HSX 작업 디렉�
 | Fingerprint | H의 count Morgan 512 계열 + dummy isotope invariant·uint8 | 일부만 같음. 입력, invariant, 순서, dtype 다름 |
 | Atom/bond/global features | 현재 synthon 환경용 정의 + H bond stereo | Bond type/stereo/flags는 H와 같음. Atom vocabulary와 사용자 지정 scale은 다름 |
 | Property budget | X의 sampled-row 적용 + H의 1% tolerance | Positive bound 판정은 H와 같음. Sampling과 all-masked 처리는 다름 |
-| Graph message passing | R/C/X의 GENConv(add) + TransformerConv를 native Torch로 구현 | 같은 계열. H의 GENConv bias 설정은 다름 |
+| Graph message passing | 사용자 선택의 residual GINE를 native Torch로 구현 | 다름. Reference GENConv+TransformerConv 대신 bond-aware sum과 MLP를 사용 |
 | Graph readout·reaction conditioning | X 중심, R/C와도 공통 | 다름. H의 2H→H projection 및 GNN 이전 action conditioning 없음 |
 | Block encoder·policy MLP | H의 feature projection/초기화 + X의 fusion/policy 순서, tier 제외 | FP/property의 Linear→LN, block_dim128, output Xavier와 embedding 초기화는 H와 같음. Fusion 깊이·normalization 순서 및 policy input 차원은 다름 |
 | Block score | H의 SimilarityMDP(dot) 수식 | Action만 L2 normalize하는 수식·temperature 범위·초기값은 같음. Parameter 구분은 다름 |
@@ -98,9 +98,9 @@ Empty graph도 완전히 같지 않다. Reference의 `graph_to_Data`는 empty용
 
 | 부분 | R | C | H | X | 현재 구현과 기준 |
 | --- | --- | --- | --- | --- | --- |
-| Message passing | GENConv(add) + TransformerConv | 동일 계열 | 동일 계열 | 동일 계열 | R/C/X의 pre-norm, residual, conditional scale/shift, virtual edge/self-loop 계산을 native Torch로 구현 |
-| GENConv bias | Constructor에서 미지정 | 미지정 | Helper에서 `bias=True` 강제 | 미지정 | `bias=False`. 현대 PyG 기본값을 따르는 R/C/X 쪽. H와 다름 |
-| Attention head | Head마다 H channel, concat | 동일 계열 | 동일 계열 | 동일 계열 | Head마다 H channel. H를 head 수로 나누는 축소형 attention이 아님 |
+| Message passing | GENConv(add) + TransformerConv | 동일 계열 | 동일 계열 | 동일 계열 | Residual GINE, epsilon0, H→2H→H update MLP. Pre-norm, conditional scale/shift와 virtual edges 유지. Self-loop edge 제거 |
+| GENConv bias | Constructor에서 미지정 | 미지정 | Helper에서 `bias=True` 강제 | 미지정 | GENConv 자체가 제거되어 해당 없음. GINE update MLP는 bias 사용 |
+| Attention head | Head마다 H channel, concat | 동일 계열 | 동일 계열 | 동일 계열 | Attention 및 num_heads 설정 제거 |
 | Normalization | Graph-mode LayerNorm + 조건부 affine | 동일 계열 | 동일 계열 | 동일 계열 | Graph 전체 valid node/channel로 정규화. Padding 제외, virtual 포함 |
 | Readout | Molecular mean + virtual, 2H; model LN | 동일 계열 | 2H concat→Linear→H→LN | 2H concat + LN | X/R/C 계열의 2H, 추가 projection 없음 |
 | Action conditioning | GNN 이후 reaction embedding + SiLU, FirstBlock은 별도 | GNN 이후 protocol embedding + SiLU | Workflow/order embedding을 GNN condition에 포함 | GNN 이후 workflow/order embedding + SiLU | X의 위치를 따름. ID는 reaction name이고 FirstBlock에도 embedding 적용 |
@@ -114,9 +114,9 @@ Empty graph도 완전히 같지 않다. Reference의 `graph_to_Data`는 empty용
 
 FP/property projection은 H처럼 Xavier weight와 zero bias로 초기화한다. 후속 요청으로 graph/fusion/policy MLP의 activation 없는 output도 Xavier로, reaction/type embedding도 uniform[-0.1,0.1]로 맞췄다. Hidden layer는 graph의 LeakyReLU Kaiming, fusion/policy의 SiLU용 Kaiming을 유지한다. Fusion/policy hidden 순서는 현재 `Linear→LN→SiLU`이고 H는 `Linear→SiLU→LN`이다. Norm 뒤의 SiLU는 입력 scale을 정리하고 activation을 적용하며, SiLU 뒤의 norm은 activation 출력을 다시 중심화한다. 두 연산은 같지 않다. [Torchvision MLP](https://docs.pytorch.org/vision/main/_modules/torchvision/ops/misc.html)도 Linear→norm→activation을 사용하므로 현재 순서는 conventional한 선택이며, 성능 우위를 확인하지 않고 순서만 바꾸지 않는 것을 권고한다. 이 순서는 이번에 변경하지 않았다.
 
-R/C/X는 GENConv의 bias를 명시하지 않으므로 원래 설치된 PyG 버전에 따라 결과가 달라진다. H의 `_gen_conv_kwargs`는 이 문제를 피하려고 True를 명시한다. 현재 `False` 구현에 대한 독립 수식·gradient test는 통과했지만, H의 bias=True graph를 그대로 재현한 테스트는 아니다. 또 native nn.Linear와 reference 내부 Linear의 초기화까지 모든 parameter가 같다는 검증은 하지 않았다.
+R/C/X는 GENConv의 bias를 명시하지 않으므로 원래 설치된 PyG 버전에 따라 결과가 달라진다. H의 `_gen_conv_kwargs`는 이 문제를 피하려고 True를 명시한다. GINE 전환 전 `False` 구현은 독립 수식·gradient test를 통과했지만, 현재는 GENConv가 제거되었다. 또 native nn.Linear와 reference 내부 Linear의 초기화까지 모든 parameter가 같다는 검증은 하지 않았다.
 
-근거: 현재 [graph_transformer.py](../../src/rxnflow/models/graph_transformer.py):17,33,46 및 [rxnflow.py](../../src/rxnflow/models/rxnflow.py):22,40. R/C/X `src/gflownet/models/graph_transformer.py`, 각 `src/rxnflow/models/gfn.py`; H `src/rxnflow/models/graph_transformer.py`:151, `models/layers.py`:44,94, `models/gfn.py`:100, `models/nn.py`:242, `models/config.py`:71.
+근거: 현재 [mpnn.py](../../src/rxnflow/models/mpnn.py) 및 [rxnflow.py](../../src/rxnflow/models/rxnflow.py):22,40. R/C/X `src/gflownet/models/graph_transformer.py`, 각 `src/rxnflow/models/gfn.py`; H `src/rxnflow/models/graph_transformer.py`:151, `models/layers.py`:44,94, `models/gfn.py`:100, `models/nn.py`:242, `models/config.py`:71.
 
 ### 구조 변경에 대한 해석
 
@@ -189,7 +189,7 @@ Replay는 “uniform FIFO”라는 이름만으로 네 구현이 같지 않다. 
 
 | 항목 | 현재 | HSX main | 해석 |
 | --- | --- | --- | --- |
-| Graph hidden / heads / layers | 128 / 2 / 4 | 128 / 2 / 4 | 후속 요청으로 정렬. 전체 architecture까지 같은 것은 아님 |
+| Graph hidden / heads / layers | 128 / 없음 / 4 | 128 / 2 / 4 | GINE로 교체. 한 layer에 한 aggregation이며 reference hybrid는 두 aggregation |
 | Graph readout 차원 | 256=2H | 128, projection 적용 | Policy input 및 action embedding 차원이 다름 |
 | Block embedding 차원 | 128 | 128 계열 | 후속 요청으로 정렬. Fusion hidden layer 수는 기존 한 층 유지 |
 | Similarity temperature 초기값 | 0.2 | 0.2 | 후속 요청으로 정렬. 범위 0.01–10도 같음 |
@@ -224,7 +224,7 @@ WD는 변경 지시가 없어 1e-8을 유지했다. 현재 AdamW policy LR1e-4�
 | 우선 검토 부분 | 현재 차이 | 왜 별도 검토가 필요한가 |
 | --- | --- | --- |
 | Atom feature | H의 rich categorical 대신 현재 정의 | Bond stereo는 정렬 완료. Atom feature 전체까지 H와 동일해진 것은 아님 |
-| Graph bias/empty state | GENConv bias False vs H True, empty node 처리 다름 | 사용자 요청으로 추후 architecture 작업까지 보류. 현재 수식 test 통과가 H 전체 equivalence의 증거는 아님 |
+| Graph backbone/empty state | GINE로 교체, empty node 처리 다름 | GINE는 승인된 차이. Empty state는 virtual node만 사용하며 기존 보류 사항 유지 |
 | Fusion/policy MLP | 현재 Linear→LN→SiLU vs H Linear→SiLU→LN, fusion 한 hidden layer 유지 | 순서 유지 권고. Output/embedding 초기화와 block_dim은 정렬 완료 |
 | Training defaults | WD/EMA/replay는 기존 값, reward floor 1e-4와 random 0.1은 사용자 선택 | Graph/block 크기·temperature·clip은 정렬 완료. WD1e-8은 실질적으로 decay가 거의 없는 기준이며 향후 학습 비교로 평가 |
 | Mask 적용/failure | Sampled rows에 hard -inf, invalid 종료, H의 fallback 미사용 | Margin은 정렬 완료. Sampling 및 실패 분포까지 같은 것은 아님 |
@@ -275,3 +275,12 @@ git show 2aac819:src/rxnflow/models/rxnflow.py
 실제 H 호출이 약 0.28µs 빠르지만 wrapper를 사용하는 두 descriptor의 차이는 약 0.03µs다. 이 결과만으로 exact mass 알고리즘이 본질적으로 더 빠르다고 판단하지 않는다. Block property는 prepare 시 계산해 저장하므로 이 차이가 모든 후보 action마다 발생하지도 않는다. [RDKit 문서](https://www.rdkit.org/docs/source/rdkit.Chem.Descriptors.html)에서 MolWt는 average molecular weight, ExactMolWt는 exact molecular weight로 정의된다. 서로 다른 값이므로 성능 최적화 목적으로 교체할 항목으로 보지 않고, 이번에는 현재 MolWt를 유지했다.
 
 후속 사용자 결정: 속도보다 의미가 명확한 `Descriptors.ExactMolWt` API를 선택했다. 공통 `molecular_properties`를 변경하여 state와 새로 준비하는 block 모두 exact mass를 사용한다. 기존 MolWt 기반 NPZ는 다음 사용 전에 `features_stage(env_dir, num_workers=...)`로 다시 생성해야 한다. Synthon conversion 및 fingerprint 정의는 바뀌지 않았다. 이번 phase에서는 production artifact 재생성을 실행하지 않았다.
+
+
+### GINE backbone 전환
+
+사용자 요청으로 `models/graph_transformer.py`를 `models/mpnn.py`로 대체했다. GINELayer는 normalized node에 대해 `MLP(h_i + sum_j ReLU(h_j + e_ji))`를 계산하고, 기존 graph condition의 scale/shift를 적용한 residual로 갱신한다. Epsilon은 0, update MLP는 H→2H→H와 LeakyReLU다. 별도의 Transformer attention, attention 뒤 FFN, GENConv linear, explicit self-loop, num_heads 설정은 삭제했다. GINE 자기 항과 self-loop message를 중복 계산하지 않는다. Source는 [GINE 정의](https://pytorch-geometric.readthedocs.io/en/latest/generated/torch_geometric.nn.conv.GINEConv.html)이며 conditioning/residual은 현재 환경에 맞춘 조합이다.
+
+Graph property/capacity/reaction count condition, 양방향 virtual edges, graph-mode normalization, 기존 2H mean/virtual readout과 post-GNN reaction conditioning은 유지한다. Atom/bond feature, block encoder와 policy scoring, env/MDP/학습 수식은 바꾸지 않는다. Anchor readout은 별도 논의 항목으로 이번 구현에 추가하지 않았다. 기본 hidden128/layers4/block128을 유지한다. 이전 hybrid 네 layer는 여덟 aggregation 단계였으므로 같은 layer 수의 동일 계산량 모델로 간주하지 않는다. 이전 architecture checkpoint와 호환되지 않으며 fallback은 없다. GINE 자체 때문에 prepared library를 다시 만들 필요는 없지만, 앞선 ExactMolWt 변경의 feature 재생성은 여전히 필요하다.
+
+검증: `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 ./test.sh quick > /tmp/rxnflow-gine-quick.log 2>&1` — exit0,54passed/1heavy deselected,22.11s. 독립 GINE 수식과 모든 input/parameter gradient, atom 순서·batch·padding 불변성, stereo와 train/restart/sample 검증 통과. GPU runtime 및 학습 품질은 아직 측정하지 않았다.

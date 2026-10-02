@@ -65,7 +65,7 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
         data=DataConfig(env_dir=str(env_dir), max_atoms=50),
         reward=RewardConfig(exponent=1.0),
         subsampling=SubsamplingConfig(sampling_ratio=0.001, min_sampling=50),
-        model=ModelConfig(hidden_dim=64, num_heads=4, num_layers=2),
+        model=ModelConfig(hidden_dim=64, num_layers=2),
         training=TrainingConfig(
             steps=steps,
             batch_size=4,

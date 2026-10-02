@@ -1,4 +1,4 @@
-from .graph_transformer import GraphTransformer
+from .mpnn import MPNN
 from .rxnflow import RxnFlowModel
 
-__all__ = ["GraphTransformer", "RxnFlowModel"]
+__all__ = ["MPNN", "RxnFlowModel"]

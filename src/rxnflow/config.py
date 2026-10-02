@@ -60,10 +60,8 @@ class RewardConfig:
 
 @dataclass
 class ModelConfig:
-    # HSX main graph/block sizes. Each head has hidden_dim channels;
-    # keep explore's 2H readout and hidden MLP depths.
+    # Residual GINE width/depth; retain the 2H mean/virtual-node readout.
     hidden_dim: int = 128
-    num_heads: int = 2
     num_layers: int = 4
     block_dim: int = 128
     mlp_layers: int = 2
@@ -71,7 +69,7 @@ class ModelConfig:
     dropout: float = 0.0
 
     def validate(self) -> None:
-        if self.hidden_dim <= 0 or self.num_heads <= 0 or self.num_layers <= 0:
+        if self.hidden_dim <= 0 or self.num_layers <= 0:
             raise ValueError("model dimensions must be positive")
         if self.block_dim <= 0 or self.mlp_layers < 0 or self.block_mlp_layers < 0:
             raise ValueError("invalid block dimension or MLP depth")

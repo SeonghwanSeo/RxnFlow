@@ -36,7 +36,7 @@ Property masking의 일괄 계산도 비교했다.158개 unique state,649개 lib
 | [env.py](../../src/rxnflow/envs/env.py), [library.py](../../src/rxnflow/envs/library.py) | 매 state 전체 library 검색, type 문자열 split, action group 재생성 | Attachment type index, cached site types, `(site, final-step, may-terminate)`별 group 재사용. |
 | [graph.py](../../src/rxnflow/envs/graph.py) | 원자·결합마다 작은 Torch tensor 생성/대입, graph와 mask가 descriptor를 각각 계산 | NumPy array에 직접 feature를 채운 뒤 tensor로 wrap. 한 번 계산한 descriptor를 graph와 mask가 공유. Feature 순서·차원 유지. |
 | [policy.py](../../src/rxnflow/gflownet/policy.py) | Eval rollout에서 동일한 초기 graph를 batch 크기만큼 encode | Eval 모드에서는 unique state만 encode한 뒤 gather. Train 모드의 각 graph row는 독립 dropout 유지. 호출 사이 learned embedding cache 없음. |
-| [graph_transformer.py](../../src/rxnflow/models/graph_transformer.py) | 직접 attention score/softmax/value 연산, 여러 identity mask 생성 | Native `scaled_dot_product_attention`과 한 번의 diagonal self-mask 설정. Learned edge bias와 dropout 의미 유지. |
+| `graph_transformer.py` (당시 파일, 이후 GINE `mpnn.py`로 교체) | 직접 attention score/softmax/value 연산, 여러 identity mask 생성 | Native `scaled_dot_product_attention`과 한 번의 diagonal self-mask 설정. Learned edge bias와 dropout 의미 유지. |
 | [rxnflow.py](../../src/rxnflow/models/rxnflow.py) | Block encoder 호출마다 property scale tensor 생성·전송 | Module buffer로 보관; checkpoint에 불필요하게 저장하지 않음. |
 | [retrosynthesis.py](../../src/rxnflow/envs/retrosynthesis.py) | DFS의 precursor Mol→SMILES→Mol 반복, compatible library 순회 | Mol과 canonical key를 재귀에 함께 전달. Incoming/remaining type으로 library를 직접 조회. Signature를 노드마다 한 번 계산. |
 | [env.py](../../src/rxnflow/envs/env.py) | Forward-only sampler도 전체 reverse catalog index 생성 | `retro_analyzer`를 첫 backward 사용 시 생성. |

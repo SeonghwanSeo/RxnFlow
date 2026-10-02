@@ -17,7 +17,7 @@ from rxnflow.envs.chemistry.features import (
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
 
-from .graph_transformer import GraphTransformer
+from .mpnn import MPNN
 
 
 def policy_mlp(
@@ -49,12 +49,11 @@ class RxnFlowModel(nn.Module):
         self.register_buffer(
             "property_scale", torch.tensor(PROPERTY_SCALE), persistent=False
         )
-        self.graph_encoder = GraphTransformer(
+        self.graph_encoder = MPNN(
             node_dim=NODE_FEATURE_DIM,
             edge_dim=BOND_FEATURE_DIM,
             mol_feature_dim=PROPERTY_DIM,
             hidden_dim=hidden,
-            num_heads=config.num_heads,
             num_layers=config.num_layers,
             max_reactions=env.max_reactions,
         )

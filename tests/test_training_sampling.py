@@ -42,7 +42,7 @@ def tiny_config(env_dir: Path, output_dir: Path) -> Config:
         subsampling=SubsamplingConfig(
             sampling_ratio=0.5, min_sampling=1, importance_temp=1.0
         ),
-        model=ModelConfig(hidden_dim=32, num_heads=4, num_layers=1, dropout=0.0),
+        model=ModelConfig(hidden_dim=32, num_layers=1, dropout=0.0),
         training=TrainingConfig(
             steps=1,
             batch_size=2,

@@ -30,7 +30,6 @@ generation:
 
 model:
   hidden_dim: 128
-  num_heads: 2
   num_layers: 4
   block_dim: 128
   mlp_layers: 2
