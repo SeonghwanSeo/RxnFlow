@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import random
 import shutil
+from collections import Counter
 from pathlib import Path
 from time import perf_counter
 
@@ -17,7 +18,7 @@ from rxnflow.config import Config
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.types import Trajectory
+from rxnflow.gflownet.types import ActionKind, Trajectory
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, SampleFilter, evaluate_rewards
 
@@ -179,7 +180,9 @@ class RxnFlowTrainer:
             trajectory.reward = value if trajectory.valid else 0.0
         return metrics
 
-    def _loss(self, trajectories: list[Trajectory]) -> Tensor:
+    def _loss(
+        self, trajectories: list[Trajectory], num_fresh: int
+    ) -> tuple[Tensor, dict[str, Tensor]]:
         transitions = []
         trajectory_indices: list[int] = []
         backward_flows = torch.tensor(
@@ -213,7 +216,36 @@ class RxnFlowTrainer:
         log_reward = rewards.log() * self.config.reward.exponent
         residual = self.model.log_z + forward_flow - backward_flows - log_reward
         # Both HSX baselines default to the squared trajectory-balance residual.
-        return residual.square().mean()
+        trajectory_losses = residual.square()
+        loss = trajectory_losses.mean()
+        # Reuse the TB terms already computed for optimization. Reference
+        # "batch_entropy" is trajectory surprisal on this fresh+replay batch,
+        # not categorical entropy or an unbiased on-policy entropy estimate.
+        with torch.no_grad():
+            valid = torch.tensor(
+                [value.valid for value in trajectories], device=self.device
+            )
+            info = {
+                "loss": loss.detach(),
+                "log_z": self.model.log_z.detach().clone(),
+                "batch_entropy": -forward_flow.mean(),
+                "mean_log_pf": forward_flow.mean(),
+                "mean_log_pb": backward_flows.mean(),
+                "mean_log_reward": log_reward.mean(),
+                "mean_tb_residual": residual.mean(),
+                "fresh_loss": trajectory_losses[:num_fresh].mean(),
+                # No replay on the first update (or when disabled).
+                "replay_loss": trajectory_losses[num_fresh:].sum()
+                / max(1, len(trajectories) - num_fresh),
+                "valid_loss": (trajectory_losses * valid).sum()
+                / valid.sum().clamp_min(1),
+                "invalid_loss": (trajectory_losses * ~valid).sum()
+                / (~valid).sum().clamp_min(1),
+                "invalid_logprob": (forward_flow * ~valid).sum()
+                / (~valid).sum().clamp_min(1),
+                "batch_invalid_fraction": (~valid).float().mean(),
+            }
+        return loss, info
 
     @torch.no_grad()
     def _update_ema(self) -> None:
@@ -248,18 +280,62 @@ class RxnFlowTrainer:
             self.replay.add(fresh)
             self.model.train()
             self.optimizer.zero_grad(set_to_none=True)
-            loss = self._loss(batch)
+            loss, loss_info = self._loss(batch, len(fresh))
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.policy_parameters, 100.0)
+            # clip_grad_norm_ already returns the pre-clip norm. No second
+            # traversal of policy gradients is needed for diagnostics.
+            policy_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.policy_parameters, 100.0
+            )
+            loss_info.update(
+                policy_grad_norm=policy_grad_norm,
+                # HSX main's grad_norm includes logZ, which is not clipped.
+                grad_norm=(policy_grad_norm.square() + self.model.log_z.grad.square())
+                .sqrt()
+                .reshape(()),
+                policy_grad_clipped=(policy_grad_norm > 100.0).float(),
+            )
             self.optimizer.step()
             self.lr_scheduler.step()
             self._update_ema()
             self.step += 1
 
+            # Transfer scalar diagnostics together rather than synchronizing
+            # CUDA separately for every metric. TB values are pre-update.
+            loss_metrics = dict(
+                zip(
+                    loss_info,
+                    torch.stack(list(loss_info.values())).detach().cpu().tolist(),
+                    strict=True,
+                )
+            )
+            reactions = Counter(max(0, len(value.steps) - 1) for value in fresh)
+            failures = Counter(value.invalid_reason for value in fresh if not value.valid)
+            action_counts = Counter()
+            for trajectory in fresh:
+                for transition in trajectory.steps:
+                    action = transition.action
+                    if action.kind == ActionKind.FIRST_BLOCK:
+                        role = "first_block"
+                    elif action.kind == ActionKind.BI_REACTION:
+                        role = (
+                            "brick"
+                            if self.env.blocks[action.block_type].is_brick
+                            else "linker"
+                        )
+                    else:
+                        terminal = (
+                            self.env.uni_reactions[action.reaction].output_type is None
+                        )
+                        role = "uni_terminal" if terminal else "uni_continue"
+                    action_counts[role] += 1
             record = {
                 "step": self.step,
-                "loss": float(loss.detach().cpu()),
-                "log_z": float(self.model.log_z.detach().cpu()),
+                **loss_metrics,
+                "fresh_count": len(fresh),
+                "replay_count": len(batch) - len(fresh),
+                "batch_valid_count": sum(value.valid for value in batch),
+                "batch_invalid_count": sum(not value.valid for value in batch),
                 "learning_rate": self.optimizer.param_groups[0]["lr"],
                 "mean_reward": sum(value.reward for value in fresh) / len(fresh),
                 "valid_fraction": sum(value.valid for value in fresh) / len(fresh),
@@ -271,10 +347,26 @@ class RxnFlowTrainer:
                 / max(1, sum(value.valid for value in fresh)),
                 "mean_reactions": sum(max(0, len(value.steps) - 1) for value in fresh)
                 / len(fresh),
+                "reaction_counts": dict(reactions),
+                "action_counts": dict(action_counts),
+                "invalid_reasons": dict(failures),
                 **reward_metrics,
                 "rollout_seconds": rollout_seconds,
                 "step_seconds": perf_counter() - started,
             }
+            # Keep all fresh attempts, including invalid ones, independently
+            # of replay eviction. Existing SMILES/action serialization suffices;
+            # no graph tensors, molecule descriptors or fingerprints are added.
+            log_started = perf_counter()
+            with (self.output_dir / "samples.jsonl").open(
+                "a", encoding="utf-8"
+            ) as handle:
+                handle.writelines(
+                    json.dumps({"step": self.step, "sample": index, **value.to_dict()})
+                    + "\n"
+                    for index, value in enumerate(fresh)
+                )
+            record["sample_log_seconds"] = perf_counter() - log_started
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
             if self.step % self.config.training.log_every == 0:

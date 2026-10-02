@@ -19,8 +19,8 @@ property_penalty: {}
 
 # Uniform sampling within each compatible synthon block library.
 subsampling:
-  sampling_ratio: 0.01
-  min_sampling: 10
+  sampling_ratio: 0.05
+  min_sampling: 50
   importance_temp: 1.0
 
 # FirstBlock is excluded. The final allowed reaction must consume the last site.

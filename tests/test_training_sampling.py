@@ -1,5 +1,6 @@
 import csv
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -76,6 +77,44 @@ def test_training_restart_sampling_and_output_formats(
     assert restarted.step == 2
     assert restarted_checkpoint.is_file()
 
+    records = [
+        json.loads(line)
+        for line in (Path(config.output_dir) / "training.jsonl").read_text().splitlines()
+    ]
+    samples = [
+        json.loads(line)
+        for line in (Path(config.output_dir) / "samples.jsonl").read_text().splitlines()
+    ]
+    assert [row["step"] for row in records] == [1, 2]
+    assert [row["replay_count"] for row in records] == [0, 1]
+    assert len(samples) == 4  # Fresh attempts only, never duplicate replay entries.
+    assert {(row["step"], row["sample"]) for row in samples} == {
+        (1, 0),
+        (1, 1),
+        (2, 0),
+        (2, 1),
+    }
+    for record in records:
+        fresh = [row for row in samples if row["step"] == record["step"]]
+        assert record["mean_reward"] == pytest.approx(
+            sum(row["reward"] for row in fresh) / len(fresh)
+        )
+        assert sum(record["reaction_counts"].values()) == len(fresh)
+        assert sum(record["action_counts"].values()) == sum(
+            len(row["steps"]) for row in fresh
+        )
+        assert sum(record["invalid_reasons"].values()) == sum(
+            not row["valid"] for row in fresh
+        )
+        assert record["policy_grad_norm"] >= 0
+        assert record["grad_norm"] >= record["policy_grad_norm"]
+        assert record["policy_grad_clipped"] == float(record["policy_grad_norm"] > 100)
+        assert record["batch_entropy"] == -record["mean_log_pf"]
+    # Log serialization remains usable after replay eviction/restart.
+    for row in samples:
+        value = {key: val for key, val in row.items() if key not in ("step", "sample")}
+        assert Trajectory.from_dict(value).to_dict() == value
+
     sampler = RxnFlowSampler(restarted_checkpoint, reward=CarbonReward())
     results = sampler.sample(3, seed=11)
     assert len(results) == 3
@@ -127,7 +166,59 @@ def test_trajectory_balance_uses_backward_probability(
         final_smiles="N",
         reward=1.0,
     )
-    assert torch.isclose(trainer._loss([trajectory]), torch.tensor(4.0))
+    loss, _ = trainer._loss([trajectory], num_fresh=1)
+    assert torch.isclose(loss, torch.tensor(4.0))
+
+
+def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path):
+    config = tiny_config(prepared_env, tmp_path / "diagnostics")
+    config.reward.floor = math.exp(-4)
+    trainer = RxnFlowTrainer(config, QEDReward())
+    trainer.model.log_z.data.zero_()
+    trainer.policy.action_log_probabilities = lambda states, actions: (
+        torch.tensor([-2.0, -3.0, -1.0]) + trainer.model.log_z * 0
+    )
+    batch = [
+        Trajectory(
+            steps=[Transition(MoleculeState(), Action(ActionKind.FIRST_BLOCK), "C", pb)],
+            final_smiles="C",
+            reward=reward,
+            valid=valid,
+        )
+        for pb, reward, valid in [
+            (-0.5, math.exp(-1), True),
+            (-1.0, 0.0, False),
+            (-0.25, math.exp(-2), True),
+        ]
+    ]
+    loss, info = trainer._loss(batch, num_fresh=2)
+    # Hand-calculated residuals: -0.5, 2, 1.25. The invalid reward uses the floor.
+    expected = {
+        "loss": 1.9375,
+        "log_z": 0.0,
+        "batch_entropy": 2.0,
+        "mean_log_pf": -2.0,
+        "mean_log_pb": -1.75 / 3,
+        "mean_log_reward": -7 / 3,
+        "mean_tb_residual": 2.75 / 3,
+        "fresh_loss": 2.125,
+        "replay_loss": 1.5625,
+        "valid_loss": 0.90625,
+        "invalid_loss": 4.0,
+        "invalid_logprob": -3.0,
+        "batch_invalid_fraction": 1 / 3,
+    }
+    for key, value in expected.items():
+        assert not info[key].requires_grad
+        assert info[key].item() == pytest.approx(value)
+    loss.backward()
+    assert trainer.model.log_z.grad.item() == pytest.approx(5.5 / 3)
+
+    # No valid samples, replay, or transitions: diagnostics remain finite.
+    loss, info = trainer._loss([Trajectory([], "", valid=False)], num_fresh=1)
+    assert loss.item() == pytest.approx(16.0)
+    assert info["valid_loss"].item() == info["replay_loss"].item() == 0
+    assert all(torch.isfinite(value) for value in info.values())
 
 
 def test_restart_reproduces_next_update_with_dropout(
@@ -261,7 +352,7 @@ def test_failed_selected_action_is_retained_for_tb(
     assert trajectory.steps[0].product_smiles == ""
     trainer._assign_rewards([trajectory])
     assert trajectory.reward == 0
-    loss = trainer._loss([trajectory])
+    loss, _ = trainer._loss([trajectory], num_fresh=1)
     assert torch.isfinite(loss)
     loss.backward()
     assert trainer.model.bi_reaction_head[0].weight.grad.abs().sum() > 0

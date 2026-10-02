@@ -28,8 +28,8 @@ class DataConfig:
 class SubsamplingConfig:
     """Uniform building-block action-space sampling."""
 
-    sampling_ratio: float = 0.01
-    min_sampling: int = 10
+    sampling_ratio: float = 0.05
+    min_sampling: int = 50
     importance_temp: float = 1.0
 
     def validate(self) -> None:

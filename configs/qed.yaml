@@ -16,7 +16,7 @@ property_penalty:
   mw: 500
 
 subsampling:
-  sampling_ratio: 0.01
+  sampling_ratio: 0.05
 
 generation:
   min_reactions: 1
