@@ -8,8 +8,7 @@ from functools import cached_property
 from pathlib import Path
 
 import numpy as np
-import torch
-from torch import Tensor
+from numpy.typing import NDArray
 
 from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 
@@ -19,9 +18,9 @@ class BlockLibrary:
     block_type: str
     smiles: list[str]
     identifiers: list[list[str]]
-    properties: Tensor
-    fingerprints: Tensor
-    heavy_atoms: Tensor
+    properties: NDArray[np.float32]
+    fingerprints: NDArray[np.uint8]
+    heavy_atoms: NDArray[np.uint8]
 
     def __len__(self) -> int:
         return len(self.smiles)
@@ -39,8 +38,10 @@ class BlockLibrary:
         return self.site_types[0]
 
     def validate(self) -> None:
-        if self.fingerprints.dtype != torch.uint8:
+        if self.fingerprints.dtype != np.uint8:
             raise ValueError("fingerprints must be uint8; regenerate the environment")
+        if self.heavy_atoms.dtype != np.uint8:
+            raise ValueError("heavy_atoms must be uint8; regenerate the environment")
         count = len(self.smiles)
         if count == 0:
             raise ValueError(f"building-block type {self.block_type!r} is empty")
@@ -107,15 +108,14 @@ def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
             # Preparation writes both files in the same sorted row order and
             # invalidates features on reconversion. Avoid decompressing a second
             # full SMILES copy merely to compare trusted prepared rows.
-            # The preparation/chemistry boundary is NumPy; the model-facing
-            # library owns CPU tensors for indexed action scoring.
+            # Keep catalog data in NumPy. Only sampled model inputs become tensors.
             library = BlockLibrary(
                 block_type=path.stem,
                 smiles=smiles,
                 identifiers=identifiers,
-                properties=torch.from_numpy(arrays[f"{path.stem}/properties"]),
-                fingerprints=torch.from_numpy(arrays[f"{path.stem}/fingerprints"]),
-                heavy_atoms=torch.from_numpy(arrays[f"{path.stem}/heavy_atoms"]),
+                properties=arrays[f"{path.stem}/properties"],
+                fingerprints=arrays[f"{path.stem}/fingerprints"],
+                heavy_atoms=arrays[f"{path.stem}/heavy_atoms"],
             )
             library.validate()
             libraries[path.stem] = library

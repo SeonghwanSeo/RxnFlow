@@ -5,10 +5,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import torch
+import numpy as np
+from numpy.typing import NDArray
 from rdkit import Chem
 from rdkit.Chem import QED
-from torch import Tensor
 
 from rxnflow.config import Config
 from rxnflow.reward import RewardFunction
@@ -20,10 +20,10 @@ class QEDReward(RewardFunction):
 
     objectives = ("qed",)
 
-    def score(self, molecules: list[Chem.Mol]) -> Tensor:
-        return torch.tensor(
-            [QED.qed(mol) for mol in molecules], dtype=torch.float32
-        ).reshape(-1, 1)
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array([QED.qed(mol) for mol in molecules], dtype=np.float32).reshape(
+            -1, 1
+        )
 
 
 def main(argv: list[str] | None = None) -> None:

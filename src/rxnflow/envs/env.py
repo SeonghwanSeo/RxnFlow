@@ -7,8 +7,9 @@ import json
 from functools import cached_property
 from pathlib import Path
 
-import torch
+import numpy as np
 import yaml
+from numpy.typing import NDArray
 from rdkit import Chem
 
 from rxnflow.core.errors import InvalidTransition
@@ -137,28 +138,22 @@ class SynthesisEnv:
         # Initialization has no synthon type and gets its own explicit space.
         self.initial_action_space: ActionSpace = [
             ActionSubspace(
-                "first_block",
-                ActionType.FIRST_BLOCK,
-                self.brick_types,
-                [len(self.blocks[name]) for name in self.brick_types],
+                ("first_block", name), ActionType.FIRST_BLOCK, len(self.blocks[name])
             )
+            for name in self.brick_types
         ]
         self.reaction_action_spaces: dict[int, ActionSpace] = {
             site_type: [] for site_type in self.synthon_types
         }
         for name, reaction in self.uni_reactions.items():
             self.reaction_action_spaces[reaction.input_type].append(
-                ActionSubspace(name, ActionType.UNI_REACTION, [], [])
+                ActionSubspace((name, None), ActionType.UNI_REACTION, 1)
             )
         for name, reaction in self.bi_reactions.items():
-            libraries = self._get_compatible_libraries(reaction.block_type)
-            if libraries:
+            for library in self._get_compatible_libraries(reaction.block_type):
                 self.reaction_action_spaces[reaction.state_type].append(
                     ActionSubspace(
-                        name,
-                        ActionType.BI_REACTION,
-                        libraries,
-                        [len(self.blocks[n]) for n in libraries],
+                        (name, library), ActionType.BI_REACTION, len(self.blocks[library])
                     )
                 )
 
@@ -168,22 +163,14 @@ class SynthesisEnv:
         for site_type, space in self.reaction_action_spaces.items():
             last_space: ActionSpace = []
             for subspace in space:
-                if subspace.action_type == ActionType.UNI_REACTION:
-                    if self.uni_reactions[subspace.name].output_type is None:
-                        last_space.append(subspace)
-                else:
-                    libraries = [
-                        name for name in subspace.libraries if self.blocks[name].is_brick
-                    ]
-                    if libraries:
-                        last_space.append(
-                            ActionSubspace(
-                                subspace.name,
-                                subspace.action_type,
-                                libraries,
-                                [len(self.blocks[name]) for name in libraries],
-                            )
-                        )
+                reaction, library = subspace.name
+                terminal = (
+                    self.uni_reactions[reaction].output_type is None
+                    if library is None
+                    else self.blocks[library].is_brick
+                )
+                if terminal:
+                    last_space.append(subspace)
             self.last_action_spaces[site_type] = last_space
 
     @cached_property
@@ -247,10 +234,10 @@ class SynthesisEnv:
 
     def get_block_mask(
         self,
-        state_properties: torch.Tensor,
+        state_properties: NDArray[np.float32],
         block_type: str,
-        indices: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        indices: NDArray[np.int64] | None = None,
+    ) -> NDArray[np.bool_]:
         """HSX budget rule on selected rows (or the full library for inspection).
 
         Use raw property units instead of division by the bound, so zero and
@@ -267,6 +254,8 @@ class SynthesisEnv:
         )
         # Broadcast either one state [P] or a state batch [B, P] against
         # the common sampled library [N]. This gathers block features once.
+        # State properties are float32, so uint8 counts are promoted before
+        # addition; a combined count above 255 cannot wrap.
         mask = (
             heavy_atoms + state_properties[..., PROPERTY_NAMES.index("heavy_atoms"), None]
             <= self.max_atoms

@@ -5,9 +5,9 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 
-import torch
+import numpy as np
+from numpy.typing import NDArray
 from rdkit import Chem
-from torch import Tensor
 
 
 class RewardFunction(ABC):
@@ -15,7 +15,7 @@ class RewardFunction(ABC):
 
     Implementations receive RDKit molecules. Treat them as read-only and use
     ``Chem.MolToSmiles`` if a reward needs strings. ``score`` must return
-    a float32 tensor of shape [batch, len(objectives)], including empty batches.
+    a float32 NumPy array of shape [batch, len(objectives)], including empty batches.
     Values must be finite, non-negative and larger-is-better. Implementations
     define the objective order and scale; preferences are applied by the trainer.
     """
@@ -23,7 +23,7 @@ class RewardFunction(ABC):
     objectives: tuple[str, ...]
 
     @abstractmethod
-    def score(self, molecules: list[Chem.Mol]) -> Tensor:
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
         raise NotImplementedError
 
     def filter_object(self, mol: Chem.Mol) -> bool:
@@ -37,7 +37,7 @@ class RewardFunction(ABC):
 def evaluate_rewards(
     reward: RewardFunction,
     molecules: list[Chem.Mol | None],
-) -> tuple[Tensor, dict[str, float]]:
+) -> tuple[NDArray[np.float32], dict[str, float]]:
     """Filter molecules and align rewards; failed trajectories pass None."""
 
     accepted: list[Chem.Mol] = []
@@ -52,14 +52,14 @@ def evaluate_rewards(
             accepted.append(mol)
             accepted_indices.append(index)
 
-    scores = reward.score(accepted).detach()
+    scores = reward.score(accepted)
     if scores.shape != (len(accepted), len(reward.objectives)):
         raise ValueError("RewardFunction.score must return [batch, num_objectives]")
-    if scores.dtype != torch.float32:
+    if scores.dtype != np.float32:
         raise ValueError("RewardFunction.score must return float32")
-    if not torch.isfinite(scores).all() or (scores < 0).any():
+    if not np.isfinite(scores).all() or (scores < 0).any():
         raise ValueError("rewards must be finite and non-negative")
-    result = scores.new_zeros((len(molecules), len(reward.objectives)))
+    result = np.zeros((len(molecules), len(reward.objectives)), dtype=np.float32)
     result[accepted_indices] = scores
 
     metrics = {name: float(value) for name, value in reward.metrics().items()}

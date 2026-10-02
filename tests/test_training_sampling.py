@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from numpy.typing import NDArray
 from rdkit import Chem
 
 from examples.qed import QEDReward
@@ -33,13 +34,13 @@ from rxnflow.trainer import RxnFlowTrainer
 class CarbonReward(RewardFunction):
     objectives = ("score",)
 
-    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
-        return torch.tensor(
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array(
             [
                 float(sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms())) / 10
                 for mol in molecules
             ],
-            dtype=torch.float32,
+            dtype=np.float32,
         ).reshape(-1, 1)
 
 
@@ -280,9 +281,7 @@ def test_oriented_block_scoring_and_observed_action_log_probability(
 
     spec = (ActionType.BI_REACTION, "amide_coupling_block_first", "1-1")
     assert any(
-        subspace.action_type == spec[0]
-        and subspace.name == spec[1]
-        and spec[2] in subspace.libraries
+        subspace.action_type == spec[0] and subspace.name == (spec[1], spec[2])
         for subspace in trainer.env.get_action_space(state)
     )
     actions = []
@@ -352,7 +351,7 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
         ).action_logits[0]
         valid = torch.isfinite(group.logits[0])
         # Masking retains every sampled column, even when all actions are invalid.
-        assert group.logits.shape[1] == sum(map(len, group.subspace.sample_indices))
+        assert group.logits.shape[1] == len(group.subspace.sample_indices)
         assert group.logits.shape[1] > 1
         if not valid.any():
             missed += 1
@@ -362,7 +361,7 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
         assert valid.sum() == 1
         action = group.subspace.action_at(position)
         assert action.block_type == name and action.block_index == target
-        count = trainer.policy.subsampling.num_sampling[name]
+        count = trainer.policy.subsampling[name].num_sampling
         assert group.log_importance[position].item() == pytest.approx(
             math.log(len(env.blocks[name]) / count)
         )
@@ -419,6 +418,7 @@ def test_batched_scores_and_gradients_match_scalar_reference(
     states = [
         State(),
         State.from_smiles("[3*]C"),
+        State.from_smiles("[3*]C", reaction_count=trainer.env.max_reactions - 1),
         State.from_smiles("[11*]C"),
         State.from_smiles("[33*]NCC"),
     ]
@@ -448,7 +448,10 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                 ),
             ),
         )
+        available = {subspace.name for subspace in trainer.env.get_action_space(state)}
         for group in categorical.action_logits:
+            if group.subspace.name not in available:
+                assert torch.isneginf(group.logits[row]).all()
             for column in range(group.logits.shape[1]):
                 if not torch.isfinite(group.logits[row, column]):
                     continue
@@ -462,7 +465,7 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                     if action.action_type == ActionType.UNI_REACTION
                     else model.get_block_logits(
                         embedding,
-                        group.subspace.name,
+                        group.subspace.name[0],
                         action.block_type,
                         torch.tensor([action.block_index]),
                         logit_scale=model.logit_scale(_condition(model, 1)),
@@ -492,11 +495,19 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
     draws = []
     original = SubsamplingPolicy.sample
 
-    def sample(self, block_type):
-        draws.append(block_type)
-        return original(self, block_type)
+    def sample(self):
+        draws.append(id(self))
+        return original(self)
 
     monkeypatch.setattr(SubsamplingPolicy, "sample", sample)
+    queries = []
+    forward_mdp = trainer.model.forward_mdp
+
+    def record_query(graph_emb, name, logit_scale):
+        queries.append(name)
+        return forward_mdp(graph_emb, name, logit_scale)
+
+    monkeypatch.setattr(trainer.model, "forward_mdp", record_query)
     initial = trainer.env.initial_state()
     categorical = trainer.policy.forward(
         [initial, initial],
@@ -504,8 +515,23 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
         preferences=torch.ones(len([initial, initial]), 1),
     )
     assert len(draws) == len(set(draws))
+    assert queries == ["first_block"]  # Shared across all first-block libraries.
+    assert len(categorical.action_logits) == len(trainer.env.brick_types)
+    assert all(s.sample_indices is None for s in trainer.env.initial_action_space)
     for group in categorical.action_logits:
         torch.testing.assert_close(group.logits[0], group.logits[1])
+    # Unary-only batches take the same sampling path, without block features or RNG.
+    draws.clear()
+    before = trainer.rng.bit_generator.state
+    unary = trainer.policy.forward(
+        [State.from_smiles("[33*]NCC")], beta=torch.ones(1), preferences=torch.ones(1, 1)
+    )
+    assert draws == [id(trainer.policy.subsampling[None])]
+    assert trainer.rng.bit_generator.state == before
+    assert len(unary.action_logits) == 1
+    assert unary.action_logits[0].subspace.sample_indices.tolist() == [0]
+    assert unary.action_logits[0].log_importance.tolist() == [0.0]
+    assert unary.sample(1.0, 0.0, 1.0)[0].action_type == ActionType.UNI_REACTION
     dead = State.from_smiles("[33*]NCC", trainer.env.max_reactions - 1)
     choices = trainer.policy.sample_actions(
         [dead, initial],
@@ -566,7 +592,7 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     monkeypatch.setattr(
         SubsamplingPolicy,
         "sample",
-        lambda self, block_type: (np.array([0]), math.log(self.num_blocks[block_type])),
+        lambda self: (np.array([0]), math.log(self.num_actions)),
     )
     state = trainer.env.initial_state()
     actions = [
@@ -578,9 +604,7 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
         preferences=torch.ones(len([state, state]), 1),
     )
     assert all(
-        indices.tolist() == [0]
-        for p in categorical.action_logits
-        for indices in p.subspace.sample_indices
+        p.subspace.sample_indices.tolist() == [0] for p in categorical.action_logits
     )
     monkeypatch.setattr(trainer.policy, "forward", lambda *args: categorical)
     actual = trainer.policy.log_prob(

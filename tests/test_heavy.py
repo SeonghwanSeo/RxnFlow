@@ -1,6 +1,5 @@
 import os
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -56,10 +55,11 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
     env = SynthesisEnv(env_dir, max_atoms=50, retrosynthesis_workers=0)
     assert env.bi_reactions and env.blocks and env.brick_types
     indices, _ = SubsamplingPolicy(
-        SimpleNamespace(blocks={"large": range(1_000_000)}),
-        SubsamplingConfig(sampling_ratio=0.01, min_sampling=50),
+        1_000_000,
+        0.01,
+        50,
         np.random.default_rng(0),
-    ).sample("large")
+    ).sample()
     assert len(indices) == 10_000
 
     steps = int(os.environ.get("RXNFLOW_HEAVY_STEPS", "10"))

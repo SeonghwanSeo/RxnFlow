@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 
 import torch
-from torch import Tensor, nn
+from torch import nn
 from torch.nn import functional as F
 
 from rxnflow.config import ModelConfig
@@ -108,45 +108,49 @@ class RxnFlowModel(nn.Module):
         nn.init.zeros_(self._logZ[-1].weight)
         nn.init.zeros_(self._logZ[-1].bias)
 
-    def encode_cond(self, beta: Tensor, preferences: Tensor) -> Tensor:
+    def encode_cond(self, beta: torch.Tensor, preferences: torch.Tensor) -> torch.Tensor:
         u = (beta[:, None] - 1.0) / 63.0
         frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
         angles = 2 * math.pi * u * frequencies
         features = torch.cat([u, angles.sin(), angles.cos()], dim=-1)
         return self.emb_beta(features) + self.emb_preferences(preferences)
 
-    def graph_embedding(self, batch: GraphBatch, cond_info: Tensor) -> Tensor:
+    def graph_embedding(self, batch: GraphBatch, cond_info: torch.Tensor) -> torch.Tensor:
         mean_emb, virtual_emb = self.mpnn(batch, self.cond2h(cond_info)).chunk(2, dim=-1)
         return torch.cat(
             [self.norm_mean(mean_emb), self.norm_virtual(virtual_emb)], dim=-1
         )
 
-    def logit_scale(self, cond_info: Tensor) -> Tensor:
+    def logit_scale(self, cond_info: torch.Tensor) -> torch.Tensor:
         """HSX ELU + 1: positive scalar per condition, without fixed bounds."""
         return F.elu(self._logit_scale(cond_info)).squeeze(-1) + 1
 
-    def logZ(self, cond_info: Tensor) -> Tensor:
+    def logZ(self, cond_info: torch.Tensor) -> torch.Tensor:
         return self._logZ(cond_info)
 
     def get_unirxn_logits(
-        self, graph_emb: Tensor, action_name: str, logit_scale: Tensor
-    ) -> Tensor:
+        self, graph_emb: torch.Tensor, action_name: str, logit_scale: torch.Tensor
+    ) -> torch.Tensor:
         return self.forward_mdp(graph_emb, action_name, logit_scale)[0, 0]
 
     def get_block_emb(
-        self, block_type: str, indices: Tensor, device: torch.device
-    ) -> Tensor:
+        self, block_type: str, indices: torch.Tensor, device: torch.device
+    ) -> torch.Tensor:
         library = self.env.blocks[block_type]
-        cpu_indices = indices.detach().cpu().to(torch.long)
-        fp = library.fingerprints[cpu_indices].to(device, dtype=torch.float32)
-        prop = library.properties[cpu_indices].to(device)
+        cpu_indices = indices.detach().cpu().to(torch.long).numpy()
+        fp = torch.from_numpy(library.fingerprints[cpu_indices]).to(
+            device, dtype=torch.float32
+        )
+        prop = torch.from_numpy(library.properties[cpu_indices]).to(device)
         type_index = self.env.block_type_to_index[block_type]
         block_types = torch.full(
             (len(indices),), type_index, dtype=torch.long, device=device
         )
         return self.block_embedding(fp, prop, block_types)
 
-    def block_embedding(self, fp: Tensor, prop: Tensor, block_types: Tensor) -> Tensor:
+    def block_embedding(
+        self, fp: torch.Tensor, prop: torch.Tensor, block_types: torch.Tensor
+    ) -> torch.Tensor:
         prop = prop / self.property_scale
         return self.mlp_block(
             torch.cat(
@@ -160,8 +164,8 @@ class RxnFlowModel(nn.Module):
         )
 
     def forward_mdp(
-        self, graph_emb: Tensor, action_name: str, logit_scale: Tensor
-    ) -> Tensor:
+        self, graph_emb: torch.Tensor, action_name: str, logit_scale: torch.Tensor
+    ) -> torch.Tensor:
         index = self.env.action_to_index[action_name]
         rxn_emb = self.emb_rxn.weight[index].expand(graph_emb.shape[0], -1)
         state_rxn_emb = torch.cat([graph_emb, rxn_emb], dim=-1)
@@ -175,12 +179,12 @@ class RxnFlowModel(nn.Module):
 
     def get_block_logits(
         self,
-        graph_emb: Tensor,
+        graph_emb: torch.Tensor,
         action_name: str,
         block_type: str,
-        indices: Tensor,
-        logit_scale: Tensor,
-    ) -> Tensor:
+        indices: torch.Tensor,
+        logit_scale: torch.Tensor,
+    ) -> torch.Tensor:
         assert indices.ndim == 1 and graph_emb.shape[0] == 1
         state_emb = self.forward_mdp(graph_emb, action_name, logit_scale)
         block_emb = self.get_block_emb(block_type, indices, graph_emb.device)

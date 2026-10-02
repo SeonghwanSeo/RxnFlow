@@ -3,6 +3,7 @@
 import json
 import random
 
+import numpy as np
 import pytest
 import torch
 from rdkit.Chem import QED
@@ -33,9 +34,9 @@ class TwoObjectiveReward(RewardFunction):
     objectives = ("qed", "size")
 
     def score(self, molecules):
-        return torch.tensor(
+        return np.array(
             [[QED.qed(mol), min(mol.GetNumHeavyAtoms() / 20, 1)] for mol in molecules],
-            dtype=torch.float32,
+            dtype=np.float32,
         ).reshape(-1, 2)
 
 

@@ -5,12 +5,11 @@ from __future__ import annotations
 import math
 
 import torch
-from torch import Tensor
 
 
 def sample_distribution(
     distribution: tuple[str, list[float]], count: int, dim: int = 1
-) -> Tensor:
+) -> torch.Tensor:
     """Draw [count, dim] using the checkpointed CPU global Torch RNG."""
     name, params = distribution
     if name == "fixed":
@@ -62,7 +61,7 @@ class ConditionSampler:
         self.preferences = preferences
         self.num_objectives = num_objectives
 
-    def sample(self, count: int) -> tuple[Tensor, Tensor]:
+    def sample(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
         beta = sample_distribution(self.beta, count).squeeze(-1)
         preferences = sample_distribution(self.preferences, count, self.num_objectives)
         return beta, preferences

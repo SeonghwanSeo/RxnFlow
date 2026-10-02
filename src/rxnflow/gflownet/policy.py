@@ -7,10 +7,10 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
-from torch import Tensor
+from numpy.typing import NDArray
 from torch.nn import functional as F
 
-from rxnflow.config import Config, SubsamplingConfig
+from rxnflow.config import Config
 from rxnflow.core.errors import InvalidTransition, NoValidActions
 from rxnflow.core.types import (
     Action,
@@ -22,7 +22,7 @@ from rxnflow.core.types import (
 )
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.features import molecular_properties
-from rxnflow.envs.graph import GraphBatch, molecule_to_graph_data
+from rxnflow.envs.graph import GraphBatch, GraphData, molecule_to_graph_data
 from rxnflow.envs.retrosynthesis import RetrosynthesisTree
 from rxnflow.models import RxnFlowModel
 
@@ -39,51 +39,49 @@ def resolve_device(value: str) -> torch.device:
 @dataclass
 class ActionLogits:
     subspace: ActionSubspace
-    logits: Tensor  # [state, sampled block], or [state, 1] for UniReaction
-    log_importance: Tensor  # [sampled block]
+    logits: torch.Tensor  # [state, sampled block], or [state, 1] for UniReaction
+    log_importance: torch.Tensor  # [sampled block]
 
 
 class SubsamplingPolicy:
-    """Reference uniform draws: one shared sample per needed library per batch."""
+    """Uniform subsampling of a fixed action range, including singleton actions."""
 
     def __init__(
-        self, env: SynthesisEnv, config: SubsamplingConfig, rng: np.random.Generator
+        self,
+        num_actions: int,
+        sampling_ratio: float,
+        min_sampling: int,
+        rng: np.random.Generator,
     ):
         self.rng = rng
-        self.num_blocks = {name: len(library) for name, library in env.blocks.items()}
-        self.num_sampling = {
-            name: min(size, max(config.min_sampling, int(size * config.sampling_ratio)))
-            for name, size in self.num_blocks.items()
-        }
-        self.log_importance = {
-            name: math.log(size / self.num_sampling[name])
-            for name, size in self.num_blocks.items()
-        }
-        self.full_indices = {
-            name: np.arange(size, dtype=np.int64)
-            for name, size in self.num_blocks.items()
-            if self.num_sampling[name] == size
-        }
-
-    def sample(self, block_type: str) -> tuple[np.ndarray, float]:
-        if block_type in self.full_indices:
-            # No randomness or repeated allocation for full-library draws.
-            return self.full_indices[block_type], 0.0
-        indices = self.rng.choice(
-            self.num_blocks[block_type], self.num_sampling[block_type], replace=False
+        self.num_actions = num_actions
+        self.num_sampling = min(
+            num_actions, max(min_sampling, int(num_actions * sampling_ratio))
         )
+        self.log_importance = math.log(num_actions / self.num_sampling)
+        self.full_indices = (
+            np.arange(num_actions, dtype=np.int64)
+            if self.num_sampling == num_actions
+            else None
+        )
+
+    def sample(self) -> tuple[np.ndarray, float]:
+        if self.full_indices is not None:
+            # Full ranges, including unary [0], consume no RNG or new allocation.
+            return self.full_indices, self.log_importance
+        indices = self.rng.choice(self.num_actions, self.num_sampling, replace=False)
         # HSX sorts selected rows. Sorting does not alter uniform inclusion.
         indices.sort()
-        return indices, self.log_importance[block_type]
+        return indices, self.log_importance
 
 
 @dataclass
 class ActionCategorical:
     action_logits: list[ActionLogits]
-    graph_emb: Tensor
-    logit_scale: Tensor
+    graph_emb: torch.Tensor
+    logit_scale: torch.Tensor
 
-    def log_partition(self) -> Tensor:
+    def log_partition(self) -> torch.Tensor:
         # RxnFlow estimates the denominator from an independent subsample.
         # Unlike a fixed reference group mask, a budgeted subsample can be
         # entirely masked. A finite floor keeps observed-edge scoring defined;
@@ -111,25 +109,12 @@ class ActionCategorical:
         for group in self.action_logits:
             values = group.logits + importance * group.log_importance
             if random_action_prob > 0:
-                # This is the random policy, not a learned action logit. Balance
-                # libraries by their sampled sizes before applying state masks.
-                if group.subspace.libraries:
-                    counts = (
-                        group.subspace.library_sizes
-                        if group.subspace.sample_indices is None
-                        else [len(indices) for indices in group.subspace.sample_indices]
-                    )
-                    random_logits = torch.cat(
-                        [
-                            values.new_full(
-                                (count,),
-                                -math.log(len(group.subspace.libraries) * count),
-                            )
-                            for count in counts
-                        ]
-                    )
-                else:
-                    random_logits = values.new_zeros(1)
+                # Give each (reaction, library) subspace unit mass before
+                # masking at softmax temperature 1. Unary subspaces have N=1.
+                # Surviving mass is reduced by the fraction of masked columns.
+                random_logits = values.new_full(
+                    (values.shape[1],), -math.log(values.shape[1])
+                )
                 values = torch.where(random_rows[:, None], random_logits, values)
             values = values.masked_fill(~torch.isfinite(group.logits), -torch.inf)
             # Gumbel-max on retained matrices (RxnFlow/CGFlow categorical).
@@ -162,57 +147,90 @@ class RxnFlowPolicy:
     ):
         self.env, self.model, self.config = env, model, config
         self.device, self.rng = device, rng
-        self.subsampling = SubsamplingPolicy(env, config.subsampling, rng)
+        # Samplers are shared by library across reaction subspaces. All unary
+        # subspaces use the deterministic singleton range under None.
+        num_actions = {
+            None: 1,
+            **{name: len(library) for name, library in env.blocks.items()},
+        }
+        self.subsampling = {
+            name: SubsamplingPolicy(
+                count,
+                config.subsampling.sampling_ratio,
+                config.subsampling.min_sampling,
+                rng,
+            )
+            for name, count in num_actions.items()
+        }
 
     def forward(
-        self, states: list[State], beta: Tensor, preferences: Tensor
+        self, states: list[State], beta: torch.Tensor, preferences: torch.Tensor
     ) -> ActionCategorical:
         """Retain sampled columns; mask logits instead of packing valid actions.
 
         One common draw per library is the agreed adaptation of CGFlow. Each
-        reaction concatenates its compatible libraries into one score matrix.
-        No observed action enters these draws or their importance weights.
+        reaction shares one query/matmul across libraries, then exposes one
+        logit matrix per (reaction, library). No observed action enters these
+        draws or their importance weights.
         """
         assert states
-        graphs, properties = {}, {}
+        graphs: dict[tuple[str, int], GraphData] = {}
+        properties: dict[tuple[str, int], NDArray[np.float32]] = {}
         keys = [(state.smiles, state.reaction_count) for state in states]
         # Metadata contains only state rows and library names, never candidate
         # objects or per-state arrays of valid block indices.
-        action_rows, action_libraries, action_types, library_rows = {}, {}, {}, {}
+        action_rows: dict[str, set[int]] = {}  # reaction -> batch rows
+        # reaction -> library -> batch rows
+        action_libraries: dict[str, dict[str, list[int]]] = {}
+        action_types: dict[str, ActionType] = {}
+        library_rows: dict[str | None, set[int]] = {}  # None is the unary range
         for row, (state, key) in enumerate(zip(states, keys, strict=True)):
             if key not in graphs:
-                descriptors = molecular_properties(state.mol)
-                properties[key] = torch.from_numpy(descriptors)
+                mol_properties = molecular_properties(state.mol)
+                properties[key] = mol_properties
                 graphs[key] = molecule_to_graph_data(
-                    state.mol, self.env.max_atoms, state.reaction_count, descriptors
+                    state.mol, self.env.max_atoms, state.reaction_count, mol_properties
                 )
             for subspace in self.env.get_action_space(state):
-                name = subspace.name
+                name, block_type = subspace.name
                 action_types[name] = subspace.action_type
                 action_rows.setdefault(name, set()).add(row)
-                for block_type in subspace.libraries:
+                if block_type is not None:
                     action_libraries.setdefault(name, {}).setdefault(
                         block_type, []
                     ).append(row)
-                    library_rows.setdefault(block_type, set()).add(row)
-        descriptors = torch.stack([properties[key] for key in keys])
-        samples, log_importance, masks, features, sizes = {}, {}, {}, [], []
-        for name, rows in library_rows.items():
-            samples[name], log_importance[name] = self.subsampling.sample(name)
-            indices = torch.from_numpy(samples[name])
-            rows = torch.tensor(sorted(rows))
-            mask = torch.zeros((len(states), len(indices)), dtype=torch.bool)
-            mask[rows] = self.env.get_block_mask(descriptors[rows], name, indices)
-            masks[name] = mask
-            library = self.env.blocks[name]
+                library_rows.setdefault(block_type, set()).add(row)
+        descriptors = np.stack([properties[key] for key in keys])
+        samples: dict[str | None, NDArray[np.int64]] = {}
+        log_importance: dict[str | None, float] = {}
+        masks: dict[str, NDArray[np.bool_]] = {}  # library -> [batch, sampled actions]
+        # Each entry contains fingerprints, properties and block type indices.
+        features: list[
+            tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]
+        ] = []
+        sizes: list[int] = []
+        for library_name, rows in library_rows.items():
+            samples[library_name], log_importance[library_name] = self.subsampling[
+                library_name
+            ].sample()
+            if library_name is None:
+                continue  # Unary actions share subsampling, but have no block features.
+            indices = samples[library_name]
+            row_indices = sorted(rows)
+            mask = np.zeros((len(states), len(indices)), dtype=np.bool_)
+            mask[row_indices] = self.env.get_block_mask(
+                descriptors[row_indices], library_name, indices
+            )
+            masks[library_name] = mask
+            library_data = self.env.blocks[library_name]
             features.append(
                 (
-                    library.fingerprints[indices],
-                    library.properties[indices],
-                    torch.full(
+                    library_data.fingerprints[indices],
+                    library_data.properties[indices],
+                    np.full(
                         (len(indices),),
-                        self.env.block_type_to_index[name],
-                        dtype=torch.long,
+                        self.env.block_type_to_index[library_name],
+                        dtype=np.int64,
                     ),
                 )
             )
@@ -226,64 +244,88 @@ class RxnFlowPolicy:
             cond_info,
         )
         logit_scale = self.model.logit_scale(cond_info)
-        block_embs = {}
+        block_embs: dict[str, torch.Tensor] = {}
         if features:
             fps, props, types = zip(*features, strict=True)
             encoded = F.normalize(
                 self.model.block_embedding(
-                    torch.cat(fps).to(self.device, dtype=torch.float32),
-                    torch.cat(props).to(self.device),
-                    torch.cat(types).to(self.device),
+                    torch.from_numpy(np.concatenate(fps)).to(
+                        self.device, dtype=torch.float32
+                    ),
+                    torch.from_numpy(np.concatenate(props)).to(self.device),
+                    torch.from_numpy(np.concatenate(types)).to(self.device),
                 ),
                 dim=-1,
             )
-            block_embs = dict(zip(samples, encoded.split(sizes), strict=True))
+            block_embs = dict(zip(masks, encoded.split(sizes), strict=True))
 
-        action_logits = []
+        action_logits: list[ActionLogits] = []
         for name, rows in action_rows.items():
-            rows = torch.tensor(sorted(rows), device=self.device)
-            state_emb = self.model.forward_mdp(graph_emb[rows], name, logit_scale[rows])
+            row_indices = torch.tensor(sorted(rows), device=self.device)
+            state_emb = self.model.forward_mdp(
+                graph_emb[row_indices], name, logit_scale[row_indices]
+            )
             libraries = list(action_libraries.get(name, {}))
             if libraries:
-                # CGFlow: a single group matrix over concatenated libraries.
+                # Compute the reaction query and matrix product once, then split
+                # columns into library subspaces without recomputing embeddings.
                 blocks = torch.cat([block_embs[n] for n in libraries])
                 scores = state_emb @ blocks.T
                 logits = graph_emb.new_full((len(states), len(blocks)), -torch.inf)
-                logits = logits.index_copy(0, rows, scores)
-                allowed, weights = [], []
+                logits = logits.index_copy(0, row_indices, scores)
+                allowed: list[NDArray[np.bool_]] = []
+                weight_parts: list[torch.Tensor] = []
                 for n in libraries:
-                    eligible = torch.zeros(len(states), dtype=torch.bool)
+                    eligible = np.zeros(len(states), dtype=np.bool_)
                     eligible[action_libraries[name][n]] = True
                     allowed.append(masks[n] & eligible[:, None])
                     count = len(samples[n])
-                    weights.append(torch.full((count,), log_importance[n]))
+                    weight_parts.append(torch.full((count,), log_importance[n]))
                 logits = logits.masked_fill(
-                    ~torch.cat(allowed, 1).to(self.device), -torch.inf
+                    ~torch.from_numpy(np.concatenate(allowed, axis=1)).to(self.device),
+                    -torch.inf,
                 )
-                weights = torch.cat(weights).to(self.device)
+                weights = torch.cat(weight_parts).to(self.device)
             else:
                 logits = graph_emb.new_full((len(states), 1), -torch.inf).index_copy(
-                    0, rows, state_emb
+                    0, row_indices, state_emb
                 )
-                weights = graph_emb.new_zeros(1)
-            action_logits.append(
-                ActionLogits(
-                    ActionSubspace(
-                        name,
-                        action_types[name],
-                        libraries,
-                        [self.subsampling.num_blocks[n] for n in libraries],
-                        [samples[n] for n in libraries],
-                    ),
-                    logits,
-                    weights,
+                weights = graph_emb.new_full((len(samples[None]),), log_importance[None])
+            if libraries:
+                counts = [len(samples[n]) for n in libraries]
+                for library, library_logits, library_weights in zip(
+                    libraries,
+                    logits.split(counts, dim=1),
+                    weights.split(counts),
+                    strict=True,
+                ):
+                    action_logits.append(
+                        ActionLogits(
+                            ActionSubspace(
+                                (name, library),
+                                action_types[name],
+                                self.subsampling[library].num_actions,
+                                samples[library],
+                            ),
+                            library_logits,
+                            library_weights,
+                        )
+                    )
+            else:
+                action_logits.append(
+                    ActionLogits(
+                        ActionSubspace(
+                            (name, None), action_types[name], 1, samples[None]
+                        ),
+                        logits,
+                        weights,
+                    )
                 )
-            )
         return ActionCategorical(action_logits, graph_emb, logit_scale)
 
     def get_action_logits(
-        self, graph_emb: Tensor, actions: list[Action], logit_scale: Tensor
-    ) -> Tensor:
+        self, graph_emb: torch.Tensor, actions: list[Action], logit_scale: torch.Tensor
+    ) -> torch.Tensor:
         """Score numerator edges independently of the denominator subsample.
 
         This is RxnFlow's _cal_action_logits, batched by reaction/library to
@@ -301,15 +343,15 @@ class RxnFlowPolicy:
                 by_library.setdefault(action.block_type, []).append(row)
         block_rows, features = [], []
         for name, rows in by_library.items():
-            indices = torch.tensor([actions[i].block_index for i in rows])
+            indices = np.array([actions[i].block_index for i in rows], dtype=np.int64)
             library = self.env.blocks[name]
             block_rows.extend(rows)
             features.append(
                 (
                     library.fingerprints[indices],
                     library.properties[indices],
-                    torch.full(
-                        (len(rows),), self.env.block_type_to_index[name], dtype=torch.long
+                    np.full(
+                        (len(rows),), self.env.block_type_to_index[name], dtype=np.int64
                     ),
                 )
             )
@@ -318,9 +360,11 @@ class RxnFlowPolicy:
             fp, prop, typ = zip(*features, strict=True)
             values = F.normalize(
                 self.model.block_embedding(
-                    torch.cat(fp).to(self.device, dtype=torch.float32),
-                    torch.cat(prop).to(self.device),
-                    torch.cat(typ).to(self.device),
+                    torch.from_numpy(np.concatenate(fp)).to(
+                        self.device, dtype=torch.float32
+                    ),
+                    torch.from_numpy(np.concatenate(prop)).to(self.device),
+                    torch.from_numpy(np.concatenate(typ)).to(self.device),
                 ),
                 dim=-1,
             )
@@ -347,8 +391,8 @@ class RxnFlowPolicy:
         states: list[State],
         sampling_temperature: float,
         random_action_prob: float,
-        beta: Tensor,
-        preferences: Tensor,
+        beta: torch.Tensor,
+        preferences: torch.Tensor,
     ) -> list[Action | None]:
         return self.forward(states, beta, preferences).sample(
             sampling_temperature,
@@ -361,8 +405,8 @@ class RxnFlowPolicy:
         state: State,
         sampling_temperature: float,
         random_action_prob: float,
-        beta: Tensor,
-        preferences: Tensor,
+        beta: torch.Tensor,
+        preferences: torch.Tensor,
     ) -> Action:
         action = self.sample_actions(
             [state], sampling_temperature, random_action_prob, beta, preferences
@@ -377,9 +421,9 @@ class RxnFlowPolicy:
         self,
         states: list[State],
         actions: list[Action],
-        beta: Tensor,
-        preferences: Tensor,
-    ) -> Tensor:
+        beta: torch.Tensor,
+        preferences: torch.Tensor,
+    ) -> torch.Tensor:
         fwd_cat = self.forward(states, beta, preferences)
         numerator = self.get_action_logits(
             fwd_cat.graph_emb, actions, fwd_cat.logit_scale
@@ -387,8 +431,8 @@ class RxnFlowPolicy:
         return (numerator - fwd_cat.log_partition()).clamp(max=0.0)
 
     def log_prob_single(
-        self, state: State, action: Action, beta: Tensor, preferences: Tensor
-    ) -> Tensor:
+        self, state: State, action: Action, beta: torch.Tensor, preferences: torch.Tensor
+    ) -> torch.Tensor:
         return self.log_prob([state], [action], beta, preferences)[0]
 
     def rollout(
@@ -397,8 +441,8 @@ class RxnFlowPolicy:
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
         *,
-        beta: Tensor,
-        preferences: Tensor,
+        beta: torch.Tensor,
+        preferences: torch.Tensor,
     ) -> Trajectory:
         return self.rollouts(
             1,
@@ -416,8 +460,8 @@ class RxnFlowPolicy:
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
         *,
-        beta: Tensor,
-        preferences: Tensor,
+        beta: torch.Tensor,
+        preferences: torch.Tensor,
     ) -> list[Trajectory]:
         if count <= 0:
             raise ValueError("rollout count must be positive")

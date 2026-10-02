@@ -11,7 +11,6 @@ from time import perf_counter
 import numpy as np
 import torch
 from rdkit import Chem
-from torch import Tensor
 
 from rxnflow import __version__
 from rxnflow.config import Config
@@ -24,7 +23,9 @@ from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, evaluate_rewards
 
 
-def sum_by_trajectory(values: Tensor, indices: Tensor, count: int) -> Tensor:
+def sum_by_trajectory(
+    values: torch.Tensor, indices: torch.Tensor, count: int
+) -> torch.Tensor:
     """Aggregate transition values by trajectory with native tensor indexing."""
 
     result = torch.zeros(count, dtype=values.dtype, device=values.device)
@@ -58,9 +59,13 @@ class RxnFlowTrainer:
             config.training.retrosynthesis_workers,
             config.property_penalty,
         )
-        self.model = RxnFlowModel(self.env, config.model, len(self.objectives)).to(self.device)
+        self.model = RxnFlowModel(self.env, config.model, len(self.objectives)).to(
+            self.device
+        )
         self.sampling_model = (
-            RxnFlowModel(self.env, config.model, len(self.objectives)).to(self.device).eval()
+            RxnFlowModel(self.env, config.model, len(self.objectives))
+            .to(self.device)
+            .eval()
         )
         self.sampling_model.load_state_dict(self.model.state_dict())
         # HSX main trains logZ at its own rate and excludes it from policy
@@ -90,9 +95,7 @@ class RxnFlowTrainer:
         self.output_dir = Path(config.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.config.save(self.output_dir / "config.yaml")
-        self.policy = RxnFlowPolicy(
-            self.env, self.model, config, self.device, self.rng
-        )
+        self.policy = RxnFlowPolicy(self.env, self.model, config, self.device, self.rng)
         self.sampling_policy = RxnFlowPolicy(
             self.env, self.sampling_model, config, self.device, self.rng
         )
@@ -147,7 +150,7 @@ class RxnFlowTrainer:
         return destination
 
     def load_checkpoint(self, path: str | Path) -> None:
-        # RNG states are CPU ByteTensors even for a CUDA model. Parameter and
+        # RNG states are CPU byte tensors even for a CUDA model. Parameter and
         # optimizer loaders move their own tensors to the model device.
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         if checkpoint.get("rxnflow_version") != __version__:
@@ -191,10 +194,10 @@ class RxnFlowTrainer:
         )
         # Objective values are independent of the condition; retain them for
         # logging and replay. The scalar reward is the untempered weighted sum.
-        preferences = values.new_tensor([t.preferences for t in trajectories])
-        scalar_rewards = (values * preferences).sum(-1).cpu().tolist()
+        preferences = np.array([t.preferences for t in trajectories], dtype=np.float32)
+        scalar_rewards = (values * preferences).sum(-1).tolist()
         for trajectory, objectives, scalar in zip(
-            trajectories, values.cpu().tolist(), scalar_rewards, strict=True
+            trajectories, values.tolist(), scalar_rewards, strict=True
         ):
             trajectory.objective_rewards = objectives
             trajectory.reward = scalar if trajectory.valid else 0.0
@@ -202,7 +205,7 @@ class RxnFlowTrainer:
 
     def compute_batch_losses(
         self, trajectories: list[Trajectory], num_fresh: int
-    ) -> tuple[Tensor, dict[str, Tensor]]:
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         beta = torch.tensor(
             [t.beta for t in trajectories], dtype=torch.float32, device=self.device
         )

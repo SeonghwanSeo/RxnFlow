@@ -1,6 +1,7 @@
 """Minimal local reward injection example."""
 
-import torch
+import numpy as np
+from numpy.typing import NDArray
 from rdkit import Chem
 
 from rxnflow.config import Config
@@ -14,10 +15,10 @@ class HeavyAtomReward(RewardFunction):
     def __init__(self, scale: float = 40.0):
         self.scale = scale
 
-    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
-        return torch.tensor(
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array(
             [[mol.GetNumHeavyAtoms() / self.scale] for mol in molecules],
-            dtype=torch.float32,
+            dtype=np.float32,
         ).reshape(-1, 1)
 
     def filter_object(self, mol: Chem.Mol) -> bool:

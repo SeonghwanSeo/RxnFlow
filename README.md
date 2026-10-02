@@ -50,7 +50,7 @@ prepared/enamine/
 └── prepare_manifest.json
 ```
 
-Each `blocks/*.smi` row is `synthon SMILES<TAB>JSON array of source IDs`. `building_blocks.json` maps each ID to its standardized source BB SMILES; it is provenance, not a parallel molecular state. The NPZ feature file uses flat `<type>/smiles`, `<type>/properties`, `<type>/fingerprints`, and `<type>/heavy_atoms` arrays, plus a format marker. Feature rows include their aligned SMILES. Fingerprints concatenate 512 Morgan counts (radius 2, dummy-isotope invariants, saturated at 255) and 166 MACCS bits as uint8. Libraries retain uint8; selected model inputs convert to float32. Properties remain float32. The CLI performs conversion followed by feature generation and requires a new output directory. There are no resume/force options or `all` stage selector. In Python, `convert_stage` and `features_stage` can be imported from `rxnflow.envs.prepare` and called directly. Re-conversion invalidates prior features. Rebuild after changing source files or templates. `--num-workers N` parallelizes synthon conversion and fingerprint/property calculation with N processes (default 1, serial). Both Python stage functions accept `num_workers=N`. Source cleaning and final file writing remain serial; parallel execution preserves library row order and feature alignment.
+Each `blocks/*.smi` row is `synthon SMILES<TAB>JSON array of source IDs`. `building_blocks.json` maps each ID to its standardized source BB SMILES; it is provenance, not a parallel molecular state. The NPZ feature file uses flat `<type>/smiles`, `<type>/properties`, `<type>/fingerprints`, and `<type>/heavy_atoms` arrays, plus a format marker. Feature rows include their aligned SMILES. Fingerprints concatenate 512 Morgan counts (radius 2, dummy-isotope invariants, saturated at 255) and 166 MACCS bits as uint8. Libraries keep NumPy arrays: fingerprints and the separate heavy-atom counts use uint8, while properties use float32. CPU indexing and budget masks use NumPy; selected model inputs become PyTorch tensors. Source cleaning retains only desalted building blocks with at most 50 heavy atoms, before synthon conversion. The cutoff applies to the source BB, not the resulting brick or linker. Rebuild existing environments to apply this cutoff and the uint8 atom-count format. The CLI performs conversion followed by feature generation and requires a new output directory. There are no resume/force options or `all` stage selector. In Python, `convert_stage` and `features_stage` can be imported from `rxnflow.envs.prepare` and called directly. Re-conversion invalidates prior features. Rebuild after changing source files or templates. `--num-workers N` parallelizes synthon conversion and fingerprint/property calculation with N processes (default 1, serial). Both Python stage functions accept `num_workers=N`. Source cleaning and final file writing remain serial; parallel execution preserves library row order and feature alignment.
 
 For the local random 10,000-record development environment, see [subset preparation and evaluation](docs/development-subset.md).
 
@@ -101,7 +101,8 @@ Training uses MSE trajectory balance, uniform FIFO replay, an EMA sampling model
 Rewards are explicit local Python objects implementing `RewardFunction`. Both `score` and `filter_object` receive RDKit molecules directly; use `Chem.MolToSmiles(mol)` when strings are needed:
 
 ```python
-import torch
+import numpy as np
+from numpy.typing import NDArray
 from rxnflow.config import Config
 from rdkit import Chem
 from rxnflow.reward import RewardFunction
@@ -111,11 +112,11 @@ from rxnflow.trainer import RxnFlowTrainer
 class CarbonReward(RewardFunction):
     objectives = ("carbon",)
 
-    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
-        return torch.tensor([
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array([
             [sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms()) / 50]
             for mol in molecules
-        ], dtype=torch.float32).reshape(-1, 1)
+        ], dtype=np.float32).reshape(-1, 1)
 
 
 config = Config.from_file("config.yaml")
@@ -123,7 +124,7 @@ trainer = RxnFlowTrainer(config, CarbonReward())
 trainer.run()
 ```
 
-`score` returns a finite, non-negative float32 tensor `[batch, num_objectives]`; objective names define the column order. Each objective is scaled by the reward implementation. Override `RewardFunction.filter_object(mol)` to skip scoring and assign zero rewards to rejected molecules; the default accepts all molecules. This does not remove sampling outputs. The YAML `reward.beta` is a string specifying the reward exponent: `"32"` or `"uniform(1,64)"`. `reward.preferences` defaults to `"uniform"` (uniform on the simplex, exactly Dirichlet(1)); alternatives are `"dirichlet(0.5)"` for symmetric concentration or `"fixed(0.3,0.7)"` in objective order. CLI/YAML boundaries parse strings into `tuple[str, list[float]]`: beta `("fixed", [32.0])` or `("uniform", [1.0, 64.0])`, preferences `("dirichlet", [1.0])` or `("fixed", [0.3, 0.7])`. Python Config/Sampler/ConditionSampler consume these tuples, not strings. `sample_distribution()` supplies shared fixed/uniform/Dirichlet draws. Trajectories/replay store sampled numeric beta and weights. `reward.floor` applies before exponentiation. CLI sampling accepts the same strings: `--beta "uniform(1,64)" --preferences "fixed(0.3,0.7)"`. A single objective always has weight `[1]`. These are external settings, independent of the fixed model encoder coordinates. `reward.settings` contains constructor kwargs; reward selection stays explicit in Python.
+`score` returns a finite, non-negative float32 NumPy array `[batch, num_objectives]`; objective names define the column order. Each objective is scaled by the reward implementation. Override `RewardFunction.filter_object(mol)` to skip scoring and assign zero rewards to rejected molecules; the default accepts all molecules. This does not remove sampling outputs. The YAML `reward.beta` is a string specifying the reward exponent: `"32"` or `"uniform(1,64)"`. `reward.preferences` defaults to `"uniform"` (uniform on the simplex, exactly Dirichlet(1)); alternatives are `"dirichlet(0.5)"` for symmetric concentration or `"fixed(0.3,0.7)"` in objective order. CLI/YAML boundaries parse strings into `tuple[str, list[float]]`: beta `("fixed", [32.0])` or `("uniform", [1.0, 64.0])`, preferences `("dirichlet", [1.0])` or `("fixed", [0.3, 0.7])`. Python Config/Sampler/ConditionSampler consume these tuples, not strings. `sample_distribution()` supplies shared fixed/uniform/Dirichlet draws. Trajectories/replay store sampled numeric beta and weights. `reward.floor` applies before exponentiation. CLI sampling accepts the same strings: `--beta "uniform(1,64)" --preferences "fixed(0.3,0.7)"`. A single objective always has weight `[1]`. These are external settings, independent of the fixed model encoder coordinates. `reward.settings` contains constructor kwargs; reward selection stays explicit in Python.
 
 ## Sample
 
@@ -185,4 +186,6 @@ QED is an external example in `examples/qed.py`; the core package only defines t
 
 See [GFlowNet naming alignment](docs/naming.md) for architecture, trajectory-balance and policy names mapped to the references.
 
-`ActionSpace` is `list[ActionSubspace]`, defined in `core/types.py`. The environment stores `initial_action_space` for FirstBlock, `reaction_action_spaces[synthon_type]` for general Uni/BiReaction, and `last_action_spaces[synthon_type]` for terminal reactions. Each subspace records a reaction, library names and full library sizes; `sample_indices=None` denotes the full libraries. `get_action_space(state)` returns the step-eligible space. Policy creates separate sampled subspaces, so static environment metadata is not mutated. Both full and sampled subspaces decode selected columns to `Action`. `policy.py` owns `SubsamplingPolicy`, `ActionLogits` (subspace plus scores/importance weights), and `ActionCategorical`. Subsampling uses NumPy draws without replacement, sorted indices and `log(N/n)` weights. Full-library draw arrays are cached without RNG use. The NumPy RNG is saved and restored with checkpoints.
+`ActionSpace` is `list[ActionSubspace]`, defined in `core/types.py`. The environment stores `initial_action_space` for FirstBlock, `reaction_action_spaces[synthon_type]` for general Uni/BiReaction, and `last_action_spaces[synthon_type]` for terminal reactions. Each subspace is identified by `(reaction_name, library_name)` and records the full action count plus one optional sampled-index array. UniReaction uses `(reaction_name, None)` with one action. `sample_indices=None` denotes the full library. `get_action_space(state)` returns the step-eligible space. Policy creates separate sampled subspaces, so static environment metadata is not mutated. Both full and sampled subspaces decode selected columns to `Action`. `policy.py` owns `SubsamplingPolicy`, `ActionLogits` (subspace plus scores/importance weights), and `ActionCategorical`. `SubsamplingPolicy(num_actions, sampling_ratio, min_sampling, rng)` samples an integer action range independently of the environment. FirstBlock, BiReaction and UniReaction all use it; unary actions use the deterministic singleton `[0]` with zero log-importance. Library samplers and draws are shared across reaction subspaces. Subsampling uses NumPy draws without replacement, sorted indices and `log(N/n)` weights. Full-library draw arrays are cached without RNG use. The NumPy RNG is saved and restored with checkpoints.
+
+Random exploration gives each `(reaction, library)` subspace equal mass before property masking at softmax temperature 1, using per-column log weight `-log(sampled_count)`. UniReaction is a single-action subspace. Masked columns remain impossible and reduce their subspace's surviving mass. This is library-pair balancing, rather than the former reaction-first balancing or CGFlow's brick/linker protocol split. Learned logits and `log(N/n)` subsampling correction are unchanged; state queries and matrix products remain shared per reaction.

@@ -62,9 +62,7 @@ class RxnFlowSampler:
         )
         self.model.load_state_dict(payload["sampling_model"])
         self.rng = np.random.default_rng(config.seed)
-        self.policy = RxnFlowPolicy(
-            self.env, self.model, config, self.device, self.rng
-        )
+        self.policy = RxnFlowPolicy(self.env, self.model, config, self.device, self.rng)
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
         actions = [
@@ -138,14 +136,12 @@ class RxnFlowSampler:
                 self.reward,
                 [Chem.MolFromSmiles(value.final_smiles) for value in trajectories],
             )
-            scalar_rewards = (
-                (values * values.new_tensor([t.preferences for t in trajectories]))
-                .sum(-1)
-                .cpu()
-                .tolist()
+            preferences = np.array(
+                [t.preferences for t in trajectories], dtype=np.float32
             )
+            scalar_rewards = (values * preferences).sum(-1).tolist()
             for result, value, scalar in zip(
-                results, values.cpu().tolist(), scalar_rewards, strict=True
+                results, values.tolist(), scalar_rewards, strict=True
             ):
                 result.reward = scalar
                 result.metadata["objective_rewards"] = dict(

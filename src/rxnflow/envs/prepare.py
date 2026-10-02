@@ -29,6 +29,7 @@ from rxnflow.envs.features import (
 )
 
 ALLOWED_ATOMIC_NUMBERS = {5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53, 85}
+MAX_BB_ATOMS = 50
 MANIFEST_NAME = "prepare_manifest.json"
 MANIFEST_FORMAT = "rxnflow-prepare"
 
@@ -71,6 +72,10 @@ def _clean_smiles(smiles: str, salt_remover: SaltRemover) -> str | None:
     # pattern. Desalting must not discard the entire building block.
     stripped = salt_remover.StripMol(mol, dontRemoveEverything=True)
     if stripped is None or not stripped.GetNumAtoms():
+        return None
+    # Apply the catalog size limit to the desalted source BB, before any
+    # functional groups are replaced by synthon handles.
+    if stripped.GetNumHeavyAtoms() > MAX_BB_ATOMS:
         return None
     if {atom.GetAtomicNum() for atom in stripped.GetAtoms()} - ALLOWED_ATOMIC_NUMBERS:
         return None
@@ -276,6 +281,7 @@ def convert_stage(
         "convert",
         {
             "block_counts": counts,
+            "max_bb_atoms": MAX_BB_ATOMS,
             "min_library_size": min_library_size,
             "excluded_block_counts": excluded_counts,
         },
@@ -309,7 +315,7 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
                 raise ValueError(f"empty building-block file: {path}")
             properties = np.empty((count, PROPERTY_DIM), dtype=np.float32)
             fingerprints = np.empty((count, FINGERPRINT_DIM), dtype=np.uint8)
-            heavy_atoms = np.empty(count, dtype=np.int32)
+            heavy_atoms = np.empty(count, dtype=np.uint8)
             rows = (
                 pool.imap(block_feature_row, smiles, chunksize=256)
                 if pool is not None

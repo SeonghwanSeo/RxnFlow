@@ -1,8 +1,9 @@
 from pathlib import Path
 
+import numpy as np
 import pytest
-import torch
 import yaml
+from numpy.typing import NDArray
 from rdkit import Chem
 
 from examples.qed import QEDReward
@@ -22,17 +23,17 @@ from rxnflow.reward import RewardFunction, evaluate_rewards
 class AtomCountReward(RewardFunction):
     objectives = ("score",)
 
-    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
-        return torch.tensor(
-            [float(mol.GetNumHeavyAtoms()) for mol in molecules], dtype=torch.float32
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array(
+            [float(mol.GetNumHeavyAtoms()) for mol in molecules], dtype=np.float32
         ).reshape(-1, 1)
 
 
 class BrokenReward(RewardFunction):
     objectives = ("score",)
 
-    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
-        return torch.tensor([-1.0 for _ in molecules], dtype=torch.float32).reshape(-1, 1)
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array([-1.0 for _ in molecules], dtype=np.float32).reshape(-1, 1)
 
 
 class ScaledAtomCountReward(RewardFunction):
@@ -42,11 +43,11 @@ class ScaledAtomCountReward(RewardFunction):
         self.scale = scale
         self.options = options
 
-    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
+    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
         sign = 1.0 if self.options["positive"] else -1.0
-        return torch.tensor(
+        return np.array(
             [sign * self.scale * mol.GetNumHeavyAtoms() for mol in molecules],
-            dtype=torch.float32,
+            dtype=np.float32,
         ).reshape(-1, 1)
 
 
@@ -172,6 +173,9 @@ def test_zero_replay_capacity_disables_storage() -> None:
 
 def test_qed_and_custom_reward_alignment() -> None:
     values, _ = evaluate_rewards(QEDReward(), [Chem.MolFromSmiles("CCO"), None])
+    assert isinstance(values, np.ndarray)
+    assert values.dtype == np.float32
+    assert values.shape == (2, 1)
     assert 0 < values[0] <= 1
     assert values[1] == 0
     custom, _ = evaluate_rewards(AtomCountReward(), [Chem.MolFromSmiles("CCO")])
@@ -186,6 +190,10 @@ def test_qed_and_custom_reward_alignment() -> None:
         [Chem.MolFromSmiles("CCO"), Chem.MolFromSmiles("CCCC")],
     )
     assert filtered.tolist() == [[3.0], [0.0]]
+    empty, _ = evaluate_rewards(QEDReward(), [])
+    assert empty.shape == (0, 1) and empty.dtype == np.float32
+    rejected, _ = evaluate_rewards(FilteredReward(), [None, Chem.MolFromSmiles("CCCC")])
+    np.testing.assert_array_equal(rejected, np.zeros((2, 1), dtype=np.float32))
     with pytest.raises(ValueError, match="non-negative"):
         evaluate_rewards(BrokenReward(), [Chem.MolFromSmiles("CCO")])
 

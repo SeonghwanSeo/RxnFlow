@@ -80,36 +80,31 @@ class Action:
 
 @dataclass
 class ActionSubspace:
-    """One reaction and its libraries, independent of policy logits.
+    """One (reaction, library) pair, independent of policy logits.
 
-    sample_indices=None denotes the full libraries. Otherwise each index array
-    maps sampled columns to original block rows. Unary actions have no libraries
-    and occupy column zero. library_sizes always stores the full library sizes.
+    A unary reaction uses library=None and has one action. num_actions is the
+    full library size; sample_indices=None selects that full range. A sampled
+    subspace holds one array mapping columns back to original block indices.
     """
 
-    name: str
+    name: tuple[str, str | None]
     action_type: ActionType
-    libraries: list[str]
-    library_sizes: list[int]
-    sample_indices: list[np.ndarray] | None = None
+    num_actions: int
+    sample_indices: np.ndarray | None = None
 
     def action_at(self, column: int) -> Action:
-        block_type = None
+        reaction, library = self.name
         block_index = None
-        for i, (name, size) in enumerate(
-            zip(self.libraries, self.library_sizes, strict=True)
-        ):
-            indices = None if self.sample_indices is None else self.sample_indices[i]
-            count = size if indices is None else len(indices)
-            if column < count:
-                block_type = name
-                block_index = column if indices is None else int(indices[column])
-                break
-            column -= count
+        if library is not None:
+            block_index = (
+                column
+                if self.sample_indices is None
+                else int(self.sample_indices[column])
+            )
         return Action(
             self.action_type,
-            reaction=None if self.action_type == ActionType.FIRST_BLOCK else self.name,
-            block_type=block_type,
+            reaction=None if self.action_type == ActionType.FIRST_BLOCK else reaction,
+            block_type=library,
             block_index=block_index,
         )
 

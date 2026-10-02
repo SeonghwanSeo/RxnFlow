@@ -7,7 +7,7 @@ messages. Readout concatenates the molecular mean and virtual-node embedding.
 from __future__ import annotations
 
 import torch
-from torch import Tensor, nn
+from torch import nn
 from torch.nn import functional as F
 
 from rxnflow.envs.graph import GraphBatch
@@ -31,11 +31,11 @@ class GINELayer(nn.Module):
 
     def forward(
         self,
-        x: Tensor,
-        src_idx: Tensor,
-        dst_idx: Tensor,
-        edge_emb: Tensor,
-    ) -> Tensor:
+        x: torch.Tensor,
+        src_idx: torch.Tensor,
+        dst_idx: torch.Tensor,
+        edge_emb: torch.Tensor,
+    ) -> torch.Tensor:
         batch, length, num_emb = x.shape
         node_emb = self.norm(x).reshape(-1, num_emb)
         msg = F.relu(node_emb[src_idx] + edge_emb)
@@ -63,7 +63,7 @@ class MPNN(nn.Module):
         self.c2h = mlp(g_dim + 1 + max_reactions + 1, num_emb, num_emb, 2)
         self.layers = nn.ModuleList([GINELayer(num_emb) for _ in range(num_layers)])
 
-    def forward(self, batch: GraphBatch, cond_info: Tensor) -> Tensor:
+    def forward(self, batch: GraphBatch, cond_info: torch.Tensor) -> torch.Tensor:
         node_emb = self.x2h(batch.node_features)
         virtual_emb = self.c2h(
             torch.cat(

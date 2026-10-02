@@ -25,17 +25,12 @@ def actions_for(env, state, name, block_type=None, smiles=None):
     subspace = next(
         subspace
         for subspace in env.get_action_space(state)
-        if subspace.name == name
-        and (
-            block_type in subspace.libraries
-            if block_type is not None
-            else not subspace.libraries
-        )
+        if subspace.name == (name, block_type)
     )
     index = block_index(env, block_type, smiles) if smiles is not None else None
     action = Action(
         subspace.action_type,
-        None if subspace.action_type == ActionType.FIRST_BLOCK else subspace.name,
+        None if subspace.action_type == ActionType.FIRST_BLOCK else subspace.name[0],
         block_type,
         index,
     )
@@ -76,7 +71,12 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
     with np.load(prepared_env / "bb_feature.npz") as arrays:
         for name, library in env.blocks.items():
             assert arrays[f"{name}/fingerprints"].dtype == np.uint8
-            assert library.fingerprints.numpy().dtype == np.uint8
+            assert library.fingerprints.dtype == np.uint8
+            assert isinstance(library.properties, np.ndarray)
+            assert library.properties.dtype == np.float32
+            assert library.heavy_atoms.dtype == np.uint8
+            assert arrays[f"{name}/heavy_atoms"].dtype == np.uint8
+            np.testing.assert_array_equal(library.heavy_atoms, library.properties[:, -1])
     assert len({name.rsplit("_", 2)[0] for name in env.bi_reactions}) == 38
     assert len(env.uni_reactions) == 4
     assert len(env.synthon_types) == 35
@@ -121,11 +121,7 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     terminal = env.step(activated, closure)
     assert terminal.terminated and terminal.reaction_count == 3
     assert "*" not in terminal.smiles and not env.get_action_space(terminal)
-    assert all(
-        env.blocks[name].is_brick
-        for g in env.get_action_space(activated)
-        for name in g.libraries
-    )
+    assert all(env.blocks[g.name[1]].is_brick for g in env.get_action_space(activated))
     public = env.action_to_dict(first)
     assert public["block_ids"] == ["EN-A", "EN-A2"]
     assert public["building_blocks"][0] == {"id": "EN-A", "smiles": "NCCN"}
@@ -219,7 +215,7 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
         assert env.backward_log_probability(product, action, state.smiles) is not None
     assert outcomes[0].block_index != outcomes[1].block_index
     assert products[0] != products[1]
-    assert not np.array_equal(fingerprints[0].numpy(), fingerprints[1].numpy())
+    assert not np.array_equal(fingerprints[0], fingerprints[1])
     # Equivalent orientations collapse to one catalog row.
     symmetric = Chem.MolToSmiles(Chem.MolFromSmiles("*NCCN[1*]"))
     assert env.blocks["1-1"].smiles.count(symmetric) == 1
@@ -230,9 +226,9 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
     # Ordered library types determine which end attaches, even for two types.
     assert "1-3" in env.blocks and "3-1" in env.blocks
     assert all(
-        "1-3" not in g.libraries
+        g.name[1] != "1-3"
         for g in env.get_action_space(State.from_smiles("[1*]NCC"))
-        if g.name == "amide_coupling_state_first"
+        if g.name[0] == "amide_coupling_state_first"
     )
 
 
@@ -295,19 +291,22 @@ def test_regular_and_last_action_spaces(prepared_env: Path) -> None:
     state = State.from_smiles("[3*]C")
     assert env.get_action_space(state) is env.reaction_action_spaces[3]
     libraries = [
-        name for subspace in env.get_action_space(state) for name in subspace.libraries
+        subspace.name[1]
+        for subspace in env.get_action_space(state)
+        if subspace.name[1] is not None
     ]
     assert any(env.blocks[name].is_brick for name in libraries)
     assert any(not env.blocks[name].is_brick for name in libraries)
     last = replace(state, reaction_count=2)
     assert env.get_action_space(last) is env.last_action_spaces[3]
     assert all(
-        env.blocks[name].is_brick
+        env.blocks[subspace.name[1]].is_brick
         for subspace in env.get_action_space(last)
-        for name in subspace.libraries
+        if subspace.name[1] is not None
     )
     assert "nitrile_to_tetrazole" in {
-        subspace.name for subspace in env.get_action_space(State.from_smiles("[11*]CC"))
+        subspace.name[0]
+        for subspace in env.get_action_space(State.from_smiles("[11*]CC"))
     }
     # With one allowed reaction, the first post-FirstBlock state uses last space.
     single = SynthesisEnv(prepared_env, max_reactions=1)
@@ -315,8 +314,6 @@ def test_regular_and_last_action_spaces(prepared_env: Path) -> None:
 
 
 def test_budget_tolerance_and_nonpositive_bounds(prepared_env: Path) -> None:
-    import torch
-
     from rxnflow.envs.features import PROPERTY_DIM, PROPERTY_NAMES
 
     env = SynthesisEnv(
@@ -327,25 +324,35 @@ def test_budget_tolerance_and_nonpositive_bounds(prepared_env: Path) -> None:
     library.properties[:, PROPERTY_NAMES.index("mw")] = 100.5
     library.properties[:, PROPERTY_NAMES.index("rings")] = 0
     library.properties[:, PROPERTY_NAMES.index("logp")] = -1.0
-    state_properties = torch.zeros(PROPERTY_DIM)
+    state_properties = np.zeros(PROPERTY_DIM, dtype=np.float32)
     assert env.get_block_mask(state_properties, name).all()
     # Main's 1% margin admits 100.5, but the exact 101.0 boundary is excluded.
     state_properties[PROPERTY_NAMES.index("mw")] = 0.49
     assert env.get_block_mask(state_properties, name).all()
     state_properties[PROPERTY_NAMES.index("mw")] = 0.5
     assert not env.get_block_mask(state_properties, name).any()
-    state_properties.zero_()
+    state_properties.fill(0)
     state_properties[PROPERTY_NAMES.index("rings")] = 1
     assert not env.get_block_mask(state_properties, name).any()
-    state_properties.zero_()
+    state_properties.fill(0)
     state_properties[PROPERTY_NAMES.index("logp")] = 0.005
     assert env.get_block_mask(state_properties, name).all()
     state_properties[PROPERTY_NAMES.index("logp")] = 0.02
     assert not env.get_block_mask(state_properties, name).any()
-    state_properties.zero_()
+    state_properties.fill(0)
     # Graph capacity remains strict regardless of the property margin.
     state_properties[PROPERTY_NAMES.index("heavy_atoms")] = env.max_atoms
     assert not env.get_block_mask(state_properties, name).any()
+
+    # Separate uint8 counts must be promoted before addition, not wrap at 256.
+    env.property_limits.clear()
+    env.max_atoms = 255
+    library.heavy_atoms[:] = 100
+    state_properties.fill(0)
+    state_properties[PROPERTY_NAMES.index("heavy_atoms")] = 200
+    assert not env.get_block_mask(state_properties, name).any()
+    env.max_atoms = 300
+    assert env.get_block_mask(state_properties, name).all()
 
 
 @pytest.mark.parametrize("min_library_size", [1, 2])
@@ -441,24 +448,61 @@ def test_loading_does_not_repeat_preparation_validation(prepared_env, monkeypatc
 
 
 def test_batched_budgets_match_individual_masks(prepared_env):
-    import torch
-
     from rxnflow.envs.features import molecular_properties, parse_molecule
 
     env = SynthesisEnv(
         prepared_env, max_atoms=20, property_penalty={"mw": 200, "rings": 0, "logp": -1.0}
     )
-    properties = torch.from_numpy(
-        np.stack(
-            [
-                molecular_properties(parse_molecule(smiles))
-                for smiles in ("", "[1*]CC", "[3*]c1ccccc1")
-            ]
-        )
+    properties = np.stack(
+        [
+            molecular_properties(parse_molecule(smiles))
+            for smiles in ("", "[1*]CC", "[3*]c1ccccc1")
+        ]
     )
     for name, library in env.blocks.items():
-        indices = torch.arange(min(3, len(library)))
-        expected = torch.stack(
+        indices = np.arange(min(3, len(library)), dtype=np.int64)
+        expected = np.stack(
             [env.get_block_mask(row, name, indices) for row in properties]
         )
-        assert torch.equal(env.get_block_mask(properties, name, indices), expected)
+        np.testing.assert_array_equal(
+            env.get_block_mask(properties, name, indices), expected
+        )
+
+
+def test_conversion_filters_source_bbs_at_50_heavy_atoms(tmp_path: Path) -> None:
+    root = Path(__file__).parents[1]
+    stock = tmp_path / "stock.smi"
+    records = [
+        ("C" * 49 + "Cl.[Na+]", "brick-50"),
+        ("C" * 50 + "Cl", "brick-51"),
+        ("Cl" + "C" * 48 + "Cl", "linker-50"),
+        ("Cl" + "C" * 49 + "Cl", "linker-51"),
+    ]
+    stock.write_text(
+        "".join(f"{smiles}\t{identifier}\n" for smiles, identifier in records)
+    )
+    env_dir = tmp_path / "env"
+    convert_stage(stock, env_dir, root / "data/templates")
+    features_stage(env_dir)
+    from rxnflow.envs.library import load_block_libraries
+
+    libraries = load_block_libraries(env_dir)
+    assert any(library.is_brick for library in libraries.values())
+    assert any(not library.is_brick for library in libraries.values())
+    for library in libraries.values():
+        assert library.heavy_atoms.dtype == np.uint8
+        expected_count = 49 if library.is_brick else 48
+        assert (library.heavy_atoms == expected_count).all()
+        ids = {identifier for row in library.identifiers for identifier in row}
+        assert ids <= {"brick-50", "linker-50"}
+    # Reject 51-atom sources even when synthon conversion would remove atoms.
+    # Desalting precedes the limit, so the sodium counterion does not count.
+    sources = json.loads((env_dir / "building_blocks.json").read_text())
+    assert set(sources) == {"brick-50", "linker-50"}
+    assert all(
+        Chem.MolFromSmiles(smiles).GetNumHeavyAtoms() == 50 for smiles in sources.values()
+    )
+    stage = json.loads((env_dir / "prepare_manifest.json").read_text())["stages"][
+        "convert"
+    ]
+    assert stage["max_bb_atoms"] == 50
