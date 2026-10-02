@@ -8,7 +8,7 @@ from rxnflow.core.types import ActionSubspace, ActionType
 from rxnflow.gflownet.policy import ActionCategorical, ActionLogits
 
 
-def test_device_sampling_balances_libraries_and_keeps_property_masks():
+def test_device_sampling_balances_libraries_and_keeps_excluded_actions():
     torch.manual_seed(11)
     n = 6000
     # Each library pair and unary action gets mass 1/3 before masks, even

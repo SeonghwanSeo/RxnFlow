@@ -80,7 +80,7 @@ Run the [QED example](examples/qed.py):
 python examples/qed.py --config configs/qed.yaml
 ```
 
-`device: auto` selects CUDA when available. `min_synthons`/`max_synthons` bound the number of selected synthons, including FirstSynthon. `min_reactions`/`max_reactions` count chemical reactions after FirstSynthon; deprotection consumes a reaction but no synthon. State tracks `num_synthons` and `num_reactions`. Action spaces retain only type-level paths that can terminate within both bounds, then apply molecular property masks. `property_penalty` limits additive state-plus-synthon property estimates during action selection; it does not guarantee exact final-product property bounds. Add `hba: 10` and `hbd: 5` alongside `mw: 500` for those additional constraints.
+`device: auto` selects CUDA when available. `min_synthons`/`max_synthons` bound the number of selected synthons, including FirstSynthon. `min_reactions`/`max_reactions` count chemical reactions after FirstSynthon; deprotection consumes a reaction but no synthon. State tracks `num_synthons` and `num_reactions`. Action spaces retain only type-level paths that can terminate within both bounds, then apply the atom-capacity action mask and property-level penalty Ω. `property_penalty` limits additive state-plus-synthon property estimates during action selection; it does not guarantee exact final-product property bounds. Add `hba: 10` and `hbd: 5` alongside `mw: 500` for those additional constraints.
 
 The policy distinguishes `FIRST_SYNTHON`, `UNIRXN_TRANSFORM`, `UNIRXN_TERMINAL`, `BIRXN_BRICK`, and `BIRXN_LINKER`. Each type has its own output head; graph and synthon encoders are shared, and all eligible actions compete in one softmax.
 

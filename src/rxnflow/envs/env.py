@@ -163,7 +163,7 @@ class SynthesisEnv:
 
         Work backwards in reaction count: every Uni/Bi transition consumes one
         reaction, so each successor has already been computed. This is chemistry
-        type feasibility; molecular property masks still apply at sampling time.
+        type feasibility; property penalties still apply at sampling time.
         """
         self.budget_action_spaces: dict[tuple[int, int, int], ActionSpace] = {}
         for reactions in range(self.max_reactions, -1, -1):
@@ -224,7 +224,7 @@ class SynthesisEnv:
         return () if mol is None else typed_dummy_isotopes(mol)
 
     def get_action_space(self, state: State) -> ActionSpace:
-        """Look up type/step eligibility; property masks follow subsampling."""
+        """Look up type/step eligibility; property penalties follow subsampling."""
         if state.terminated:
             return []
         if state.mol is None:
@@ -244,7 +244,7 @@ class SynthesisEnv:
         library_name: str,
         indices: NDArray[np.int64] | None = None,
     ) -> NDArray[np.bool_]:
-        """Mask synthon rows using additive state + synthon property estimates.
+        """Combine the atom-capacity action mask with the property penalty.
 
         Inputs are one state [P] or a batch [B, P]; the result is [N] or [B, N].
         Compare raw units so zero and negative upper bounds remain meaningful.
@@ -265,15 +265,33 @@ class SynthesisEnv:
             heavy_atoms + state_properties[..., PROPERTY_NAMES.index("heavy_atoms"), None]
             <= self.max_atoms
         )
-        for index, limit in self.property_limits.items():
-            estimate = properties[:, index] + state_properties[..., index, None]
-            # Nonzero bounds allow 1% of their magnitude as tolerance.
-            # Zero bounds stay exact; the atom-capacity check above is strict.
-            if limit == 0:
-                mask &= estimate <= 0
-            else:
-                mask &= estimate < limit + abs(limit) * 0.01
+        if self.property_limits:
+            property_penalty = self.compute_property_penalty(state_properties, properties)
+            mask &= property_penalty
         return mask
+
+    def compute_property_penalty(
+        self,
+        state_properties: NDArray[np.float32],
+        synthon_properties: NDArray[np.float32],
+    ) -> NDArray[np.bool_]:
+        """Return binary Ω: True (1) permits an action; False (0) excludes it.
+
+        Use additive state + synthon estimates, without executing reactions.
+        The result is [N] or [B, N]. The max_atoms action mask is applied separately.
+        """
+        property_penalty = np.ones(
+            (*state_properties.shape[:-1], len(synthon_properties)), dtype=np.bool_
+        )
+        for index, limit in self.property_limits.items():
+            estimate = synthon_properties[:, index] + state_properties[..., index, None]
+            # Nonzero bounds allow 1% of their magnitude as tolerance.
+            # Zero bounds stay exact.
+            if limit == 0:
+                property_penalty &= estimate <= 0
+            else:
+                property_penalty &= estimate < limit + abs(limit) * 0.01
+        return property_penalty
 
     def _apply_action(self, current: Chem.Mol | None, action: Action) -> Chem.Mol | None:
         """Apply FirstSynthon/UniReaction/BiReaction and return a valid Mol or None."""
