@@ -59,7 +59,12 @@ class RxnFlowSampler:
                 "prepared environment differs from the checkpoint environment"
             )
         self.model = (
-            RxnFlowModel(self.env, config.model, len(self.objectives))
+            RxnFlowModel(
+                self.env,
+                config.model,
+                len(self.objectives),
+                preference_conditioning=config.reward.preferences[0] != "none",
+            )
             .to(self.device)
             .eval()
         )
@@ -99,10 +104,15 @@ class RxnFlowSampler:
     ) -> list[SamplingResult]:
         """Return count valid trajectories, with optional post-generation scoring."""
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
+        if preferences is None:
+            preferences = self.config.reward.preferences
+        if (preferences[0] == "none") != (self.config.reward.preferences[0] == "none"):
+            raise ValueError("preferences must match the checkpoint's conditioning mode")
         conditions = ConditionSampler(
             beta,
-            ("dirichlet", [1.0]) if preferences is None else preferences,
+            preferences,
             len(self.objectives),
+            self.config.reward.scalarization,
         )
         if count <= 0:
             raise ValueError("sample count must be positive")

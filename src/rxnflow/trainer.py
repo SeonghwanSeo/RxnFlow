@@ -47,7 +47,10 @@ class RxnFlowTrainer:
         if not self.objectives or len(set(self.objectives)) != len(self.objectives):
             raise ValueError("reward.objectives must contain unique objective names")
         self.condition_sampler = ConditionSampler(
-            config.reward.beta, config.reward.preferences, len(self.objectives)
+            config.reward.beta,
+            config.reward.preferences,
+            len(self.objectives),
+            config.reward.scalarization,
         )
         self.device = resolve_device(config.device)
         torch.manual_seed(config.seed)
@@ -64,11 +67,19 @@ class RxnFlowTrainer:
             max_synthons=config.generation.max_synthons,
             min_reactions=config.generation.min_reactions,
         )
-        self.model = RxnFlowModel(self.env, config.model, len(self.objectives)).to(
-            self.device
-        )
+        self.model = RxnFlowModel(
+            self.env,
+            config.model,
+            len(self.objectives),
+            preference_conditioning=config.reward.preferences[0] != "none",
+        ).to(self.device)
         self.sampling_model = (
-            RxnFlowModel(self.env, config.model, len(self.objectives))
+            RxnFlowModel(
+                self.env,
+                config.model,
+                len(self.objectives),
+                preference_conditioning=config.reward.preferences[0] != "none",
+            )
             .to(self.device)
             .eval()
         )

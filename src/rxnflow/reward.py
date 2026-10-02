@@ -75,7 +75,7 @@ def evaluate_rewards(
 def scalarize_log_rewards(
     values: torch.Tensor, preferences: torch.Tensor, method: str, floor: float
 ) -> torch.Tensor:
-    """Combine objectives before beta: weighted sum or weighted geometric mean.
+    """Combine objectives before beta using normalized weights from ConditionSampler.
 
     Floor each objective for mul, so zero rewards and zero preference weights
     remain finite. For sum, floor only the combined reward.

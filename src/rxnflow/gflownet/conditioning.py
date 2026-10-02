@@ -33,6 +33,7 @@ class ConditionSampler:
         beta: tuple[str, list[float]],
         preferences: tuple[str, list[float]],
         num_objectives: int,
+        scalarization: str = "mul",
     ):
         beta_dist, beta_params = beta
         pref_dist, pref_params = preferences
@@ -43,25 +44,37 @@ class ConditionSampler:
             or (beta_dist == "uniform" and beta_params[0] >= beta_params[1])
         ):
             raise ValueError("beta requires positive fixed(value) or uniform(low,high)")
-        if pref_dist == "fixed":
+        if pref_dist == "none":
+            if pref_params:
+                raise ValueError("unconditioned preferences take no parameters")
+        elif pref_dist == "fixed":
             if (
                 len(pref_params) != num_objectives
                 or any(not math.isfinite(x) or x < 0 for x in pref_params)
-                or not math.isclose(sum(pref_params), 1.0, abs_tol=1e-6)
+                or sum(pref_params) <= 0
             ):
-                raise ValueError("fixed preferences must match objectives and sum to 1")
+                raise ValueError(
+                    "fixed preferences must match objectives and have positive total weight"
+                )
         elif pref_dist == "dirichlet":
             if len(pref_params) not in (1, num_objectives) or any(
                 not math.isfinite(x) or x <= 0 for x in pref_params
             ):
                 raise ValueError("Dirichlet preferences require positive concentrations")
         else:
-            raise ValueError("preferences require fixed or dirichlet distribution")
+            raise ValueError("preferences require none, fixed or dirichlet distribution")
         self.beta = beta
         self.preferences = preferences
         self.num_objectives = num_objectives
+        self.weight_sum = num_objectives if scalarization == "mul" else 1
 
     def sample(self, count: int) -> tuple[torch.Tensor, torch.Tensor]:
         beta = sample_distribution(self.beta, count).squeeze(-1)
-        preferences = sample_distribution(self.preferences, count, self.num_objectives)
+        # Equal relative weights without conditioning; normalize for the reward below.
+        preferences = (
+            torch.ones(count, self.num_objectives)
+            if self.preferences[0] == "none"
+            else sample_distribution(self.preferences, count, self.num_objectives)
+        )
+        preferences = preferences / preferences.sum(-1, keepdim=True) * self.weight_sum
         return beta, preferences

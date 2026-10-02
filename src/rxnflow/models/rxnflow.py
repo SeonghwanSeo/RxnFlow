@@ -23,7 +23,13 @@ from .nn import mlp
 
 
 class RxnFlowModel(nn.Module):
-    def __init__(self, env: SynthesisEnv, cfg: ModelConfig, num_objectives: int):
+    def __init__(
+        self,
+        env: SynthesisEnv,
+        cfg: ModelConfig,
+        num_objectives: int,
+        preference_conditioning: bool = False,
+    ):
         super().__init__()
         num_emb = cfg.num_emb
         self.env = env
@@ -31,7 +37,9 @@ class RxnFlowModel(nn.Module):
         # Condition encoders feed the virtual node, logit scale, and logZ head.
         # Beta has nine features: its normalized value plus four sine/cosine pairs.
         self.emb_beta = mlp(9, num_emb, num_emb, 2)
-        self.emb_preferences = mlp(num_objectives, num_emb, num_emb, 2)
+        self.emb_preferences = (
+            mlp(num_objectives, num_emb, num_emb, 2) if preference_conditioning else None
+        )
         self.cond2h = nn.Linear(num_emb, num_emb)
         self.register_buffer(
             "property_scale", torch.tensor(PROPERTY_SCALE), persistent=False
@@ -108,7 +116,10 @@ class RxnFlowModel(nn.Module):
         frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
         angles = 2 * math.pi * u * frequencies
         features = torch.cat([u, angles.sin(), angles.cos()], dim=-1)
-        return self.emb_beta(features) + self.emb_preferences(preferences)
+        condition = self.emb_beta(features)
+        if self.emb_preferences is not None:
+            condition = condition + self.emb_preferences(preferences)
+        return condition
 
     def graph_embedding(self, batch: GraphBatch, cond_info: torch.Tensor) -> torch.Tensor:
         mean_emb, virtual_emb = self.mpnn(batch, self.cond2h(cond_info)).chunk(2, dim=-1)

@@ -44,7 +44,9 @@ class TwoObjectiveReward(RewardFunction):
 def config_for(env_dir, output_dir):
     return Config(
         data=DataConfig(env_dir=str(env_dir), max_atoms=20),
-        reward=RewardConfig(beta=("uniform", [4.0, 128.0])),
+        reward=RewardConfig(
+            beta=("uniform", [4.0, 128.0]), preferences=("dirichlet", [1.0])
+        ),
         model=ModelConfig(num_emb=16, num_layers=1, num_synthon_emb=16),
         training=TrainingConfig(
             batch_size=4,
@@ -205,7 +207,7 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
     assert restarted.replay.state_dict() == expected_replay
     for trajectory in restarted.replay.sample(100, random.Random(0)):
         assert 4 <= trajectory.beta <= 128
-        assert sum(trajectory.preferences) == pytest.approx(1)
+        assert sum(trajectory.preferences) == pytest.approx(2 if method == "mul" else 1)
         assert len(trajectory.objective_rewards) == 2
         scores = trajectory.objective_rewards
         weights = trajectory.preferences
@@ -226,13 +228,15 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
     )
     for result in results:
         assert result.metadata["beta"] == 32.0
-        assert result.metadata["preferences"] == [0.25, 0.75]
+        assert result.metadata["preferences"] == (
+            [0.5, 1.5] if method == "mul" else [0.25, 0.75]
+        )
         scores = result.metadata["objective_rewards"]
         assert result.reward == pytest.approx(
             max(0.25 * scores["qed"] + 0.75 * scores["size"], config.reward.floor)
             if method == "sum"
-            else max(scores["qed"], config.reward.floor) ** 0.25
-            * max(scores["size"], config.reward.floor) ** 0.75
+            else max(scores["qed"], config.reward.floor) ** 0.5
+            * max(scores["size"], config.reward.floor) ** 1.5
         )
     with pytest.raises(ValueError, match="preferences"):
         sampler.sample(1, beta=("fixed", [32.0]), preferences=("fixed", [1.0]))
@@ -248,7 +252,7 @@ def test_sampling_draws_preferences_when_omitted(prepared_env, tmp_path):
     assert len({tuple(w) for w in weights}) == len(weights)
     for result, w in zip(results, weights, strict=True):
         assert all(value > 0 for value in w)
-        assert sum(w) == pytest.approx(1)
+        assert sum(w) == pytest.approx(2)
         scores = result.metadata["objective_rewards"]
         assert result.reward == pytest.approx(
             max(scores["qed"], 1e-4) ** w[0] * max(scores["size"], 1e-4) ** w[1]
@@ -267,7 +271,7 @@ def test_sampling_draws_preferences_when_omitted(prepared_env, tmp_path):
         ("uniform(1)", "uniform"),
         ("32", "dirichlet(0)"),
         ("32", "dirichlet(nan)"),
-        ("32", "fixed(0.1,0.1)"),
+        ("32", "fixed(0,0)"),
         ("32", "fixed(1)"),
         ("32", "unknown"),
         (32, "uniform"),
@@ -286,7 +290,10 @@ def test_condition_distributions():
 
     torch.manual_seed(71)
     beta, weights = ConditionSampler(
-        parse_distribution("uniform(4,128)"), parse_distribution("uniform"), 3
+        parse_distribution("uniform(4,128)"),
+        parse_distribution("uniform"),
+        3,
+        scalarization="sum",
     ).sample(20000)
     assert ((beta >= 4) & (beta < 128)).all()
     assert beta.mean().item() == pytest.approx(66, abs=1)
@@ -296,16 +303,25 @@ def test_condition_distributions():
     assert weights.var(0).tolist() == pytest.approx([1 / 18] * 3, abs=0.003)
     torch.manual_seed(71)
     same_beta, same_weights = ConditionSampler(
-        parse_distribution("uniform(4,128)"), parse_distribution("dirichlet(1)"), 3
+        parse_distribution("uniform(4,128)"),
+        parse_distribution("dirichlet(1)"),
+        3,
+        scalarization="sum",
     ).sample(20000)
     torch.testing.assert_close(beta, same_beta, rtol=0, atol=0)
     torch.testing.assert_close(weights, same_weights, rtol=0, atol=0)
     _, sparse = ConditionSampler(
-        parse_distribution("32"), parse_distribution("dirichlet(0.5)"), 3
+        parse_distribution("32"),
+        parse_distribution("dirichlet(0.5)"),
+        3,
+        scalarization="sum",
     ).sample(20000)
     assert sparse.var(0).tolist() == pytest.approx([2 / 22.5] * 3, abs=0.004)
     fixed_beta, fixed_weights = ConditionSampler(
-        parse_distribution("2.5"), parse_distribution("fixed(0.3,0.7)"), 2
+        parse_distribution("2.5"),
+        parse_distribution("fixed(0.3,0.7)"),
+        2,
+        scalarization="sum",
     ).sample(2)
     assert fixed_beta.tolist() == [2.5, 2.5]
     torch.testing.assert_close(fixed_weights, torch.tensor([[0.3, 0.7], [0.3, 0.7]]))
@@ -324,7 +340,7 @@ def test_reward_scalarization_zero_weights_and_floor():
         RewardConfig(scalarization="unknown").validate()
 
 
-def test_qed_sa_example_conditioned_training_and_sampling(prepared_env, tmp_path):
+def test_qed_sa_example_unconditioned_training_and_sampling(prepared_env, tmp_path):
     from rdkit import Chem
     from rdkit.Contrib.SA_Score import sascorer
 
@@ -347,14 +363,47 @@ def test_qed_sa_example_conditioned_training_and_sampling(prepared_env, tmp_path
         batch_size=4, replay_batch_size=0, retrosynthesis_workers=0
     )
     trainer = RxnFlowTrainer(config, reward)
+    assert trainer.model.emb_preferences is None
+    beta = torch.tensor([1.0, 64.0])
+    cond = trainer.model.encode_cond(beta, torch.eye(2))
+    torch.testing.assert_close(cond, trainer.model.encode_cond(beta, torch.ones(2, 2)))
+    assert not torch.allclose(cond[0], cond[1])
     sampler = RxnFlowSampler(trainer.run(1), reward=reward)
-    results = sampler.sample(
-        2, beta=("fixed", [32.0]), preferences=("fixed", [0.3, 0.7]), seed=5
-    )
+    with pytest.raises(ValueError, match="conditioning mode"):
+        sampler.sample(1, beta=("fixed", [32.0]), preferences=("fixed", [0.3, 0.7]))
+    results = sampler.sample(2, beta=("fixed", [32.0]), seed=5)
     for result in results:
         assert result.metadata["beta"] == 32.0
-        assert result.metadata["preferences"] == pytest.approx([0.3, 0.7])
+        assert result.metadata["preferences"] == pytest.approx([1.0, 1.0])
         scores = result.metadata["objective_rewards"]
         assert result.reward == pytest.approx(
-            max(scores["qed"], 1e-4) ** 0.3 * max(scores["sa"], 1e-4) ** 0.7
+            max(scores["qed"], 1e-4) * max(scores["sa"], 1e-4)
         )
+
+
+def test_unconditioned_config_roundtrip(tmp_path):
+    from rxnflow.gflownet.conditioning import ConditionSampler
+
+    cfg = Config(data=DataConfig(env_dir="example"))
+    path = tmp_path / "config.yaml"
+    cfg.save(path)
+    assert Config.from_file(path) == cfg
+    assert cfg.reward.preferences == ("none", [])
+    assert parse_distribution("none") == ("none", [])
+    _, weights = ConditionSampler(cfg.reward.beta, cfg.reward.preferences, 2).sample(3)
+    torch.testing.assert_close(weights, torch.ones(3, 2))
+
+
+@pytest.mark.parametrize("method,target", [("sum", 1.0), ("mul", 3.0)])
+@pytest.mark.parametrize(
+    "spec", [("none", []), ("fixed", [1.0, 2.0, 3.0]), ("dirichlet", [1.0])]
+)
+def test_preference_normalization(method, target, spec):
+    from rxnflow.gflownet.conditioning import ConditionSampler
+
+    _, weights = ConditionSampler(("fixed", [32.0]), spec, 3, method).sample(8)
+    torch.testing.assert_close(weights.sum(-1), torch.full((8,), target))
+    if spec[0] == "none":
+        torch.testing.assert_close(weights, torch.full((8, 3), target / 3))
+    elif spec[0] == "fixed":
+        torch.testing.assert_close(weights[0], torch.tensor([1.0, 2.0, 3.0]) / 6 * target)

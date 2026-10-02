@@ -1,4 +1,4 @@
-# QED/SA training with reward-exponent and preference conditioning.
+# QED/SA product reward with reward-exponent conditioning.
 data:
   env_dir: /path/to/prepared/enamine
   max_atoms: 50
@@ -10,7 +10,7 @@ run:
 
 reward:
   beta: "uniform(1,64)"
-  preferences: "uniform"
+  preferences: "none"
   scalarization: mul
   settings: {}
 

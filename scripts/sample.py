@@ -26,8 +26,8 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--preferences",
-        default="uniform",
-        help="uniform (default), dirichlet(alpha), or fixed(w1,...)",
+        default=None,
+        help="defaults to checkpoint setting; none, uniform, dirichlet(alpha), or fixed(w1,...)",
     )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device")
@@ -38,7 +38,9 @@ def main(argv: list[str] | None = None) -> None:
         args.sampling_temperature,
         args.seed,
         beta=parse_distribution(args.beta),
-        preferences=parse_distribution(args.preferences),
+        preferences=parse_distribution(args.preferences)
+        if args.preferences is not None
+        else None,
     )
     sampler.write(results, args.output, args.format)
     print(f"wrote {len(results)} valid samples to {args.output}")

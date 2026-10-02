@@ -1,17 +1,7 @@
-# Configuration guide
+# Configuration examples
 
-RxnFlow merges a YAML file with built-in defaults. `qed.yaml` is the minimal example and `template.yaml` lists every supported option.
+- [QED](qed.yaml): single-objective optimization.
+- [QED/SA](qed_sa.yaml): product-reward optimization with beta conditioning.
+- [Complete template](template.yaml): all supported settings.
 
-`data.env_dir` points to a prepared Enamine synthon environment. `data.max_atoms` is the fixed RDKit heavy-atom capacity; graph tensors reserve one additional slot for the single dummy handle. Molecules are never truncated. Separately, preparation excludes desalted source BBs above 50 heavy atoms before synthon conversion; that catalog cutoff is fixed and is not controlled by `data.max_atoms`.
-
-`generation.max_reactions` counts only UniReaction and BiReaction actions. FirstSynthon does not contribute. The default allows up to three reactions. A zero-site product terminates immediately, including after the first reaction. On the last allowed reaction, only brick closures or terminal UniReactions are allowed. There is no Stop action.
-
-`subsampling.sampling_ratio` and `subsampling.min_sampling` set the draw count `min(N, max(min_sampling, floor(N * sampling_ratio)))` for a library of size N. Each policy call shares one uniform draw without replacement per library across compatible states and reactions. Full-library draws reuse indices without RNG use. `importance_temp` scales the `log(N/n)` correction during online action selection; TB uses the full correction to estimate its denominator. Observed actions are scored separately and do not alter the draw. The property penalty is applied after subsampling; rejected columns are not refilled, and no feasible sampled continuation produces an invalid trajectory.
-
-The shallow top-level `property_penalty` mapping accepts `mw`, `tpsa`, `hbd`, `hba`, `logp`, `rotatable_bonds`, `rings`, `aromatic_rings`, and `heavy_atoms`. FirstSynthon and BiReaction compare current state properties plus prepared synthon properties to these upper bounds. Nonzero bounds use `estimate < limit + abs(limit) * 0.01`; zero bounds use `estimate <= 0`. The property-level penalty Ω is binary: 1 allows the action and 0 excludes it from the forward distribution. The separate `data.max_atoms` action mask is always strict. These additive estimates are calculated before action scoring without executing candidate reactions. UniReaction has no additive synthon property penalty. After selection, chemistry checks the actual product handle and atom capacity. Dummy isotope labels are excluded from descriptor mass.
-
-The YAML `reward.beta` is a string specifying the reward exponent: `"32"` or `"uniform(1,64)"`. `reward.preferences` defaults to `"uniform"` (uniform on the simplex, exactly Dirichlet(1)); alternatives are `"dirichlet(0.5)"` for symmetric concentration or `"fixed(0.3,0.7)"` in objective order. CLI/YAML boundaries parse strings into `tuple[str, list[float]]`: beta `("fixed", [32.0])` or `("uniform", [1.0, 64.0])`, preferences `("dirichlet", [1.0])` or `("fixed", [0.3, 0.7])`. Python Config/Sampler/ConditionSampler consume these tuples, not strings. `sample_distribution()` supplies shared fixed/uniform/Dirichlet draws. Trajectories/replay store sampled numeric beta and weights. `reward.floor` applies before exponentiation. CLI sampling accepts the same strings: `--beta "uniform(1,64)" --preferences "fixed(0.3,0.7)"`. A single objective always has weight `[1]`. These are external settings, independent of the fixed model encoder coordinates. `reward.settings` contains constructor kwargs; reward selection stays explicit in Python.
-
-`training.retrosynthesis_workers` controls the local CPU process pool used to calculate backward probabilities. Set it to `0` for synchronous execution. `training.backward_synthon_penalty` defaults to `100`: each additional synthon divides a reverse path's unnormalized weight by this factor, while extra UniReactions do not change it. This is an explicit heuristic preference, independent of library size. Reverse search prunes by synthon count and keeps a separate reaction-depth bound; generated paths remain represented.
-
-At startup RxnFlow writes the complete resolved config into `run.output_dir/config.yaml`. Restart requires the exact current config and prepared environment signature.
+See the [training guide](../docs/training.md) for key settings and [reward guide](../docs/rewards.md) for conditioning.

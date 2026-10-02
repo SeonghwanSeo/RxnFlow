@@ -1,4 +1,4 @@
-"""QED/SA with beta and preference conditioning: python examples/qed_sa.py --config configs/qed_sa.yaml."""
+"""QED/SA product reward with beta conditioning: python examples/qed_sa.py --config configs/qed_sa.yaml."""
 
 from __future__ import annotations
 

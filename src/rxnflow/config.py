@@ -18,6 +18,8 @@ def parse_distribution(value: str) -> tuple[str, list[float]]:
     if not isinstance(value, str):
         raise ValueError("external condition specifications must be strings")
     value = value.strip()
+    if value == "none":
+        return "none", []
     if value == "uniform":
         return "dirichlet", [1.0]
     match = re.fullmatch(r"(fixed|uniform|dirichlet)\(([^)]+)\)", value)
@@ -61,9 +63,7 @@ class RewardConfig:
 
     # Reward exponent and preference sampling specifications.
     beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [32.0]))
-    preferences: tuple[str, list[float]] = field(
-        default_factory=lambda: ("dirichlet", [1.0])
-    )
+    preferences: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
     scalarization: Literal["sum", "mul"] = "mul"
     floor: float = 1e-4
     settings: dict[str, Any] = field(default_factory=dict)
@@ -247,7 +247,11 @@ class Config:
         reward = asdict(self.reward)
         for name in ("beta", "preferences"):
             distribution, params = reward[name]
-            reward[name] = f"{distribution}({','.join(str(x) for x in params)})"
+            reward[name] = (
+                "none"
+                if distribution == "none"
+                else f"{distribution}({','.join(str(x) for x in params)})"
+            )
         return {
             "data": asdict(self.data),
             "run": {

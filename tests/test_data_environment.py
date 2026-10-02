@@ -552,7 +552,7 @@ def test_prepared_action_spaces_and_signature(prepared_env, monkeypatch):
     env = SynthesisEnv(prepared_env, max_reactions=1)
     from rxnflow import __version__
 
-    assert signature["rxnflow_version"] == __version__ == "1.0.0"
+    assert signature["rxnflow_version"] == __version__ == "0.9.0"
     assert env.signature == signature
     assert set(spaces) == {"initial", "reaction"}
     assert [list(s.name) for s in env.initial_action_space] == [

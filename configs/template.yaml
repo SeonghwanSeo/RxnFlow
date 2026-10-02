@@ -10,10 +10,12 @@ run:
   seed: 0
 
 reward:
-  # Reward exponent: "32" or "uniform(1,64)" per fresh trajectory.
+  # Reward exponent: "32" or "uniform(1,64)" per online trajectory.
   beta: "32"
-  # Simplex uniform, dirichlet(alpha), or fixed(w1,...) in objective order.
-  preferences: "uniform"
+  # none: no preference conditioning; uniform/dirichlet/fixed enable it.
+  preferences: "none"
+  # mul: weights sum to objective count; sum: weights sum to 1.
+  scalarization: mul
   floor: 0.0001
   settings: {}
 
@@ -26,7 +28,7 @@ subsampling:
   min_sampling: 50
   importance_temp: 1.0
 
-# FirstSynthon is excluded. The final allowed reaction must consume the last site.
+# Synthon counts include FirstSynthon; reaction counts exclude it.
 generation:
   min_synthons: 2
   max_synthons: 3
