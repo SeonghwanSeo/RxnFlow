@@ -3,6 +3,7 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 from rdkit import Chem
@@ -17,7 +18,7 @@ from rxnflow.config import (
     SubsamplingConfig,
     TrainingConfig,
 )
-from rxnflow.gflownet.types import (
+from rxnflow.core.types import (
     Action,
     ActionType,
     State,
@@ -271,14 +272,19 @@ def test_restart_reproduces_next_update_with_dropout(
 def test_oriented_block_scoring_and_observed_action_log_probability(
     prepared_env, tmp_path
 ):
-    from rxnflow.errors import NoValidActions
+    from rxnflow.core.errors import NoValidActions
 
     trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "sites"), QEDReward())
     state = State.from_smiles("[3*]C")
-    from rxnflow.errors import InvalidTransition
+    from rxnflow.core.errors import InvalidTransition
 
     spec = (ActionType.BI_REACTION, "amide_coupling_block_first", "1-1")
-    assert spec in trainer.env.get_action_space(state)
+    assert any(
+        subspace.action_type == spec[0]
+        and subspace.name == spec[1]
+        and spec[2] in subspace.libraries
+        for subspace in trainer.env.get_action_space(state)
+    )
     actions = []
     for i in range(len(trainer.env.blocks["1-1"])):
         action = Action(*spec, i)
@@ -310,7 +316,7 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
 ):
     import math
 
-    from rxnflow.envs.chemistry.features import PROPERTY_NAMES
+    from rxnflow.envs.features import PROPERTY_NAMES
 
     config = tiny_config(prepared_env, tmp_path / "budget")
     config.property_penalty = {"mw": 100.0}
@@ -323,26 +329,30 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
     target = len(env.blocks[name]) - 1
     env.blocks[name].properties[target, mw] = 50.0
     monkeypatch.setattr(
-        env, "_product", lambda *args: pytest.fail("candidate scoring executed chemistry")
+        env,
+        "_apply_action",
+        lambda *args: pytest.fail("candidate scoring executed chemistry"),
     )
-    original = env.block_mask
+    original = env.get_block_mask
 
     def mask(properties, block_type, indices=None):
         assert indices is not None
         return original(properties, block_type, indices)
 
-    monkeypatch.setattr(env, "block_mask", mask)
+    monkeypatch.setattr(env, "get_block_mask", mask)
     found = missed = 0
     for seed in range(20):
-        trainer.policy.generator.manual_seed(seed)
+        trainer.policy.rng.bit_generator.state = np.random.default_rng(
+            seed
+        ).bit_generator.state
         group = trainer.policy.forward(
             [env.initial_state()],
             beta=torch.ones(len([env.initial_state()])),
             preferences=torch.ones(len([env.initial_state()]), 1),
-        ).action_subspaces[0]
+        ).action_logits[0]
         valid = torch.isfinite(group.logits[0])
         # Masking retains every sampled column, even when all actions are invalid.
-        assert group.logits.shape[1] == sum(map(len, group.block_indices))
+        assert group.logits.shape[1] == sum(map(len, group.subspace.sample_indices))
         assert group.logits.shape[1] > 1
         if not valid.any():
             missed += 1
@@ -350,9 +360,9 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
         found += 1
         position = int(valid.nonzero().flatten()[0])
         assert valid.sum() == 1
-        action = group.action_at(position)
+        action = group.subspace.action_at(position)
         assert action.block_type == name and action.block_index == target
-        count = trainer.policy.block_subsamplers[name].count
+        count = trainer.policy.subsampling.num_sampling[name]
         assert group.log_importance[position].item() == pytest.approx(
             math.log(len(env.blocks[name]) / count)
         )
@@ -438,11 +448,11 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                 ),
             ),
         )
-        for group in categorical.action_subspaces:
+        for group in categorical.action_logits:
             for column in range(group.logits.shape[1]):
                 if not torch.isfinite(group.logits[row, column]):
                     continue
-                action = group.action_at(column)
+                action = group.subspace.action_at(column)
                 score = (
                     model.get_unirxn_logits(
                         embedding,
@@ -452,7 +462,7 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                     if action.action_type == ActionType.UNI_REACTION
                     else model.get_block_logits(
                         embedding,
-                        group.name,
+                        group.subspace.name,
                         action.block_type,
                         torch.tensor([action.block_index]),
                         logit_scale=model.logit_scale(_condition(model, 1)),
@@ -475,18 +485,18 @@ def test_batched_scores_and_gradients_match_scalar_reference(
 def test_batch_shares_library_subsamples_and_handles_dead_ends(
     prepared_env, tmp_path, monkeypatch
 ):
-    from rxnflow.gflownet.subsampling import BlockSubsampler
+    from rxnflow.gflownet.policy import SubsamplingPolicy
 
     trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "shared"), QEDReward())
     trainer.model.eval()
     draws = []
-    original = BlockSubsampler.sample
+    original = SubsamplingPolicy.sample
 
-    def sample(self, generator):
-        draws.append(id(self))
-        return original(self, generator)
+    def sample(self, block_type):
+        draws.append(block_type)
+        return original(self, block_type)
 
-    monkeypatch.setattr(BlockSubsampler, "sample", sample)
+    monkeypatch.setattr(SubsamplingPolicy, "sample", sample)
     initial = trainer.env.initial_state()
     categorical = trainer.policy.forward(
         [initial, initial],
@@ -494,7 +504,7 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
         preferences=torch.ones(len([initial, initial]), 1),
     )
     assert len(draws) == len(set(draws))
-    for group in categorical.action_subspaces:
+    for group in categorical.action_logits:
         torch.testing.assert_close(group.logits[0], group.logits[1])
     dead = State.from_smiles("[33*]NCC", trainer.env.max_reactions - 1)
     choices = trainer.policy.sample_actions(
@@ -508,7 +518,7 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
 
 
 def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypatch):
-    import rxnflow.gflownet.categorical as policy_module
+    import rxnflow.core.types as policy_module
 
     trainer = RxnFlowTrainer(
         tiny_config(prepared_env, tmp_path / "index-actions"), QEDReward()
@@ -547,16 +557,16 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
 ):
     import math
 
-    from rxnflow.gflownet.subsampling import BlockSubsample, BlockSubsampler
+    from rxnflow.gflownet.policy import SubsamplingPolicy
 
     trainer = RxnFlowTrainer(
         tiny_config(prepared_env, tmp_path / "numerator"), QEDReward()
     )
     trainer.model.eval()
     monkeypatch.setattr(
-        BlockSubsampler,
+        SubsamplingPolicy,
         "sample",
-        lambda self, generator: BlockSubsample(torch.tensor([0]), math.log(self.size)),
+        lambda self, block_type: (np.array([0]), math.log(self.num_blocks[block_type])),
     )
     state = trainer.env.initial_state()
     actions = [
@@ -569,8 +579,8 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     )
     assert all(
         indices.tolist() == [0]
-        for p in categorical.action_subspaces
-        for indices in p.block_indices
+        for p in categorical.action_logits
+        for indices in p.subspace.sample_indices
     )
     monkeypatch.setattr(trainer.policy, "forward", lambda *args: categorical)
     actual = trainer.policy.log_prob(
@@ -592,7 +602,7 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
         ]
     )
     denominator = torch.logsumexp(
-        torch.cat([p.logits + p.log_importance for p in categorical.action_subspaces], 1),
+        torch.cat([p.logits + p.log_importance for p in categorical.action_logits], 1),
         1,
     )
     expected = (numerator - denominator).clamp(max=0)

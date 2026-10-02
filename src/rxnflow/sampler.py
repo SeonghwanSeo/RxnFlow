@@ -6,15 +6,16 @@ import csv
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
+from rxnflow.core.types import SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
-from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device
-from rxnflow.gflownet.types import SamplingResult, Trajectory
+from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, evaluate_rewards
 
@@ -46,7 +47,6 @@ class RxnFlowSampler:
         self.env = SynthesisEnv(
             config.data.env_dir,
             config.data.max_atoms,
-            config.generation.min_reactions,
             config.generation.max_reactions,
             0,
             config.property_penalty,
@@ -61,9 +61,9 @@ class RxnFlowSampler:
             .eval()
         )
         self.model.load_state_dict(payload["sampling_model"])
-        self.generator = torch.Generator(device="cpu").manual_seed(config.seed)
-        self.policy = SynthesisPolicy(
-            self.env, self.model, config, self.device, self.generator
+        self.rng = np.random.default_rng(config.seed)
+        self.policy = RxnFlowPolicy(
+            self.env, self.model, config, self.device, self.rng
         )
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
@@ -104,7 +104,7 @@ class RxnFlowSampler:
         if count <= 0:
             raise ValueError("sample count must be positive")
         if seed is not None:
-            self.generator.manual_seed(seed)
+            self.rng.bit_generator.state = np.random.default_rng(seed).bit_generator.state
             torch.manual_seed(seed)  # CPU conditions and device-side categorical draws.
         if sampling_temperature <= 0:
             raise ValueError("softmax temperature must be positive")

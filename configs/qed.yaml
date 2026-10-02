@@ -19,7 +19,6 @@ subsampling:
   sampling_ratio: 0.05
 
 generation:
-  min_reactions: 1
   max_reactions: 3
 
 training:

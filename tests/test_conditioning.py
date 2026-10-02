@@ -15,15 +15,15 @@ from rxnflow.config import (
     TrainingConfig,
     parse_distribution,
 )
-from rxnflow.envs.graph import GraphBatch, molecule_to_graph_data
-from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.types import (
+from rxnflow.core.types import (
     Action,
     ActionType,
     State,
     Trajectory,
     Transition,
 )
+from rxnflow.envs.graph import GraphBatch, molecule_to_graph_data
+from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.reward import RewardFunction
 from rxnflow.sampler import RxnFlowSampler
 from rxnflow.trainer import RxnFlowTrainer

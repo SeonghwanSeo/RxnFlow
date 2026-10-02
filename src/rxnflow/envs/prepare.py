@@ -16,16 +16,16 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem.SaltRemover import SaltRemover
 
-from rxnflow.envs.chemistry.features import (
-    FINGERPRINT_DIM,
-    PROPERTY_DIM,
-    block_feature_row,
-)
-from rxnflow.envs.chemistry.synthon import (
+from rxnflow.core.synthon import (
     SynthonConversion,
     SynthonSpec,
     load_synthon_specs,
     typed_dummy_isotopes,
+)
+from rxnflow.envs.features import (
+    FINGERPRINT_DIM,
+    PROPERTY_DIM,
+    block_feature_row,
 )
 
 ALLOWED_ATOMIC_NUMBERS = {5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53, 85}

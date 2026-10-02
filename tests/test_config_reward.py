@@ -14,8 +14,8 @@ from rxnflow.config import (
     SubsamplingConfig,
     TrainingConfig,
 )
+from rxnflow.core.types import Trajectory
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.types import Trajectory
 from rxnflow.reward import RewardFunction, evaluate_rewards
 
 
@@ -65,7 +65,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert saved["property_penalty"] == {"mw": 500.0}
     assert "property_limits" not in saved["data"]
     assert saved["training"]["learning_rate"] == 1e-4
-    assert saved["generation"] == {"min_reactions": 1, "max_reactions": 3}
+    assert saved["generation"] == {"max_reactions": 3}
 
     minimal = tmp_path / "minimal.yaml"
     minimal.write_text(
@@ -94,7 +94,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         RewardConfig(floor=0).validate()
     with pytest.raises(ValueError, match="at least"):
-        GenerationConfig(min_reactions=2, max_reactions=1).validate()
+        GenerationConfig(max_reactions=0).validate()
     with pytest.raises(ValueError, match="mapping"):
         RewardConfig(settings=[]).validate()  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="unknown property_penalty"):
@@ -227,7 +227,7 @@ def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
     import json
     import random
 
-    from rxnflow.gflownet.types import Action, ActionType, State, Transition
+    from rxnflow.core.types import Action, ActionType, State, Transition
 
     state = State.from_smiles("[1*]N[C@@H](C)C/C=C/C", reaction_count=1)
     trajectory = Trajectory(

@@ -11,7 +11,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from rxnflow.envs.chemistry.features import FINGERPRINT_DIM, PROPERTY_DIM
+from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 
 
 @dataclass

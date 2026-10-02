@@ -3,31 +3,13 @@ from types import SimpleNamespace
 
 from rdkit import Chem
 
-from rxnflow.envs.chemistry.reaction import BiReaction, UniReaction
+from rxnflow.core.reaction import BiReaction, UniReaction
+from rxnflow.core.types import Action, ActionType
 from rxnflow.envs.retrosynthesis import (
-    RetrosynthesisSearch,
+    RetroSynthesisAnalyzer,
     RetrosynthesisTree,
-    RetrosynthesisWorkers,
+    Worker,
 )
-from rxnflow.gflownet.types import Action, ActionType
-
-
-class StaticAnalyzer:
-    def __init__(self, tree: RetrosynthesisTree):
-        self.tree = tree
-
-    def run(self, smiles: str, max_reactions: int) -> RetrosynthesisTree:
-        return self.tree
-
-
-class EchoAnalyzer:
-    def run(
-        self,
-        smiles: str,
-        max_reactions: int,
-        known_branches: list[tuple[Action, RetrosynthesisTree]],
-    ) -> RetrosynthesisTree:
-        return RetrosynthesisTree(smiles, known_branches)
 
 
 class UnexpectedUnaryReaction:
@@ -45,9 +27,8 @@ def test_depth_weighted_backward_probability() -> None:
         "root",
         [(selected, one_step), (alternative, two_step)],
     )
-    analyzer = RetrosynthesisWorkers(StaticAnalyzer(root), workers=0)
-    value = analyzer.log_probability(
-        "root", 2, selected, total_actions=10, parent_smiles="one"
+    value = RetroSynthesisAnalyzer.tree_log_probability(
+        root, selected, total_actions=10, parent_smiles="one"
     )
     assert value is not None
     assert math.isclose(value, math.log(0.1) - math.log(0.1 + 0.01))
@@ -61,7 +42,7 @@ def test_known_branch_is_preserved_and_reaction_budget_bounds_dfs() -> None:
         blocks={"1": SimpleNamespace(smiles=["*C"])},
         brick_types=["1"],
     )
-    analyzer = RetrosynthesisSearch(env)
+    analyzer = Worker(env)
     tree = analyzer.run(brick, max_reactions=0)
     assert tree is not None
     assert [action.action_type for action, _ in tree.branches] == [ActionType.FIRST_BLOCK]
@@ -71,7 +52,7 @@ def test_known_branch_is_preserved_and_reaction_budget_bounds_dfs() -> None:
     empty_env = SimpleNamespace(
         uni_reactions={}, bi_reactions={}, blocks={}, brick_types=[]
     )
-    known_tree = RetrosynthesisSearch(empty_env).run(
+    known_tree = Worker(empty_env).run(
         "CC", max_reactions=2, known_branches=[(generated, child)]
     )
     assert known_tree is not None
@@ -95,7 +76,7 @@ def test_reverse_search_finds_catalog_match_after_second_decomposition() -> None
         blocks={name: SimpleNamespace(smiles=["*CCC"]) for name in ("1", "2")},
         brick_types=["1", "2"],
     )
-    tree = RetrosynthesisSearch(env).run("CCCCCC", max_reactions=1)
+    tree = Worker(env).run("CCCCCC", max_reactions=1)
     assert tree is not None
     assert len(tree.branches) == 1
     action, child = tree.branches[0]
@@ -118,26 +99,29 @@ def test_short_route_does_not_hide_longer_route_within_budget() -> None:
         blocks={name: SimpleNamespace(smiles=["*CC"]) for name in ("1", "33")},
         brick_types=["1", "33"],
     )
-    analyzer = RetrosynthesisSearch(env)
+    analyzer = Worker(env)
     assert analyzer.run("CC", max_reactions=1).leaf_depths() == [2]
     assert sorted(analyzer.run("CC", max_reactions=2).leaf_depths()) == [2, 3]
 
 
 def test_worker_queue_collects_multiple_submissions() -> None:
-    analyzer = RetrosynthesisWorkers(EchoAnalyzer(), workers=2)
+    env = SimpleNamespace(
+        uni_reactions={}, bi_reactions={}, blocks={}, brick_types=[]
+    )
+    analyzer = RetroSynthesisAnalyzer(env, workers=2)
     action = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
     child = RetrosynthesisTree("")
     try:
-        analyzer.submit(3, "first", 0, [(action, child)])
-        analyzer.submit(7, "second", 0, [(action, child)])
+        analyzer.submit(3, "CC", 0, [(action, child)])
+        analyzer.submit(7, "CCC", 0, [(action, child)])
         assert len(analyzer.futures) == 2
         results = analyzer.result()
     finally:
         analyzer.close()
     assert [key for key, _ in results] == [3, 7]
     assert [tree.smiles for _, tree in results if tree is not None] == [
-        "first",
-        "second",
+        "CC",
+        "CCC",
     ]
 
 
@@ -148,5 +132,5 @@ def test_same_action_from_different_parents_has_distinct_backward_probability() 
     second = RetrosynthesisTree("second", [(action, leaf)])
     tree = RetrosynthesisTree("CC", [(action, first), (action, second)])
     for parent in ("first", "second"):
-        value = RetrosynthesisWorkers.tree_log_probability(tree, action, 10, parent)
+        value = RetroSynthesisAnalyzer.tree_log_probability(tree, action, 10, parent)
         assert math.isclose(value, -math.log(2))

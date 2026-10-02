@@ -4,9 +4,9 @@ RxnFlow trains a generative flow network over an Enamine-derived synthon reactio
 
 The research project is described in [Generative Flows on Synthetic Pathway for Drug Design](https://arxiv.org/abs/2410.04542).
 
-The synthon environment owns its chemistry and catalog preparation under `envs/`; model code and GFlowNet execution live in `models/` and `gflownet/`. See [project layout](codex/docs/project-layout.md) for the source map and dependency boundaries.
+Shared types, exceptions, reactions and synthon definitions live in `core/`. The synthon environment owns catalog preparation and features under `envs/`; model code and GFlowNet execution live in `models/` and `gflownet/`. See [project layout](docs/project-layout.md) for the source map and dependency boundaries.
 
-The [section-by-section reference comparison](codex/docs/reference-comparison.md) records which parts follow RxnFlow master, CGFlow-RxnFlow, HSX main, or HSX explore_250509, including remaining differences in features, model parameters, masking, and training defaults.
+The [section-by-section reference comparison](docs/reference-comparison.md) records which parts follow RxnFlow master, CGFlow-RxnFlow, HSX main, or HSX explore_250509, including remaining differences in features, model parameters, masking, and training defaults.
 
 ## Installation
 
@@ -52,7 +52,7 @@ prepared/enamine/
 
 Each `blocks/*.smi` row is `synthon SMILES<TAB>JSON array of source IDs`. `building_blocks.json` maps each ID to its standardized source BB SMILES; it is provenance, not a parallel molecular state. The NPZ feature file uses flat `<type>/smiles`, `<type>/properties`, `<type>/fingerprints`, and `<type>/heavy_atoms` arrays, plus a format marker. Feature rows include their aligned SMILES. Fingerprints concatenate 512 Morgan counts (radius 2, dummy-isotope invariants, saturated at 255) and 166 MACCS bits as uint8. Libraries retain uint8; selected model inputs convert to float32. Properties remain float32. The CLI performs conversion followed by feature generation and requires a new output directory. There are no resume/force options or `all` stage selector. In Python, `convert_stage` and `features_stage` can be imported from `rxnflow.envs.prepare` and called directly. Re-conversion invalidates prior features. Rebuild after changing source files or templates. `--num-workers N` parallelizes synthon conversion and fingerprint/property calculation with N processes (default 1, serial). Both Python stage functions accept `num_workers=N`. Source cleaning and final file writing remain serial; parallel execution preserves library row order and feature alignment.
 
-For the local random 10,000-record development environment, see [subset preparation and evaluation](codex/docs/development-subset.md).
+For the local random 10,000-record development environment, see [subset preparation and evaluation](docs/development-subset.md).
 
 ## Train
 
@@ -64,7 +64,6 @@ data:
   max_atoms: 50
 
 generation:
-  min_reactions: 1
   max_reactions: 3
 
 run:
@@ -81,7 +80,7 @@ python -m examples.qed --config configs/qed.yaml
 
 A trajectory starts with a one-site brick and grows one intermediate. Each BiReaction consumes one site from the intermediate and one from a catalog block. A linker leaves one site; a brick leaves none and terminates the trajectory. UniReaction acts directly on the marked site and its required neighboring substructure, producing either one site (continue) or none (terminate). Termination is immediate; terminal molecules cannot reactivate. There is no Stop or terminal restoration.
 
-`min_reactions` and `max_reactions` count UniReaction and BiReaction, excluding FirstBlock. Before the minimum, terminating actions are masked. At the final allowed reaction, only terminating actions remain. No feasible sampled action means an invalid trajectory, not automatic capping. For example, three reactions allow brick → linker coupling → Boc deprotection → brick coupling. The linker attachment site is fixed by its catalog row, so selecting a block also selects its orientation. Actions record canonical product SMILES. Each reaction/block choice must yield a unique connected product; symmetry-equivalent matches merge, and ambiguous templates raise an error.
+`max_reactions` counts UniReaction and BiReaction, excluding FirstBlock. A terminal UniReaction or brick coupling may end the trajectory from the first reaction onward. At the final allowed reaction, only terminating actions remain. No feasible sampled action means an invalid trajectory, not automatic capping. For example, three reactions allow brick → linker coupling → Boc deprotection → brick coupling. The linker attachment site is fixed by its catalog row, so selecting a block also selects its orientation. Actions record canonical product SMILES. Each reaction/block choice must yield a unique connected product; symmetry-equivalent matches merge, and ambiguous templates raise an error.
 
 Following HSX, building-block masks compare current state properties plus precomputed block properties against the configured upper bounds. Following `explore_250509`, select compatible reaction/library types, uniformly subsample each library, then apply the state + block budget mask to those sampled rows. Inclusion probabilities use the full library size and the original draw count, not the number surviving the mask. Rejected rows are not refilled; a sampled action space with no feasible continuation fails the trajectory. `property_penalty` therefore constrains an additive estimate, not exact product descriptors. Comparisons use raw units: nonzero bounds allow HSX main's 1% relative tolerance, while zero bounds and graph capacity remain strict. State and block MW use `Descriptors.ExactMolWt`. Enamine dummy labels have zero mass; HSX's Synple/eXplore At-isotope subtraction and `+29.0` linker MW correction do not apply.
 
@@ -93,7 +92,7 @@ The policy scores state/reaction embeddings and prepared block features without 
 
 The graph encoder uses residual GINE message passing in native PyTorch with node-wise LayerNorm and bidirectional virtual-node edges. Each layer sums ReLU(source + bond), adds the normalized target once (fixed epsilon=0), and applies a two-Linear H→2H→H MLP before the residual update. Explicit self loops, attention and FiLM are absent. Atom features include chirality and bond features distinguish E/Z stereo. Molecular mean and virtual-node pooling give a `2 * num_emb` readout with separate LayerNorms. Block fingerprints and properties have separate Linear projections, then join a type embedding in the fusion MLP. Reactions condition the policy after the GNN, so one state/condition encoding serves all reactions. Defaults are `num_emb=128`, `num_layers=4`, `num_block_emb=128`, `num_mlp_layers=2`, and `num_mlp_layers_block=2`; Linear weights use Xavier initialization.
 
-The model receives reward exponent beta and objective preferences as external conditions. Beta uses fixed Fourier features (`u=(beta-1)/63`, frequencies 1/2/4/8, plus u itself), followed by an MLP; preferences use another MLP. Their summed embedding conditions the initial virtual node, a shared logit scale and logZ through separate projections/heads. Following HSX, `logit_scale(condition) = ELU(_logit_scale(condition)) + 1` multiplies logits for all reactions. There are no fixed minimum/maximum temperatures; the scalar initializes at 1. The encoder does not clamp beta or depend on its sampling range. See [conditioning and replay](codex/docs/conditioning.md) for the reward contract and deferred replay experiments.
+The model receives reward exponent beta and objective preferences as external conditions. Beta uses fixed Fourier features (`u=(beta-1)/63`, frequencies 1/2/4/8, plus u itself), followed by an MLP; preferences use another MLP. Their summed embedding conditions the initial virtual node, a shared logit scale and logZ through separate projections/heads. Following HSX, `logit_scale(condition) = ELU(_logit_scale(condition)) + 1` multiplies logits for all reactions. There are no fixed minimum/maximum temperatures; the scalar initializes at 1. The encoder does not clamp beta or depend on its sampling range. See [conditioning and replay](docs/conditioning.md) for the reward contract and deferred replay experiments.
 
 Training uses MSE trajectory balance, uniform FIFO replay, an EMA sampling model, and restartable checkpoints. Replay and checkpoints store trajectories as plain dictionaries with SMILES, beta, preferences and objective rewards; only sampled replay trajectories reconstruct RDKit molecules. Failed selected reactions retain their forward probability and receive zero raw reward with the configured training reward floor. Policy gradients use global norm clipping at 100, excluding logZ. Default random action probability is 0.05, reward floor is 1e-4, and weight decay remains 1e-8. `training.log_z_learning_rate` controls the conditional logZ head separately; `training.lr_decay_steps` is the learning-rate half-life. Optimizer, scheduler, library RNG and model-device RNG states are restored. Backward analysis preserves the generated route and adds forward-verified precursor routes within the reaction-depth bound. Its depth-weighted probabilities remain an approximation to the backward distribution. Reverse workers run alongside the next forward-policy computation; pending results are collected before extending their parent trees, including after the final reaction.
 
@@ -151,7 +150,7 @@ Template keys describe the transformation, for example `amide_coupling`, `reduct
 | Ethyl ester hydrolysis | `R-[35*]` | `R-[3*]` | No |
 | Nitrile → tetrazole | `R-[11*]` | `R-c1nnn[nH]1` | Yes |
 
-For types 3, 11, 34, and 35, the marker represents the entire acid, nitrile, or ester handle, respectively. For 33, nitrogen is retained and the Boc group is abstracted. No whole-molecule site recognition runs after a reaction: the remaining marked handle is carried by the product SMARTS. Additional production unary chemistry and halogen exchange remain separate curation work. See [the implementation review guide](codex/docs/linear-synthesis.md) for the state/action contract and current type inventory.
+For types 3, 11, 34, and 35, the marker represents the entire acid, nitrile, or ester handle, respectively. For 33, nitrogen is retained and the Boc group is abstracted. No whole-molecule site recognition runs after a reaction: the remaining marked handle is carried by the product SMARTS. Additional production unary chemistry and halogen exchange remain separate curation work. See [the implementation review guide](docs/linear-synthesis.md) for the state/action contract and current type inventory.
 
 `real.txt` and `real_raw.txt` are retained as provenance and curation references. They are not runtime inputs.
 
@@ -174,9 +173,9 @@ Set `RXNFLOW_FULL_PREPARE=1` to process the complete stock file instead of the r
 
 See [LICENSE](LICENSE).
 
-The selected HSX components, intentional differences, and backward approximation are documented in [the HSX port review](codex/docs/hsx-port.md).
+The selected HSX components, intentional differences, and backward approximation are documented in [the HSX port review](docs/hsx-port.md).
 
-Training writes per-update diagnostics to `training.jsonl` and every fresh trajectory's SMILES, raw reward, action path and failure metadata to `samples.jsonl`, independently of replay eviction. Metrics include reference-style `batch_entropy` (observed trajectory surprisal), valid/invalid and fresh/replay losses, pre-clip gradient norms, and reaction/action counts. `step_seconds` excludes log/checkpoint I/O; `sample_log_seconds` reports sample serialization/write overhead separately. See [logging definitions and reference mapping](codex/docs/training-logging.md).
+Training writes per-update diagnostics to `training.jsonl` and every fresh trajectory's SMILES, raw reward, action path and failure metadata to `samples.jsonl`, independently of replay eviction. Metrics include reference-style `batch_entropy` (observed trajectory surprisal), valid/invalid and fresh/replay losses, pre-clip gradient norms, and `traj_lens` (mean trajectory length). `iteration_time` excludes log/checkpoint I/O; `sampling_time` measures rollout generation and `logging_time` reports sample serialization/write overhead separately. See [logging definitions and reference mapping](docs/training-logging.md).
 
 Prepared environment loading trusts chemistry and values checked during preparation. It checks array schema/shape but does not reparse all SMILES, scan feature values, or decompress duplicate SMILES just to compare rows. Checkpoint environment identity still uses its content digest.
 
@@ -184,6 +183,6 @@ For Python sampling, use `RxnFlowSampler(checkpoint, reward=..., device=...)`. C
 
 QED is an external example in `examples/qed.py`; the core package only defines the injectable reward interface. Sampling requires beta, while omitted preferences draw independent Dirichlet(1) weights per trajectory (single objective: `[1]`). `--sampling-temperature` defaults to 1 and controls an additional softmax temperature.
 
-See [GFlowNet naming alignment](codex/docs/naming.md) for architecture, trajectory-balance and policy names mapped to the references.
+See [GFlowNet naming alignment](docs/naming.md) for architecture, trajectory-balance and policy names mapped to the references.
 
-The environment precomputes `action_space[None]` for initialization and `action_space[synthon_type]` for each handle as lists of `(ActionType, reaction_name, block_type)` tuples. `get_action_space(state)` retrieves the precomputed step-eligible list. Policy subsampling defines `ActionSubspace` matrices with sampled library indices, property masks and logits. Only selected columns become `Action`; reaction execution receives that complete action directly.
+`ActionSpace` is `list[ActionSubspace]`, defined in `core/types.py`. The environment stores `initial_action_space` for FirstBlock, `reaction_action_spaces[synthon_type]` for general Uni/BiReaction, and `last_action_spaces[synthon_type]` for terminal reactions. Each subspace records a reaction, library names and full library sizes; `sample_indices=None` denotes the full libraries. `get_action_space(state)` returns the step-eligible space. Policy creates separate sampled subspaces, so static environment metadata is not mutated. Both full and sampled subspaces decode selected columns to `Action`. `policy.py` owns `SubsamplingPolicy`, `ActionLogits` (subspace plus scores/importance weights), and `ActionCategorical`. Subsampling uses NumPy draws without replacement, sorted indices and `log(N/n)` weights. Full-library draw arrays are cached without RNG use. The NumPy RNG is saved and restored with checkpoints.

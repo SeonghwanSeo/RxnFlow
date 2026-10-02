@@ -4,7 +4,7 @@ RxnFlow merges a YAML file with built-in defaults. `qed.yaml` is the minimal exa
 
 `data.env_dir` points to a prepared Enamine synthon environment. `data.max_atoms` is the fixed RDKit heavy-atom capacity; graph tensors reserve one additional slot for the single dummy handle. Molecules are never truncated.
 
-`generation.min_reactions` and `generation.max_reactions` count only UniReaction and BiReaction actions. FirstBlock does not contribute. The defaults allow one to three reactions. A zero-site product terminates immediately; before the minimum, terminating actions are masked. On the last allowed reaction, only brick closures or terminal UniReactions are allowed. There is no Stop action.
+`generation.max_reactions` counts only UniReaction and BiReaction actions. FirstBlock does not contribute. The default allows up to three reactions. A zero-site product terminates immediately, including after the first reaction. On the last allowed reaction, only brick closures or terminal UniReactions are allowed. There is no Stop action.
 
 `subsampling.sampling_ratio` and `subsampling.min_sampling` control uniform candidate sampling within each compatible block library. `importance_temp` scales the inclusion-probability correction used during online action selection. All distinct site outcomes of a sampled block share its inclusion probability. A policy batch shares one draw per library. TB/replay forces inclusion of the union of observed rows in that library and uses conditional inclusion probabilities for the remaining sampled population. A subsample with no feasible continuation produces an invalid trajectory; there is no retry or full-library fallback.
 

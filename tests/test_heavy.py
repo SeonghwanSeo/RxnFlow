@@ -1,8 +1,9 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
+import numpy as np
 import pytest
-import torch
 
 from examples.qed import QEDReward
 from rxnflow.config import (
@@ -15,7 +16,7 @@ from rxnflow.config import (
 )
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.prepare import convert_stage, features_stage
-from rxnflow.gflownet.subsampling import BlockSubsampler
+from rxnflow.gflownet.policy import SubsamplingPolicy
 from rxnflow.sampler import RxnFlowSampler
 from rxnflow.trainer import RxnFlowTrainer
 
@@ -54,11 +55,12 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
 
     env = SynthesisEnv(env_dir, max_atoms=50, retrosynthesis_workers=0)
     assert env.bi_reactions and env.blocks and env.brick_types
-    sampled = BlockSubsampler(
-        1_000_000,
+    indices, _ = SubsamplingPolicy(
+        SimpleNamespace(blocks={"large": range(1_000_000)}),
         SubsamplingConfig(sampling_ratio=0.01, min_sampling=50),
-    ).sample(torch.Generator().manual_seed(0))
-    assert len(sampled.indices) == 10_000
+        np.random.default_rng(0),
+    ).sample("large")
+    assert len(indices) == 10_000
 
     steps = int(os.environ.get("RXNFLOW_HEAVY_STEPS", "10"))
     config = Config(

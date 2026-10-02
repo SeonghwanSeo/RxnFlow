@@ -4,53 +4,54 @@ from __future__ import annotations
 
 import hashlib
 import json
-from functools import cached_property, lru_cache
+from functools import cached_property
 from pathlib import Path
 
 import torch
 import yaml
 from rdkit import Chem
 
-from rxnflow.envs.chemistry.features import (
+from rxnflow.core.errors import InvalidTransition
+from rxnflow.core.reaction import BiReaction, UniReaction
+from rxnflow.core.synthon import load_synthon_specs, typed_dummy_isotopes
+from rxnflow.core.types import Action, ActionSpace, ActionSubspace, ActionType, State
+from rxnflow.envs.features import (
     PROPERTY_NAMES,
     heavy_atom_count,
     parse_molecule,
 )
-from rxnflow.envs.chemistry.reaction import BiReaction, UniReaction
-from rxnflow.envs.chemistry.synthon import load_synthon_specs, typed_dummy_isotopes
-from rxnflow.errors import InvalidTransition
-from rxnflow.gflownet.types import Action, ActionSpace, ActionType, State
-
-from .library import load_block_libraries
+from rxnflow.envs.library import load_block_libraries
+from rxnflow.envs.retrosynthesis import RetroSynthesisAnalyzer
 
 
 class SynthesisEnv:
-    """Catalog bricks have one handle; linkers have two, including latent ones.
-
-    FirstBlock does not count as a reaction. Every Uni/BiReaction counts once.
-    A reaction product with no handle is immediately terminal. The final allowed
-    reaction must close the remaining handle; there is no restoration/capping.
-    """
+    """Synthon-based synthesis environment"""
 
     def __init__(
         self,
         env_dir: str | Path,
         max_atoms: int = 50,
-        min_reactions: int = 1,
         max_reactions: int = 3,
         retrosynthesis_workers: int = 0,
         property_penalty: dict[str, float] | None = None,
     ):
         self.env_dir = Path(env_dir)
         self.max_atoms = max_atoms
-        self.min_reactions = min_reactions
         self.max_reactions = max_reactions
-        if max_atoms <= 0 or min_reactions < 0 or max_reactions < max(1, min_reactions):
+        if max_atoms <= 0 or max_reactions < 1:
             raise ValueError("invalid synthesis environment limits")
         self.property_limits = {
             PROPERTY_NAMES.index(name): limit
             for name, limit in (property_penalty or {}).items()
         }
+        self.retrosynthesis_workers = retrosynthesis_workers
+        self._load_libraries()
+        self._load_reactions()
+        self._build_action_spaces()
+        self.signature = self._compute_signature()
+
+    def _load_libraries(self) -> None:
+        """Load block data and index libraries by their attachment type."""
         self.blocks = load_block_libraries(self.env_dir)
         self.sources = json.loads((self.env_dir / "building_blocks.json").read_text())
         self.block_types = sorted(self.blocks)
@@ -72,91 +73,10 @@ class SynthesisEnv:
                 or not set(library.site_types) <= self.synthon_types
             ):
                 raise ValueError(f"invalid brick/linker type: {library.block_type}")
-        self.uni_reactions, self.bi_reactions = self._load_reactions(
-            self.env_dir / "reaction.yaml"
-        )
-        for reaction in self.uni_reactions.values():
-            if reaction.input_type not in self.synthon_types or (
-                reaction.output_type is not None
-                and reaction.output_type not in self.synthon_types
-            ):
-                raise ValueError(f"unknown synthon type in {reaction.name}")
-        for reaction in self.bi_reactions.values():
-            if not set(reaction.block_types) <= self.synthon_types:
-                raise ValueError(f"unknown synthon type in {reaction.name}")
-        self.action_names = [
-            "first_block",
-            *sorted(self.uni_reactions),
-            *sorted(self.bi_reactions),
-        ]
-        if len(set(self.action_names)) != len(self.action_names):
-            raise ValueError("reaction action names must be unique")
-        self.action_to_index = {name: i for i, name in enumerate(self.action_names)}
-        # A reference branching scale for the bounded backward heuristic. Site
-        # outcomes are state dependent, so this is not an exact action count.
-        self.num_total_actions = max(
-            2,
-            len(self.uni_reactions)
-            + sum(len(self.blocks[name]) for name in self.brick_types)
-            + sum(
-                len(self.blocks[name])
-                for action in self.bi_reactions.values()
-                for name in self._compatible_block_types(action.block_type)
-            ),
-        )
-        # The full static space depends only on the current handle (None at
-        # initialization). Specs contain no sampled block indices or tensors.
-        self.action_space: dict[int | None, ActionSpace] = {
-            None: [
-                (ActionType.FIRST_BLOCK, "first_block", name) for name in self.brick_types
-            ],
-            **{site_type: [] for site_type in self.synthon_types},
-        }
-        terminal_specs = set()
-        for name, reaction in self.uni_reactions.items():
-            spec = (ActionType.UNI_REACTION, name, None)
-            self.action_space[reaction.input_type].append(spec)
-            if reaction.output_type is None:
-                terminal_specs.add(spec)
-        for name, reaction in self.bi_reactions.items():
-            for block_type in self._compatible_block_types(reaction.block_type):
-                spec = (ActionType.BI_REACTION, name, block_type)
-                self.action_space[reaction.state_type].append(spec)
-                if self.blocks[block_type].is_brick:
-                    terminal_specs.add(spec)
 
-        # Step restrictions also depend only on static metadata. Build the
-        # four variants once; states reuse these lists without scanning libraries.
-        self._step_action_space: dict[tuple[int, bool, bool], ActionSpace] = {}
-        for site_type in self.synthon_types:
-            for last_step in (False, True):
-                for may_terminate in (False, True):
-                    self._step_action_space[site_type, last_step, may_terminate] = [
-                        spec
-                        for spec in self.action_space[site_type]
-                        if (not last_step or spec in terminal_specs)
-                        and (may_terminate or spec not in terminal_specs)
-                    ]
-        self.signature = self._build_signature()
-        # Chemistry is independent of trajectory length; replay can reuse it.
-        self._product = lru_cache(maxsize=8192)(self._reaction_product)
-
-        self.retrosynthesis_workers = retrosynthesis_workers
-
-    @cached_property
-    def retro_analyzer(self):
-        # Generation does not use backward probabilities. Build its catalog
-        # search index and workers only when training/backward analysis needs it.
-        from .retrosynthesis import RetrosynthesisSearch, RetrosynthesisWorkers
-
-        return RetrosynthesisWorkers(
-            RetrosynthesisSearch(self), self.retrosynthesis_workers
-        )
-
-    @staticmethod
-    def _load_reactions(
-        path: Path,
-    ) -> tuple[dict[str, UniReaction], dict[str, BiReaction]]:
+    def _load_reactions(self) -> None:
+        """Compile oriented reactions and assign their policy indices."""
+        path = self.env_dir / "reaction.yaml"
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict) or set(raw) != {"UniReaction", "BiReaction"}:
             raise ValueError(
@@ -180,12 +100,102 @@ class SynthesisEnv:
                     block_types=tuple(value["block_types"]),
                     block_first=block_first,
                 )
-        return uni, bi
+        self.uni_reactions, self.bi_reactions = uni, bi
+        for reaction in self.uni_reactions.values():
+            if reaction.input_type not in self.synthon_types or (
+                reaction.output_type is not None
+                and reaction.output_type not in self.synthon_types
+            ):
+                raise ValueError(f"unknown synthon type in {reaction.name}")
+        for reaction in self.bi_reactions.values():
+            if not set(reaction.block_types) <= self.synthon_types:
+                raise ValueError(f"unknown synthon type in {reaction.name}")
+        self.action_names = [
+            "first_block",
+            *sorted(self.uni_reactions),
+            *sorted(self.bi_reactions),
+        ]
+        if len(set(self.action_names)) != len(self.action_names):
+            raise ValueError("reaction action names must be unique")
+        self.action_to_index = {name: i for i, name in enumerate(self.action_names)}
 
-    def _compatible_block_types(self, site_type: int) -> list[str]:
+    def _build_action_spaces(self) -> None:
+        """Precompute eligible actions for each handle and reaction budget."""
+        # A reference branching scale for the bounded backward heuristic. Site
+        # outcomes are state dependent, so this is not an exact action count.
+        self.num_total_actions = max(
+            2,
+            len(self.uni_reactions)
+            + sum(len(self.blocks[name]) for name in self.brick_types)
+            + sum(
+                len(self.blocks[name])
+                for action in self.bi_reactions.values()
+                for name in self._get_compatible_libraries(action.block_type)
+            ),
+        )
+        # Full spaces contain library metadata, not per-block index arrays.
+        # Initialization has no synthon type and gets its own explicit space.
+        self.initial_action_space: ActionSpace = [
+            ActionSubspace(
+                "first_block",
+                ActionType.FIRST_BLOCK,
+                self.brick_types,
+                [len(self.blocks[name]) for name in self.brick_types],
+            )
+        ]
+        self.reaction_action_spaces: dict[int, ActionSpace] = {
+            site_type: [] for site_type in self.synthon_types
+        }
+        for name, reaction in self.uni_reactions.items():
+            self.reaction_action_spaces[reaction.input_type].append(
+                ActionSubspace(name, ActionType.UNI_REACTION, [], [])
+            )
+        for name, reaction in self.bi_reactions.items():
+            libraries = self._get_compatible_libraries(reaction.block_type)
+            if libraries:
+                self.reaction_action_spaces[reaction.state_type].append(
+                    ActionSubspace(
+                        name,
+                        ActionType.BI_REACTION,
+                        libraries,
+                        [len(self.blocks[n]) for n in libraries],
+                    )
+                )
+
+        # The final reaction must close the remaining site: terminal unary
+        # transformations or coupling to a brick. Earlier reactions may also end.
+        self.last_action_spaces: dict[int, ActionSpace] = {}
+        for site_type, space in self.reaction_action_spaces.items():
+            last_space: ActionSpace = []
+            for subspace in space:
+                if subspace.action_type == ActionType.UNI_REACTION:
+                    if self.uni_reactions[subspace.name].output_type is None:
+                        last_space.append(subspace)
+                else:
+                    libraries = [
+                        name for name in subspace.libraries if self.blocks[name].is_brick
+                    ]
+                    if libraries:
+                        last_space.append(
+                            ActionSubspace(
+                                subspace.name,
+                                subspace.action_type,
+                                libraries,
+                                [len(self.blocks[name]) for name in libraries],
+                            )
+                        )
+            self.last_action_spaces[site_type] = last_space
+
+    @cached_property
+    def retro_analyzer(self) -> RetroSynthesisAnalyzer:
+        return RetroSynthesisAnalyzer(self, self.retrosynthesis_workers)
+
+    def _get_compatible_libraries(self, site_type: int) -> list[str]:
+        """Return library names whose attachment type matches the reaction input."""
         return self.blocks_by_attachment.get(site_type, [])
 
-    def _build_signature(self) -> dict[str, object]:
+    def _compute_signature(self) -> dict[str, object]:
+        """Identify the prepared environment by its metadata and file contents."""
         digest = hashlib.sha256()
         for name in (
             "synthon.yaml",
@@ -200,7 +210,7 @@ class SynthesisEnv:
             digest.update(name.encode())
             digest.update((self.env_dir / "blocks" / f"{name}.smi").read_bytes())
         return {
-            "format": "rxnflow-environment",
+            "format": "rxnflow-env",
             "block_counts": {name: len(library) for name, library in self.blocks.items()},
             "reaction_names": self.action_names,
             "content_sha256": digest.hexdigest(),
@@ -215,7 +225,8 @@ class SynthesisEnv:
         return state.terminated
 
     @staticmethod
-    def dummy_signature(smiles: str) -> tuple[int, ...]:
+    def get_synthon_types(smiles: str) -> tuple[int, ...]:
+        """Return the synthon types encoded by dummy isotopes in SMILES."""
         mol = parse_molecule(smiles)
         return () if mol is None else typed_dummy_isotopes(mol)
 
@@ -224,17 +235,17 @@ class SynthesisEnv:
         if state.terminated:
             return []
         if state.mol is None:
-            return self.action_space[None]
+            return self.initial_action_space
         if state.reaction_count >= self.max_reactions:
             return []
         signature = typed_dummy_isotopes(state.mol)
         if len(signature) != 1 or signature[0] not in self.synthon_types:
             return []
-        last_step = state.reaction_count + 1 == self.max_reactions
-        may_terminate = state.reaction_count + 1 >= self.min_reactions
-        return self._step_action_space[signature[0], last_step, may_terminate]
+        if state.reaction_count + 1 == self.max_reactions:
+            return self.last_action_spaces[signature[0]]
+        return self.reaction_action_spaces[signature[0]]
 
-    def block_mask(
+    def get_block_mask(
         self,
         state_properties: torch.Tensor,
         block_type: str,
@@ -271,10 +282,8 @@ class SynthesisEnv:
                 mask &= estimate < limit + abs(limit) * 0.01
         return mask
 
-    def _reaction_product(
-        self, current: Chem.Mol | None, action: Action
-    ) -> Chem.Mol | None:
-        """Execute the selected action, including its concrete block index."""
+    def _apply_action(self, current: Chem.Mol | None, action: Action) -> Chem.Mol | None:
+        """Apply FirstBlock/UniReaction/BiReaction and return a valid Mol or None."""
         if action.block_type is not None:
             library = self.blocks[action.block_type]
             if action.block_index is None or not 0 <= action.block_index < len(library):
@@ -316,10 +325,7 @@ class SynthesisEnv:
         return mol
 
     def step(self, state: State, action: Action) -> State:
-        spec = (action.action_type, action.reaction or "first_block", action.block_type)
-        if spec not in self.get_action_space(state):
-            raise ValueError(f"action is not available for the current state: {action}")
-        product = self._product(state.mol, action)
+        product = self._apply_action(state.mol, action)
         if product is None:
             raise InvalidTransition(
                 "the selected reaction failed structural or graph-capacity checks"
@@ -334,7 +340,7 @@ class SynthesisEnv:
             assert action.block_index is not None
             library = self.blocks[action.block_type]
             identifiers = library.identifiers[action.block_index]
-            result["block_role"] = "brick" if library.is_brick else "linker"
+            result["block_type"] = "brick" if library.is_brick else "linker"
             result["block_smiles"] = library.smiles[action.block_index]
             result["block_ids"] = identifiers
             result["building_blocks"] = [

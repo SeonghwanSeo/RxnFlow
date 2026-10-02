@@ -28,7 +28,6 @@ subsampling:
 
 # FirstBlock is excluded. The final allowed reaction must consume the last site.
 generation:
-  min_reactions: 1
   max_reactions: 3
 
 model:

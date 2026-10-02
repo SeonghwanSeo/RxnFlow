@@ -6,8 +6,8 @@ import torch
 from rdkit import Chem
 
 from rxnflow.config import ModelConfig
-from rxnflow.envs.chemistry.features import heavy_atom_count, parse_molecule
 from rxnflow.envs.env import SynthesisEnv
+from rxnflow.envs.features import heavy_atom_count, parse_molecule
 from rxnflow.envs.graph import (
     BOND_FEATURE_DIM,
     NODE_FEATURE_DIM,
@@ -116,7 +116,7 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
 
 
 def test_dummy_type_is_categorical_not_molecular_mass() -> None:
-    from rxnflow.envs.chemistry.features import block_feature_row
+    from rxnflow.envs.features import block_feature_row
 
     first, fingerprint_one, _ = block_feature_row("[1*]NCC")
     protected, fingerprint_protected, _ = block_feature_row("[33*]NCC")
@@ -133,7 +133,7 @@ def test_morgan_counts_saturate_before_uint8_conversion() -> None:
     from rdkit import Chem
     from rdkit.Chem import rdFingerprintGenerator
 
-    from rxnflow.envs.chemistry.features import block_fingerprint
+    from rxnflow.envs.features import block_fingerprint
 
     # A deliberately long synthetic chain exercises counts above one byte.
     mol = Chem.MolFromSmiles("C" * 300)

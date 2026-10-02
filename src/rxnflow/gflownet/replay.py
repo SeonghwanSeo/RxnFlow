@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 from typing import Any
 
-from rxnflow.gflownet.types import Trajectory
+from rxnflow.core.types import Trajectory
 
 
 class ReplayBuffer:
@@ -15,7 +15,7 @@ class ReplayBuffer:
         # Store plain trajectory data, including beta, preferences and objective
         # rewards. Sampling preserves these conditions; no relabeling.
         # TODO: benchmark beta/preference relabeling and prioritized replay
-        # separately (see codex/docs/conditioning.md).
+        # separately (see docs/conditioning.md).
         self._items: list[dict[str, Any]] = []
         self._next = 0
 

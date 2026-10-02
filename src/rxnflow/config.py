@@ -98,7 +98,11 @@ class ModelConfig:
     def validate(self) -> None:
         if self.num_emb <= 0 or self.num_layers <= 0:
             raise ValueError("model dimensions must be positive")
-        if self.num_block_emb <= 0 or self.num_mlp_layers < 1 or self.num_mlp_layers_block < 1:
+        if (
+            self.num_block_emb <= 0
+            or self.num_mlp_layers < 1
+            or self.num_mlp_layers_block < 1
+        ):
             raise ValueError("invalid block dimension or MLP depth")
         if not 0 <= self.dropout < 1:
             raise ValueError("model.dropout must be in [0, 1)")
@@ -108,16 +112,11 @@ class ModelConfig:
 class GenerationConfig:
     """Dynamic synthesis trajectory limits."""
 
-    min_reactions: int = 1
     max_reactions: int = 3
 
     def validate(self) -> None:
-        if self.min_reactions < 0:
-            raise ValueError("generation.min_reactions must be non-negative")
-        if self.max_reactions < max(1, self.min_reactions):
-            raise ValueError(
-                "generation.max_reactions must be at least 1 and generation.min_reactions"
-            )
+        if self.max_reactions < 1:
+            raise ValueError("generation.max_reactions must be at least 1")
 
 
 @dataclass
@@ -194,7 +193,7 @@ class Config:
     def validate(self) -> None:
         self.data.validate()
         self.reward.validate()
-        from rxnflow.envs.chemistry.features import PROPERTY_NAMES
+        from rxnflow.envs.features import PROPERTY_NAMES
 
         if not isinstance(self.property_penalty, dict):
             raise ValueError("property_penalty must be a mapping")

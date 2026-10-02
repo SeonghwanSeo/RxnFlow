@@ -5,11 +5,15 @@ from __future__ import annotations
 import math
 from concurrent.futures import Future, ProcessPoolExecutor
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from rdkit import Chem
 
-from rxnflow.envs.chemistry.synthon import typed_dummy_isotopes
-from rxnflow.gflownet.types import Action, ActionType
+from rxnflow.core.synthon import typed_dummy_isotopes
+from rxnflow.core.types import Action, ActionType
+
+if TYPE_CHECKING:
+    from rxnflow.envs.env import SynthesisEnv
 
 
 @dataclass
@@ -29,7 +33,7 @@ class RetrosynthesisTree:
         ]
 
 
-class RetrosynthesisSearch:
+class Worker:
     """Enumerate catalog-supported routes within the supplied reaction budget.
 
     A shorter route must not prune another branch: that made the result depend
@@ -37,7 +41,8 @@ class RetrosynthesisSearch:
     This is exhaustive over the supplied SMARTS within that bound, not over
     all possible chemistry. Backward weights remain the depth-based heuristic.
     """
-    def __init__(self, env):
+
+    def __init__(self, env: SynthesisEnv):
         self.uni_reactions = env.uni_reactions
         self.bi_reactions = env.bi_reactions
         self.block_search = {
@@ -169,12 +174,12 @@ class RetrosynthesisSearch:
         return result
 
 
-_WORKER_ANALYZER: RetrosynthesisSearch | None = None
+_WORKER: Worker | None = None
 
 
-def _init_worker(analyzer: RetrosynthesisSearch) -> None:
-    global _WORKER_ANALYZER
-    _WORKER_ANALYZER = analyzer
+def _init_worker(worker: Worker) -> None:
+    global _WORKER
+    _WORKER = worker
 
 
 def _worker_run(
@@ -182,18 +187,18 @@ def _worker_run(
     max_reactions: int,
     known_branches: list[tuple[Action, RetrosynthesisTree]] | None,
 ) -> RetrosynthesisTree | None:
-    assert _WORKER_ANALYZER is not None
-    return _WORKER_ANALYZER.run(smiles, max_reactions, known_branches)
+    assert _WORKER is not None
+    return _WORKER.run(smiles, max_reactions, known_branches)
 
 
-class RetrosynthesisWorkers:
-    def __init__(self, analyzer: RetrosynthesisSearch, workers: int):
-        self.analyzer = analyzer
+class RetroSynthesisAnalyzer:
+    def __init__(self, env: SynthesisEnv, workers: int):
+        self.worker = Worker(env)
         self.pool = (
             ProcessPoolExecutor(
                 max_workers=workers,
                 initializer=_init_worker,
-                initargs=(analyzer,),
+                initargs=(self.worker,),
             )
             if workers > 0
             else None
@@ -209,8 +214,8 @@ class RetrosynthesisWorkers:
     ) -> RetrosynthesisTree | None:
         if self.pool is None:
             if known_branches is None:
-                return self.analyzer.run(smiles, max_reactions)
-            return self.analyzer.run(smiles, max_reactions, known_branches)
+                return self.worker.run(smiles, max_reactions)
+            return self.worker.run(smiles, max_reactions, known_branches)
         return self.pool.submit(
             _worker_run, smiles, max_reactions, known_branches
         ).result()
@@ -226,7 +231,7 @@ class RetrosynthesisWorkers:
             self.results.append(
                 (
                     key,
-                    self.analyzer.run(smiles, max_reactions, known_branches),
+                    self.worker.run(smiles, max_reactions, known_branches),
                 )
             )
         else:

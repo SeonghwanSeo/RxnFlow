@@ -8,11 +8,11 @@ import numpy as np
 import pytest
 from rdkit import Chem
 
+from rxnflow.core.errors import InvalidTransition
+from rxnflow.core.types import Action, ActionSubspace, ActionType, State
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.graph import molecule_to_graph_data
 from rxnflow.envs.prepare import convert_stage, features_stage
-from rxnflow.errors import InvalidTransition
-from rxnflow.gflownet.types import Action, ActionType, State
 
 
 def block_index(env, block_type, smiles):
@@ -22,16 +22,21 @@ def block_index(env, block_type, smiles):
 
 
 def actions_for(env, state, name, block_type=None, smiles=None):
-    action_type, reaction, library = next(
-        spec
-        for spec in env.get_action_space(state)
-        if spec[1] == name and spec[2] == block_type
+    subspace = next(
+        subspace
+        for subspace in env.get_action_space(state)
+        if subspace.name == name
+        and (
+            block_type in subspace.libraries
+            if block_type is not None
+            else not subspace.libraries
+        )
     )
     index = block_index(env, block_type, smiles) if smiles is not None else None
     action = Action(
-        action_type,
-        None if action_type == ActionType.FIRST_BLOCK else reaction,
-        library,
+        subspace.action_type,
+        None if subspace.action_type == ActionType.FIRST_BLOCK else subspace.name,
+        block_type,
         index,
     )
     try:
@@ -86,13 +91,17 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
 def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=30, max_reactions=3)
     initial = env.initial_state()
-    assert env.get_action_space(initial) is env.action_space[None]
-    assert set(env.action_space) == {None, *env.synthon_types}
-    # Step variants are precomputed; equivalent states reuse their tuple list.
+    assert env.get_action_space(initial) is env.initial_action_space
+    assert set(env.reaction_action_spaces) == env.synthon_types
+    # Step variants are precomputed; equivalent states reuse their subspace list.
     same_site = State.from_smiles("[1*]NCC")
     assert env.get_action_space(same_site) is env.get_action_space(same_site)
-    assert all(isinstance(spec, tuple) for spec in env.action_space[1])
-    assert {g[0] for g in env.get_action_space(initial)} == {ActionType.FIRST_BLOCK}
+    assert all(
+        isinstance(subspace, ActionSubspace) for subspace in env.reaction_action_spaces[1]
+    )
+    assert {g.action_type for g in env.get_action_space(initial)} == {
+        ActionType.FIRST_BLOCK
+    }
     first = actions_for(env, initial, "first_block", "1", "*NCCN")[0]
     start = env.step(initial, first)
     assert start.reaction_count == 0
@@ -100,21 +109,27 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
         0
     ]
     protected = env.step(start, coupling)
-    assert env.dummy_signature(protected.smiles) == (33,)
-    assert {g[0] for g in env.get_action_space(protected)} == {ActionType.UNI_REACTION}
+    assert env.get_synthon_types(protected.smiles) == (33,)
+    assert {g.action_type for g in env.get_action_space(protected)} == {
+        ActionType.UNI_REACTION
+    }
     deprotect = actions_for(env, protected, "boc_deprotection")[0]
     activated = env.step(protected, deprotect)
     assert activated.reaction_count == 2
-    assert env.dummy_signature(activated.smiles) == (1,)
+    assert env.get_synthon_types(activated.smiles) == (1,)
     closure = actions_for(env, activated, "amide_coupling_state_first", "3", "C*")[0]
     terminal = env.step(activated, closure)
     assert terminal.terminated and terminal.reaction_count == 3
     assert "*" not in terminal.smiles and not env.get_action_space(terminal)
-    assert all(env.blocks[g[2]].is_brick for g in env.get_action_space(activated))
+    assert all(
+        env.blocks[name].is_brick
+        for g in env.get_action_space(activated)
+        for name in g.libraries
+    )
     public = env.action_to_dict(first)
     assert public["block_ids"] == ["EN-A", "EN-A2"]
     assert public["building_blocks"][0] == {"id": "EN-A", "smiles": "NCCN"}
-    assert env.action_to_dict(coupling)["block_role"] == "linker"
+    assert env.action_to_dict(coupling)["block_type"] == "linker"
     assert env.backward_log_probability(start, first, "") is not None
     assert (
         env.backward_log_probability(activated, deprotect, protected.smiles) is not None
@@ -133,18 +148,25 @@ def test_state_retains_product_molecule_and_stereochemistry(
     )
     action = actions_for(env, parent, "amide_coupling_state_first", "3", "C*")[0]
 
-    # Explicitly executing the action already produced the molecule. Applying that action and encoding
-    # its result must not reparse either the parent or product SMILES.
-    def unexpected_parse(*args, **kwargs):
-        raise AssertionError("state/graph encoding reparsed a molecule")
+    # The selected block is stored as SMILES, but the parent and product must
+    # stay as molecule objects throughout the transition and graph encoding.
+    block_smiles = env.blocks[action.block_type].smiles[action.block_index]
+    parse = Chem.MolFromSmiles
+    parsed = []
 
-    monkeypatch.setattr(Chem, "MolFromSmiles", unexpected_parse)
+    def parse_block(smiles, *args, **kwargs):
+        assert smiles == block_smiles, "state/graph encoding reparsed a molecule"
+        parsed.append(smiles)
+        return parse(smiles, *args, **kwargs)
+
+    monkeypatch.setattr(Chem, "MolFromSmiles", parse_block)
     child = env.step(parent, action)
     graph = molecule_to_graph_data(child.mol, env.max_atoms, child.reaction_count)
     restored = pickle.loads(pickle.dumps(child))
     restored_graph = molecule_to_graph_data(
         restored.mol, env.max_atoms, restored.reaction_count
     )
+    assert parsed == [block_smiles]
     assert child.smiles == expected
     assert restored.smiles == expected == Chem.MolToSmiles(restored.mol)
     assert child.mol is not parent.mol
@@ -171,7 +193,7 @@ def test_terminal_unary_early_exit_and_final_step_masks(prepared_env: Path) -> N
     assert env.get_action_space(replace(state, reaction_count=3)) == []
     assert env.get_action_space(State.from_smiles("[33*]NCC", reaction_count=2)) == []
     assert not env.get_action_space(early)
-    with pytest.raises(ValueError, match="not available"):
+    with pytest.raises(InvalidTransition, match="structural or graph-capacity"):
         env.step(early, action)
 
 
@@ -192,7 +214,7 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
         fingerprints.append(env.blocks["1-1"].fingerprints[action.block_index])
         product = env.step(state, action)
         products.append(product.smiles)
-        assert env.dummy_signature(product.smiles) == (1,)
+        assert env.get_synthon_types(product.smiles) == (1,)
         assert not product.terminated
         assert env.backward_log_probability(product, action, state.smiles) is not None
     assert outcomes[0].block_index != outcomes[1].block_index
@@ -208,9 +230,9 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
     # Ordered library types determine which end attaches, even for two types.
     assert "1-3" in env.blocks and "3-1" in env.blocks
     assert all(
-        g[2] != "1-3"
+        "1-3" not in g.libraries
         for g in env.get_action_space(State.from_smiles("[1*]NCC"))
-        if g[1] == "amide_coupling_state_first"
+        if g.name == "amide_coupling_state_first"
     )
 
 
@@ -268,24 +290,34 @@ def test_versioned_feature_artifact_is_rejected(
         SynthesisEnv(env_dir)
 
 
-def test_minimum_reactions_masks_early_termination(prepared_env: Path) -> None:
-    env = SynthesisEnv(prepared_env, min_reactions=2, max_reactions=3)
+def test_regular_and_last_action_spaces(prepared_env: Path) -> None:
+    env = SynthesisEnv(prepared_env, max_reactions=3)
     state = State.from_smiles("[3*]C")
-    assert env.get_action_space(state)
-    assert all(not env.blocks[g[2]].is_brick for g in env.get_action_space(state))
-    assert "nitrile_to_tetrazole" not in {
-        g[1] for g in env.get_action_space(State.from_smiles("[11*]CC"))
+    assert env.get_action_space(state) is env.reaction_action_spaces[3]
+    libraries = [
+        name for subspace in env.get_action_space(state) for name in subspace.libraries
+    ]
+    assert any(env.blocks[name].is_brick for name in libraries)
+    assert any(not env.blocks[name].is_brick for name in libraries)
+    last = replace(state, reaction_count=2)
+    assert env.get_action_space(last) is env.last_action_spaces[3]
+    assert all(
+        env.blocks[name].is_brick
+        for subspace in env.get_action_space(last)
+        for name in subspace.libraries
+    )
+    assert "nitrile_to_tetrazole" in {
+        subspace.name for subspace in env.get_action_space(State.from_smiles("[11*]CC"))
     }
-    allowed = State.from_smiles("[11*]CC", reaction_count=1)
-    assert env.step(
-        allowed, actions_for(env, allowed, "nitrile_to_tetrazole")[0]
-    ).terminated
+    # With one allowed reaction, the first post-FirstBlock state uses last space.
+    single = SynthesisEnv(prepared_env, max_reactions=1)
+    assert single.get_action_space(state) is single.last_action_spaces[3]
 
 
 def test_budget_tolerance_and_nonpositive_bounds(prepared_env: Path) -> None:
     import torch
 
-    from rxnflow.envs.chemistry.features import PROPERTY_DIM, PROPERTY_NAMES
+    from rxnflow.envs.features import PROPERTY_DIM, PROPERTY_NAMES
 
     env = SynthesisEnv(
         prepared_env, property_penalty={"mw": 100.0, "rings": 0, "logp": -1.0}
@@ -296,24 +328,24 @@ def test_budget_tolerance_and_nonpositive_bounds(prepared_env: Path) -> None:
     library.properties[:, PROPERTY_NAMES.index("rings")] = 0
     library.properties[:, PROPERTY_NAMES.index("logp")] = -1.0
     state_properties = torch.zeros(PROPERTY_DIM)
-    assert env.block_mask(state_properties, name).all()
+    assert env.get_block_mask(state_properties, name).all()
     # Main's 1% margin admits 100.5, but the exact 101.0 boundary is excluded.
     state_properties[PROPERTY_NAMES.index("mw")] = 0.49
-    assert env.block_mask(state_properties, name).all()
+    assert env.get_block_mask(state_properties, name).all()
     state_properties[PROPERTY_NAMES.index("mw")] = 0.5
-    assert not env.block_mask(state_properties, name).any()
+    assert not env.get_block_mask(state_properties, name).any()
     state_properties.zero_()
     state_properties[PROPERTY_NAMES.index("rings")] = 1
-    assert not env.block_mask(state_properties, name).any()
+    assert not env.get_block_mask(state_properties, name).any()
     state_properties.zero_()
     state_properties[PROPERTY_NAMES.index("logp")] = 0.005
-    assert env.block_mask(state_properties, name).all()
+    assert env.get_block_mask(state_properties, name).all()
     state_properties[PROPERTY_NAMES.index("logp")] = 0.02
-    assert not env.block_mask(state_properties, name).any()
+    assert not env.get_block_mask(state_properties, name).any()
     state_properties.zero_()
     # Graph capacity remains strict regardless of the property margin.
     state_properties[PROPERTY_NAMES.index("heavy_atoms")] = env.max_atoms
-    assert not env.block_mask(state_properties, name).any()
+    assert not env.get_block_mask(state_properties, name).any()
 
 
 @pytest.mark.parametrize("min_library_size", [1, 2])
@@ -411,7 +443,7 @@ def test_loading_does_not_repeat_preparation_validation(prepared_env, monkeypatc
 def test_batched_budgets_match_individual_masks(prepared_env):
     import torch
 
-    from rxnflow.envs.chemistry.features import molecular_properties, parse_molecule
+    from rxnflow.envs.features import molecular_properties, parse_molecule
 
     env = SynthesisEnv(
         prepared_env, max_atoms=20, property_penalty={"mw": 200, "rings": 0, "logp": -1.0}
@@ -426,5 +458,7 @@ def test_batched_budgets_match_individual_masks(prepared_env):
     )
     for name, library in env.blocks.items():
         indices = torch.arange(min(3, len(library)))
-        expected = torch.stack([env.block_mask(row, name, indices) for row in properties])
-        assert torch.equal(env.block_mask(properties, name, indices), expected)
+        expected = torch.stack(
+            [env.get_block_mask(row, name, indices) for row in properties]
+        )
+        assert torch.equal(env.get_block_mask(properties, name, indices), expected)

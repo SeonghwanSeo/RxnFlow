@@ -9,12 +9,12 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from rxnflow.config import ModelConfig
-from rxnflow.envs.chemistry.features import (
+from rxnflow.envs.env import SynthesisEnv
+from rxnflow.envs.features import (
     FINGERPRINT_DIM,
     PROPERTY_DIM,
     PROPERTY_SCALE,
 )
-from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
 
 from .mpnn import MPNN

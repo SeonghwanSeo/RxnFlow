@@ -8,17 +8,18 @@ import shutil
 from pathlib import Path
 from time import perf_counter
 
+import numpy as np
 import torch
 from rdkit import Chem
 from torch import Tensor
 
 from rxnflow import __version__
 from rxnflow.config import Config
+from rxnflow.core.types import Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
-from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device
+from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.types import Trajectory
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, evaluate_rewards
 
@@ -49,11 +50,10 @@ class RxnFlowTrainer:
         self.device = resolve_device(config.device)
         torch.manual_seed(config.seed)
         self.python_rng = random.Random(config.seed)
-        self.generator = torch.Generator(device="cpu").manual_seed(config.seed)
+        self.rng = np.random.default_rng(config.seed)
         self.env = SynthesisEnv(
             config.data.env_dir,
             config.data.max_atoms,
-            config.generation.min_reactions,
             config.generation.max_reactions,
             config.training.retrosynthesis_workers,
             config.property_penalty,
@@ -90,11 +90,11 @@ class RxnFlowTrainer:
         self.output_dir = Path(config.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.config.save(self.output_dir / "config.yaml")
-        self.policy = SynthesisPolicy(
-            self.env, self.model, config, self.device, self.generator
+        self.policy = RxnFlowPolicy(
+            self.env, self.model, config, self.device, self.rng
         )
-        self.sampling_policy = SynthesisPolicy(
-            self.env, self.sampling_model, config, self.device, self.generator
+        self.sampling_policy = RxnFlowPolicy(
+            self.env, self.sampling_model, config, self.device, self.rng
         )
         if restart is not None:
             self.load_checkpoint(restart)
@@ -121,8 +121,8 @@ class RxnFlowTrainer:
                 "optimizer": self.optimizer.state_dict(),
                 "lr_scheduler": self.lr_scheduler.state_dict(),
                 "replay": self.replay.state_dict(),
-                "torch_generator": self.generator.get_state(),
-                # Library subsampling uses the CPU generator above. Gumbel
+                "numpy_rng": self.rng.bit_generator.state,
+                # Library subsampling uses the NumPy generator above. Gumbel
                 # sampling and dropout use the model-device global generator.
                 # Beta/preference draws use the CPU global generator.
                 "torch_rng": torch.get_rng_state(),
@@ -174,7 +174,7 @@ class RxnFlowTrainer:
         self.optimizer.load_state_dict(checkpoint["optimizer"])
         self.lr_scheduler.load_state_dict(checkpoint["lr_scheduler"])
         self.replay.load_state_dict(checkpoint["replay"])
-        self.generator.set_state(checkpoint["torch_generator"])
+        self.rng.bit_generator.state = checkpoint["numpy_rng"]
         torch.set_rng_state(checkpoint["torch_rng"])
         if self.device.type == "cuda":
             torch.cuda.set_rng_state(checkpoint["cuda_rng"], self.device)

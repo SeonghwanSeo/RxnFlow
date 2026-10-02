@@ -16,7 +16,7 @@ import torch
 from rdkit import Chem
 from torch import Tensor
 
-from rxnflow.envs.chemistry.features import (
+from rxnflow.envs.features import (
     heavy_atom_count,
     molecular_properties,
     normalize_molecular_properties,
