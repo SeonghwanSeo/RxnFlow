@@ -3,17 +3,17 @@ from collections import Counter
 
 import torch
 
-from rxnflow.gflownet.categorical import ActionCategorical, ProtocolLogits
+from rxnflow.gflownet.categorical import ActionCategorical, ActionLogits
 from rxnflow.gflownet.types import ActionKind
 
 
 def test_device_sampling_balances_libraries_and_keeps_property_masks():
     torch.manual_seed(11)
     n = 6000
-    # Protocol one has libraries of unequal size, protocol two is a unary.
-    # At temperature 1 the random policy gives each protocol mass 1/2 and
+    # One action group has libraries of unequal size; the other is unary.
+    # At temperature 1 the random policy gives each group mass 1/2 and
     # each of the two block libraries mass 1/4, irrespective of library size.
-    blocks = ProtocolLogits(
+    blocks = ActionLogits(
         "couple",
         ActionKind.BI_REACTION,
         ["small", "large"],
@@ -22,7 +22,7 @@ def test_device_sampling_balances_libraries_and_keeps_property_masks():
         torch.full((10,), 5.0),
         torch.tensor([-math.log(2)] + [-math.log(18)] * 9),
     )
-    unary = ProtocolLogits(
+    unary = ActionLogits(
         "convert",
         ActionKind.UNI_REACTION,
         [],
@@ -48,7 +48,7 @@ def test_policy_sampling_matches_temperature_and_importance_weights():
     n = 6000
     logits = torch.tensor([0.0, 0.5, -torch.inf])
     weights = torch.tensor([math.log(4), 0.0, 0.0])
-    protocol = ProtocolLogits(
+    group = ActionLogits(
         "couple",
         ActionKind.BI_REACTION,
         ["a"],
@@ -57,7 +57,7 @@ def test_policy_sampling_matches_temperature_and_importance_weights():
         weights,
         torch.zeros(3),
     )
-    policy = ActionCategorical([protocol], torch.zeros(n, 2))
+    policy = ActionCategorical([group], torch.zeros(n, 2))
     actions = policy.sample(0.7, 0.0, 0.5)
     counts = Counter(action.block_index for action in actions)
     expected = ((logits + 0.5 * weights) / 0.7).softmax(0)

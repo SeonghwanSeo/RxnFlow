@@ -126,7 +126,7 @@ def test_state_retains_product_molecule_and_stereochemistry(
     restored_graph = molecule_to_graph_data(
         restored.mol, env.max_atoms, restored.reaction_count
     )
-    assert child.smiles == expected == action.product_smiles
+    assert child.smiles == expected
     assert restored.smiles == expected == Chem.MolToSmiles(restored.mol)
     assert child.mol is not parent.mol
     assert Chem.MolToSmiles(parent.mol) == parent_smiles
@@ -166,6 +166,7 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
     state = MoleculeState.from_smiles("[3*]C")
     directions = ["*NCCC(C)N[1*]", "[1*]NCCC(C)N*"]
     outcomes = []
+    products = []
     fingerprints = []
     for smiles in directions:
         actions = actions_for(env, state, "rxn1_block_first", "1-1", smiles)
@@ -174,11 +175,12 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
         outcomes.append(action)
         fingerprints.append(env.blocks["1-1"].fingerprints[action.block_index])
         product = env.step(state, action)
+        products.append(product.smiles)
         assert env.dummy_signature(product.smiles) == (1,)
         assert not product.terminated
         assert env.backward_log_probability(product, action, state.smiles) is not None
     assert outcomes[0].block_index != outcomes[1].block_index
-    assert outcomes[0].product_smiles != outcomes[1].product_smiles
+    assert products[0] != products[1]
     assert not np.array_equal(fingerprints[0].numpy(), fingerprints[1].numpy())
     # Equivalent orientations collapse to one catalog row.
     symmetric = Chem.MolToSmiles(Chem.MolFromSmiles("*NCCN[1*]"))

@@ -76,7 +76,7 @@ def main():
         assert checkpoint['step'] == 5000
         # The final replay contains recent training trajectories with exploration.
         # Keep its reaction mix separate from the independent evaluation samples.
-        replay = [trajectory for trajectory in checkpoint['replay']['items'] if trajectory.valid]
+        replay = [trajectory for trajectory in checkpoint['replay']['items'] if trajectory['valid']]
         results[run.name] = {
             'training_seconds': completed['training_seconds'],
             'peak_allocated_mib': completed['peak_allocated_mib'],
@@ -86,13 +86,13 @@ def main():
             'after': sample_statistics(run / 'evaluation_after.jsonl'),
             'final_replay': {
                 'valid_trajectories': len(replay),
-                'first_library_counts': dict(Counter(t.steps[0].action.block_type for t in replay)),
-                'reaction_counts': dict(Counter(len(t.steps) - 1 for t in replay)),
+                'first_library_counts': dict(Counter(t['steps'][0]['action']['block_type'] for t in replay)),
+                'reaction_counts': dict(Counter(len(t['steps']) - 1 for t in replay)),
                 'reaction_use_counts': dict(Counter(
-                    step.action.reaction for trajectory in replay for step in trajectory.steps[1:]
+                    step['action']['reaction'] for trajectory in replay for step in trajectory['steps'][1:]
                 )),
                 'common_reaction_sequences': Counter(
-                    tuple(step.action.reaction for step in trajectory.steps[1:])
+                    tuple(step['action']['reaction'] for step in trajectory['steps'][1:])
                     for trajectory in replay
                 ).most_common(10),
             },

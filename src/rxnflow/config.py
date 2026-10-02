@@ -64,14 +64,15 @@ class ModelConfig:
     hidden_dim: int = 128
     num_layers: int = 4
     block_dim: int = 128
+    # Total Linear layers, including the output layer.
     mlp_layers: int = 2
-    block_mlp_layers: int = 1
+    block_mlp_layers: int = 2
     dropout: float = 0.0
 
     def validate(self) -> None:
         if self.hidden_dim <= 0 or self.num_layers <= 0:
             raise ValueError("model dimensions must be positive")
-        if self.block_dim <= 0 or self.mlp_layers < 0 or self.block_mlp_layers < 0:
+        if self.block_dim <= 0 or self.mlp_layers < 1 or self.block_mlp_layers < 1:
             raise ValueError("invalid block dimension or MLP depth")
         if not 0 <= self.dropout < 1:
             raise ValueError("model.dropout must be in [0, 1)")
@@ -104,7 +105,7 @@ class TrainingConfig:
     lr_decay_steps: float = 20_000
     weight_decay: float = 1e-8
     sampling_temperature: float = 1.0
-    random_action_prob: float = 0.1
+    random_action_prob: float = 0.05
     ema_decay: float = 0.99
     checkpoint_every: int = 100
     log_every: int = 10

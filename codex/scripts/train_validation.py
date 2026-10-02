@@ -18,13 +18,13 @@ from rxnflow.trainer import RxnFlowTrainer
 class ValidationQEDReward(QEDReward):
     """Reward stays pure QED; final-property statistics are diagnostics only."""
 
-    def score(self, samples):
-        scores = super().score(samples)
+    def score(self, molecules):
+        scores = super().score(molecules)
         properties = [
-            (Descriptors.MolWt(s.mol), Lipinski.NumHAcceptors(s.mol), Lipinski.NumHDonors(s.mol))
-            for s in samples
+            (Descriptors.MolWt(mol), Lipinski.NumHAcceptors(mol), Lipinski.NumHDonors(mol))
+            for mol in molecules
         ]
-        count = len(samples)
+        count = len(molecules)
         self.last_metrics = {
             "mean_qed_valid": sum(scores) / max(1, count),
             "lipinski_fraction": sum(mw <= 500 and hba <= 10 and hbd <= 5 for mw, hba, hbd in properties) / max(1, count),

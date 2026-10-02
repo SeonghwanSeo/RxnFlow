@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from typing import Any
 
 from rxnflow.gflownet.types import Trajectory
 
@@ -11,7 +12,8 @@ class ReplayBuffer:
     def __init__(self, capacity: int):
         assert capacity >= 0
         self.capacity = capacity
-        self._items: list[Trajectory] = []
+        # Store SMILES and scalar metadata, not live states or RDKit molecules.
+        self._items: list[dict[str, Any]] = []
         self._next = 0
 
     def __len__(self) -> int:
@@ -21,10 +23,11 @@ class ReplayBuffer:
         if not self.capacity:
             return
         for trajectory in trajectories:
+            item = trajectory.to_dict()
             if len(self._items) < self.capacity:
-                self._items.append(trajectory)
+                self._items.append(item)
             else:
-                self._items[self._next] = trajectory
+                self._items[self._next] = item
                 self._next = (self._next + 1) % self.capacity
 
     def sample(self, count: int, rng: random.Random) -> list[Trajectory]:
@@ -34,7 +37,11 @@ class ReplayBuffer:
         # Logical indices are oldest-first, including after wrap and restart.
         # Draw O(batch size) indices rather than copying the whole replay deque.
         indices = range(size) if count >= size else rng.sample(range(size), count)
-        return [self._items[(self._next + i) % size] for i in indices]
+        # Reconstruct only the sampled batch. Its molecule objects are not
+        # retained by the buffer after the training update finishes.
+        return [
+            Trajectory.from_dict(self._items[(self._next + i) % size]) for i in indices
+        ]
 
     def state_dict(self) -> dict[str, object]:
         size = len(self._items)

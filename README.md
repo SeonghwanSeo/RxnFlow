@@ -13,8 +13,7 @@ The [section-by-section reference comparison](codex/docs/reference-comparison.md
 RxnFlow is under development toward its initial `v1.0.0` release and requires Python 3.10. There is one current environment, config, and checkpoint format; regenerate older artifacts.
 
 ```bash
-python3.10 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
+pip install -e '.[dev]'
 ```
 
 The implementation uses native PyTorch tensors and does not require PyTorch Geometric or compiled scatter extensions.
@@ -94,24 +93,24 @@ The policy scores state/reaction embeddings and prepared block features without 
 
 The graph encoder uses residual GINE message passing in native PyTorch, with graph-mode normalization, conditional scale/shift and bidirectional virtual-node edges. Each layer sums ReLU(source + bond), adds the normalized target once (fixed epsilon=0), and applies a two-Linear H→2H→H MLP before the conditioned residual update. Explicit self loops and attention are absent. Atom features include chirality. The 13 bond features follow HSX main: four bond types, seven stereo categories (NONE/ANY/Z/E/CIS/TRANS/unknown), conjugation and ring membership. Molecular mean and virtual-node pooling give a `2 * hidden_dim` readout followed by LayerNorm. The block encoder projects fingerprints and properties with separate Linear/LayerNorm branches using HSX main's Xavier initialization, then combines them with a type embedding through the fusion MLP. HSX explore supplies the fusion/policy normalization order and post-GNN reaction conditioning; HSX main supplies the block-normalized dot score and bounded reaction temperature, initialized at 0.2. Graph/fusion/policy MLPs use Kaiming hidden weights and Xavier output weights, with zero biases; reaction and block-type embeddings use uniform[-0.1,0.1]. UniReaction uses a scalar head. Defaults are `hidden_dim=128`, `num_layers=4`, `block_dim=128`, `mlp_layers=2`, and `block_mlp_layers=1`. The backbone is an explicitly selected GINE variant; the reference 2H readout and late conditioning remain. Anchor readout is not added. The obsolete `num_heads` option has been removed. Checkpoints with the previous architecture or dimensions cannot be loaded into the new default model; existing MolWt-based prepared libraries need their feature stage rerun before use; block conversion is unchanged.
 
-Training uses MSE trajectory balance, uniform FIFO replay, an EMA sampling model, and restartable checkpoints. Failed selected reactions retain their forward probability and receive zero raw reward with the configured training reward floor. Policy gradients use global norm clipping at 100, excluding logZ. Default random action probability is 0.1, reward floor is 1e-4, and weight decay remains 1e-8. `training.log_z_learning_rate` controls logZ separately; `training.lr_decay_steps` is the learning-rate half-life. Optimizer, scheduler, library RNG and model-device RNG states are restored. Backward analysis preserves the generated route and adds forward-verified precursor routes within the reaction-depth bound. Its depth-weighted probabilities remain an approximation to the backward distribution. Reverse workers run alongside the next forward-policy computation; pending results are collected before extending their parent trees, including after the final reaction.
+Training uses MSE trajectory balance, uniform FIFO replay, an EMA sampling model, and restartable checkpoints. Replay and checkpoints store trajectories as plain dictionaries with SMILES; only sampled replay trajectories reconstruct RDKit molecules. Failed selected reactions retain their forward probability and receive zero raw reward with the configured training reward floor. Policy gradients use global norm clipping at 100, excluding logZ. Default random action probability is 0.1, reward floor is 1e-4, and weight decay remains 1e-8. `training.log_z_learning_rate` controls logZ separately; `training.lr_decay_steps` is the learning-rate half-life. Optimizer, scheduler, library RNG and model-device RNG states are restored. Backward analysis preserves the generated route and adds forward-verified precursor routes within the reaction-depth bound. Its depth-weighted probabilities remain an approximation to the backward distribution. Reverse workers run alongside the next forward-policy computation; pending results are collected before extending their parent trees, including after the final reaction.
 
 ## Custom rewards
 
-Rewards are explicit local Python objects implementing `RewardFunction`:
+Rewards are explicit local Python objects implementing `RewardFunction`. Both `score` and `sample_filter` receive RDKit molecules directly; use `Chem.MolToSmiles(mol)` when strings are needed:
 
 ```python
 from rxnflow.config import Config
-from rxnflow.gflownet.types import Sample
+from rdkit import Chem
 from rxnflow.reward import RewardFunction
 from rxnflow.trainer import RxnFlowTrainer
 
 
 class CarbonReward(RewardFunction):
-    def score(self, samples: list[Sample]) -> list[float]:
+    def score(self, molecules: list[Chem.Mol]) -> list[float]:
         return [
-            sum(atom.GetAtomicNum() == 6 for atom in sample.mol.GetAtoms()) / 50
-            for sample in samples
+            sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms()) / 50
+            for mol in molecules
         ]
 
 
@@ -131,7 +130,7 @@ rxnflow-sample \
   --output samples.json
 ```
 
-Structured results contain dummy-free `smiles`, `trajectory`, `intermediates`, optional `reward`, and `metadata`. Each trajectory action includes its selected `product_smiles`. Block actions additionally record brick/linker role, catalog index, synthon SMILES, structured `block_ids`, and the corresponding source BB structures. `intermediates` contains every action product, including FirstBlock and the terminal product. There is no separate terminal `synthon_smiles`: the final internal state is already the output molecule.
+Structured results contain dummy-free `smiles`, `trajectory`, `intermediates`, optional `reward`, and `metadata`. Each serialized trajectory step includes `product_smiles` from the transition result; the internal `Action` stores only the selected reaction and block. Block actions additionally record brick/linker role, catalog index, synthon SMILES, structured `block_ids`, and the corresponding source BB structures. `intermediates` contains every action product, including FirstBlock and the terminal product. There is no separate terminal `synthon_smiles`: the final internal state is already the output molecule.
 
 ## Reaction templates
 

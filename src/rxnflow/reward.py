@@ -6,23 +6,22 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+from rdkit import Chem
 from rdkit.Chem import QED
 
-from rxnflow.gflownet.types import Sample, SampleInput, as_sample
-
-SampleFilter = Callable[[Sample], bool]
+SampleFilter = Callable[[Chem.Mol], bool]
 
 
 class RewardFunction(ABC):
     """Base API for in-process molecular rewards.
 
-    Implementations receive normalized :class:`Sample` objects, which expose
-    both canonical ``smiles`` and an RDKit ``mol``. ``score`` must return
+    Implementations receive RDKit molecules. Treat them as read-only and use
+    ``Chem.MolToSmiles`` if a reward needs strings. ``score`` must return
     finite, non-negative values aligned with the input list.
     """
 
     @abstractmethod
-    def score(self, samples: list[Sample]) -> list[float]:
+    def score(self, molecules: list[Chem.Mol]) -> list[float]:
         raise NotImplementedError
 
     def metrics(self) -> dict[str, float]:
@@ -32,28 +31,27 @@ class RewardFunction(ABC):
 class QEDReward(RewardFunction):
     """Example reward using RDKit's quantitative estimate of drug-likeness."""
 
-    def score(self, samples: list[Sample]) -> list[float]:
-        return [float(QED.qed(sample.mol)) for sample in samples]
+    def score(self, molecules: list[Chem.Mol]) -> list[float]:
+        return [float(QED.qed(mol)) for mol in molecules]
 
 
 def evaluate_rewards(
     reward: RewardFunction,
-    values: list[SampleInput],
+    molecules: list[Chem.Mol | None],
     sample_filter: SampleFilter | None = None,
 ) -> tuple[list[float], dict[str, float]]:
-    """Normalize samples, filter eligibility, and validate reward output."""
+    """Filter molecules and align rewards; failed trajectories pass None."""
 
-    samples = [as_sample(value) for value in values]
-    accepted: list[Sample] = []
+    accepted: list[Chem.Mol] = []
     accepted_indices: list[int] = []
-    for index, sample in enumerate(samples):
-        if sample is None:
+    for index, mol in enumerate(molecules):
+        if mol is None:
             continue
-        eligible = True if sample_filter is None else sample_filter(sample)
+        eligible = True if sample_filter is None else sample_filter(mol)
         if type(eligible) is not bool:
             raise ValueError("sample_filter must return bool")
         if eligible:
-            accepted.append(sample)
+            accepted.append(mol)
             accepted_indices.append(index)
 
     raw_scores = reward.score(accepted)
@@ -62,7 +60,7 @@ def evaluate_rewards(
     scores = [float(value) for value in raw_scores]
     if any(not math.isfinite(value) or value < 0 for value in scores):
         raise ValueError("rewards must be finite and non-negative")
-    result = [0.0] * len(values)
+    result = [0.0] * len(molecules)
     for index, score in zip(accepted_indices, scores, strict=True):
         result[index] = score
 

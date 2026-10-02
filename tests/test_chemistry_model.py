@@ -155,7 +155,7 @@ def test_chirality_and_graph_padding_are_preserved(prepared_env):
     batch = GraphBatch.from_graphs(graphs)
     original = model.encode_graphs(batch)
     assert not torch.allclose(original[0], original[1])
-    # Padding cannot influence graph-mode normalization, message passing or pooling.
+    # Padding cannot influence message passing or pooling.
     batch.node_features[~batch.node_mask] = 1000
     torch.testing.assert_close(model.encode_graphs(batch), original)
 
@@ -186,40 +186,32 @@ def test_gine_layer_matches_equations_and_gradients():
     native = GINELayer(4).double()
     reference = deepcopy(native)
     x = torch.randn(2, 3, 4, dtype=torch.float64, requires_grad=True)
-    condition = torch.randn(2, 4, dtype=torch.float64, requires_grad=True)
     # Include an isolated valid node and padding. No self-loop edges: GINE's
     # explicit self term must handle isolated nodes without extra messages.
     valid = torch.tensor([[True, True, True], [True, True, False]])
     source = torch.tensor([0, 1, 3, 4])
     target = torch.tensor([1, 0, 4, 3])
     edges = torch.randn(len(source), 4, dtype=torch.float64, requires_grad=True)
-    actual = native(x, condition, valid, source, target, edges)
-    rx, rc, re = [v.detach().clone().requires_grad_() for v in (x, condition, edges)]
+    actual = native(x, source, target, edges)
+    rx, re = [v.detach().clone().requires_grad_() for v in (x, edges)]
 
-    # Independent graph normalization and per-destination neighbor sums;
-    # do not reuse the native normalization or scatter implementation.
-    normalized = torch.stack(
-        [
-            (g - g[m].mean()) / (g[m].var(unbiased=False) + 1e-5).sqrt()
-            for g, m in zip(rx, valid, strict=True)
-        ]
-    ).reshape(-1, 4)
+    # Independent per-destination neighbor sums on normalized node embeddings;
+    # do not reuse the native scatter implementation.
+    nodes = reference.norm(rx).reshape(-1, 4)
     aggregate = torch.stack(
         [
-            normalized[i]
-            + (normalized[source[target == i]] + re[target == i]).relu().sum(0)
+            nodes[i] + (nodes[source[target == i]] + re[target == i]).relu().sum(0)
             for i in range(6)
         ]
     )
     update = reference.update(aggregate).reshape(2, 3, 4)
-    scale, shift = reference.condition_scale(rc).chunk(2, -1)
-    expected = rx + update * scale[:, None] + shift[:, None]
+    expected = rx + update
     torch.testing.assert_close(actual[valid], expected[valid], atol=1e-10, rtol=1e-10)
     actual_grads = torch.autograd.grad(
-        actual[valid].square().sum(), (x, condition, edges, *native.parameters())
+        actual[valid].square().sum(), (x, edges, *native.parameters())
     )
     expected_grads = torch.autograd.grad(
-        expected[valid].square().sum(), (rx, rc, re, *reference.parameters())
+        expected[valid].square().sum(), (rx, re, *reference.parameters())
     )
     for first, second in zip(actual_grads, expected_grads, strict=True):
         torch.testing.assert_close(first, second, atol=1e-9, rtol=1e-9)

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import (
@@ -15,12 +16,11 @@ from rxnflow.config import (
     TrainingConfig,
 )
 from rxnflow.gflownet.types import (
+    Action,
     ActionKind,
     MoleculeState,
-    RxnAction,
-    Sample,
     Trajectory,
-    TrajectoryStep,
+    Transition,
 )
 from rxnflow.reward import QEDReward, RewardFunction
 from rxnflow.sampler import RxnFlowSampler
@@ -28,10 +28,10 @@ from rxnflow.trainer import RxnFlowTrainer
 
 
 class CarbonReward(RewardFunction):
-    def score(self, samples: list[Sample]) -> list[float]:
+    def score(self, molecules: list[Chem.Mol]) -> list[float]:
         return [
-            float(sum(atom.GetAtomicNum() == 6 for atom in sample.mol.GetAtoms())) / 10
-            for sample in samples
+            float(sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms())) / 10
+            for mol in molecules
         ]
 
 
@@ -85,6 +85,11 @@ def test_training_restart_sampling_and_output_formats(
     )
     assert all("workflow" not in result.to_dict() for result in results)
     assert all(len(result.intermediates) == len(result.trajectory) for result in results)
+    for result in results:
+        assert [
+            step["product_smiles"] for step in result.trajectory
+        ] == result.intermediates
+        assert result.intermediates[-1] == result.smiles
 
     smi_path = tmp_path / "samples.smi"
     csv_path = tmp_path / "samples.csv"
@@ -95,7 +100,7 @@ def test_training_restart_sampling_and_output_formats(
     assert len(smi_path.read_text().splitlines()) == 3
     with csv_path.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert json.loads(rows[0]["trajectory"])[0]["type"] == "FIRST_BLOCK"
+    assert json.loads(rows[0]["trajectory"])[0]["kind"] == "FIRST_BLOCK"
     assert "*" not in rows[0]["smiles"]
     structured = json.loads(json_path.read_text())
     assert structured[0]["intermediates"]
@@ -112,11 +117,11 @@ def test_trajectory_balance_uses_backward_probability(
     )
     trajectory = Trajectory(
         steps=[
-            TrajectoryStep(
+            Transition(
                 state=MoleculeState(),
-                action=RxnAction(ActionKind.FIRST_BLOCK, "[1*]N"),
+                action=Action(ActionKind.FIRST_BLOCK),
                 product_smiles="[1*]N",
-                log_backward=-2.0,
+                log_pb=-2.0,
             )
         ],
         final_smiles="N",
@@ -153,8 +158,6 @@ def test_restart_reproduces_next_update_with_dropout(
 def test_oriented_block_scoring_and_observed_action_log_probability(
     prepared_env, tmp_path
 ):
-    from dataclasses import replace
-
     from rxnflow.gflownet.policy import NoValidActions
 
     trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "sites"), QEDReward())
@@ -177,8 +180,6 @@ def test_oriented_block_scoring_and_observed_action_log_probability(
         trainer.policy.choose_action(
             MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1), 1.0, 0.0
         )
-    with pytest.raises(ValueError, match="not available"):
-        trainer.env.step(state, replace(actions[0], product_smiles="CC"))
 
 
 def test_subsampling_precedes_budget_mask_without_candidate_reactions(
@@ -211,21 +212,21 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
     found = missed = 0
     for seed in range(20):
         trainer.policy.generator.manual_seed(seed)
-        protocol = trainer.policy.candidate_batch([env.initial_state()]).protocols[0]
-        valid = torch.isfinite(protocol.logits[0])
+        group = trainer.policy.candidate_batch([env.initial_state()]).action_groups[0]
+        valid = torch.isfinite(group.logits[0])
         # Masking retains every sampled column, even when all actions are invalid.
-        assert protocol.logits.shape[1] == sum(map(len, protocol.block_indices))
-        assert protocol.logits.shape[1] > 1
+        assert group.logits.shape[1] == sum(map(len, group.block_indices))
+        assert group.logits.shape[1] > 1
         if not valid.any():
             missed += 1
             continue
         found += 1
         position = int(valid.nonzero().flatten()[0])
         assert valid.sum() == 1
-        action = protocol.action_at(position)
+        action = group.action_at(position)
         assert action.block_type == name and action.block_index == target
         count = trainer.policy.block_subsamplers[name].count
-        assert protocol.log_importance[position].item() == pytest.approx(
+        assert group.log_importance[position].item() == pytest.approx(
             math.log(len(env.blocks[name]) / count)
         )
     assert found and missed
@@ -240,9 +241,8 @@ def test_failed_selected_action_is_retained_for_tb(
     # Reactant budget fits (4 + 1), but the amidation inserts two more atoms.
     state = MoleculeState.from_smiles("[1*]NCCN")
     index = trainer.env.blocks["3"].smiles.index("*C")
-    action = RxnAction(
+    action = Action(
         ActionKind.BI_REACTION,
-        "",
         reaction="rxn1_state_first",
         block_type="3",
         block_index=index,
@@ -295,23 +295,23 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                 ]
             )
         )
-        for protocol in categorical.protocols:
-            for column in range(protocol.logits.shape[1]):
-                if not torch.isfinite(protocol.logits[row, column]):
+        for group in categorical.action_groups:
+            for column in range(group.logits.shape[1]):
+                if not torch.isfinite(group.logits[row, column]):
                     continue
-                action = protocol.action_at(column)
+                action = group.action_at(column)
                 score = (
                     model.score_scalar(embedding, action.reaction)
                     if action.kind == ActionKind.UNI_REACTION
                     else model.score_blocks(
                         embedding,
-                        protocol.name,
+                        group.name,
                         action.block_type,
                         torch.tensor([action.block_index]),
                     )[0]
                 )
                 reference.append(score)
-                actual.append(protocol.logits[row, column])
+                actual.append(group.logits[row, column])
     actual, expected = torch.stack(actual), torch.stack(reference)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
     params = tuple(model.parameters())
@@ -342,8 +342,8 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
     initial = trainer.env.initial_state()
     categorical = trainer.policy.candidate_batch([initial, initial])
     assert len(draws) == len(set(draws))
-    for protocol in categorical.protocols:
-        torch.testing.assert_close(protocol.logits[0], protocol.logits[1])
+    for group in categorical.action_groups:
+        torch.testing.assert_close(group.logits[0], group.logits[1])
     dead = MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1)
     choices = trainer.policy.choose_actions([dead, initial], 1.0, 0.0)
     assert choices[0] is None and choices[1].kind == ActionKind.FIRST_BLOCK
@@ -356,15 +356,15 @@ def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypa
         tiny_config(prepared_env, tmp_path / "index-actions"), QEDReward()
     )
     initial = trainer.env.initial_state()
-    observed = RxnAction(ActionKind.FIRST_BLOCK, "", block_type="1", block_index=0)
+    observed = Action(ActionKind.FIRST_BLOCK, block_type="1", block_index=0)
     constructed = []
 
     def record_action(*args, **kwargs):
-        action = RxnAction(*args, **kwargs)
+        action = Action(*args, **kwargs)
         constructed.append(action)
         return action
 
-    monkeypatch.setattr(policy_module, "RxnAction", record_action)
+    monkeypatch.setattr(policy_module, "Action", record_action)
     probabilities = trainer.policy.action_log_probabilities(
         [initial, initial], [observed, observed]
     )
@@ -393,13 +393,12 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     )
     state = trainer.env.initial_state()
     actions = [
-        RxnAction(ActionKind.FIRST_BLOCK, "", block_type="1", block_index=i)
-        for i in (0, 1)
+        Action(ActionKind.FIRST_BLOCK, block_type="1", block_index=i) for i in (0, 1)
     ]
     categorical = trainer.policy.candidate_batch([state, state])
     assert all(
         indices.tolist() == [0]
-        for p in categorical.protocols
+        for p in categorical.action_groups
         for indices in p.block_indices
     )
     monkeypatch.setattr(trainer.policy, "candidate_batch", lambda *args: categorical)
@@ -416,7 +415,7 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
         ]
     )
     denominator = torch.logsumexp(
-        torch.cat([p.logits + p.log_importance for p in categorical.protocols], 1), 1
+        torch.cat([p.logits + p.log_importance for p in categorical.action_groups], 1), 1
     )
     expected = (numerator - denominator).clamp(max=0)
     torch.testing.assert_close(actual, expected)
@@ -463,10 +462,9 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     initial = trainer.env.initial_state()
     middle = MoleculeState.from_smiles("[1*]N")
     terminal = MoleculeState.from_smiles("NC", reaction_count=1, terminated=True)
-    first = RxnAction(ActionKind.FIRST_BLOCK, "", block_type="1", block_index=0)
-    last = RxnAction(
+    first = Action(ActionKind.FIRST_BLOCK, block_type="1", block_index=0)
+    last = Action(
         ActionKind.BI_REACTION,
-        "",
         reaction="rxn1_block_first",
         block_type="3",
         block_index=0,
@@ -509,4 +507,4 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
         "collect",
     ]
     assert trajectories[0].valid and not pending
-    assert [step.log_backward for step in trajectories[0].steps] == [-0.5, -0.5]
+    assert [step.log_pb for step in trajectories[0].steps] == [-0.5, -0.5]

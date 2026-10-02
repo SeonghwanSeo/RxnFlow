@@ -23,7 +23,7 @@
 
 Stop, restore, terminal BB 선택은 없다. `min_reactions` 전에는 종료형 action을 가리고, `max_reactions`의 마지막 반응에서는 종료형 action만 허용한다. 종료한 분자는 다시 활성화하지 않는다. 기본 `max_reactions=3`은 결합 → 탈보호 → 재결합을 포함할 수 있다. 아무 후보도 남지 않으면 invalid trajectory로 처리한다.
 
-Linker의 결합 방향은 준비 단계에서 별도 block row로 저장하므로, block 선택으로 위치 선택이 끝난다. 같은 두 type이라도 비대칭 위치는 두 row이고, 대칭으로 동일해지는 방향은 하나로 합친다. 고정된 reaction/block 선택에서는 연결된 생성물이 하나여야 한다. 대칭 중복 제거 후 서로 다른 생성물이 여러 개면 template ambiguity 오류로 처리한다. Action은 반응 이름, block type/index, `product_smiles`로 선택을 기록한다. 대칭 위치가 동일 생성물로 귀결되면 한 action으로 합친다. Atom index는 canonicalization에 따라 바뀌므로 영구 site ID로 사용하지 않는다. 전체 분자의 새 작용기를 자동 재인식하는 단계는 없다.
+Linker의 결합 방향은 준비 단계에서 별도 block row로 저장하므로, block 선택으로 위치 선택이 끝난다. 같은 두 type이라도 비대칭 위치는 두 row이고, 대칭으로 동일해지는 방향은 하나로 합친다. 고정된 reaction/block 선택에서는 연결된 생성물이 하나여야 한다. 대칭 중복 제거 후 서로 다른 생성물이 여러 개면 template ambiguity 오류로 처리한다. Action은 반응 이름과 block type/index로 선택을 기록하고, 생성물 `product_smiles`는 Transition에 기록한다. 대칭 위치가 동일 생성물로 귀결되면 한 action으로 합친다. Atom index는 canonicalization에 따라 바뀌므로 영구 site ID로 사용하지 않는다. 전체 분자의 새 작용기를 자동 재인식하는 단계는 없다.
 
 ## Synthon type 목록
 
@@ -99,7 +99,7 @@ Invalid trajectory는 raw reward 0으로 기록하고 학습에서 reward floor�
 
 Synthetic quick 검증은 선형 경로의 전이·mask·site 선택·backward·학습 연결을 확인한다. Production template의 실험적 적용 범위, 전체 Enamine catalog의 성능 및 분포 품질은 별도 검토 대상이다. hsx 방식 multi-step workflow library는 이번 구현에 포함하지 않는다.
 
-TB loss는 MSE이며, logZ는 policy와 별도 learning rate를 사용한다. Replay는 fresh trajectory를 넣기 전에 기존 buffer에서 균일 비복원 추출한다. Learning rate는 지정한 half-life에 따라 감소하고, optimizer/scheduler 상태를 함께 복원한다. 모델은 FP/property별 Linear→LayerNorm projection(main의 Xavier 초기화), type embedding과 결합하는 fusion MLP, GNN 이후 additive reaction conditioning, block 정규화 dot score 및 학습 temperature를 사용한다. Temperature 범위는 0.01–10이며 초기값은 main과 같은 0.2다. UniReaction scalar score도 같은 temperature convention을 따른다. Graph encoder는 native Torch의 residual GINE, graph-mode normalization과 conditional scale/shift를 사용한다. 각 layer는 ReLU(source+bond)의 이웃 합과 자기 node를 더한 뒤 H→2H→H MLP로 갱신한다. Epsilon은 0으로 고정하며 별도 self-loop와 attention은 없다. Readout은 molecular mean과 virtual node를 concat한 2H에 LayerNorm을 적용한다. 상세 출처와 차이는 [HSX 이식 기록](hsx-port.md)을 참고한다.
+TB loss는 MSE이며, logZ는 policy와 별도 learning rate를 사용한다. Replay는 fresh trajectory를 넣기 전에 기존 buffer에서 균일 비복원 추출한다. Buffer와 checkpoint는 `Trajectory.to_dict()`의 SMILES 기반 데이터를 저장하고, 추출한 trajectory만 `from_dict()`로 Mol을 복원한다. Learning rate는 지정한 half-life에 따라 감소하고, optimizer/scheduler 상태를 함께 복원한다. 모델은 FP/property별 Linear→LayerNorm projection(main의 Xavier 초기화), type embedding과 결합하는 fusion MLP, GNN 이후 additive reaction conditioning, block 정규화 dot score 및 학습 temperature를 사용한다. Temperature 범위는 0.01–10이며 초기값은 main과 같은 0.2다. UniReaction scalar score도 같은 temperature convention을 따른다. Graph encoder는 native Torch의 residual GINE, graph-mode normalization과 conditional scale/shift를 사용한다. 각 layer는 ReLU(source+bond)의 이웃 합과 자기 node를 더한 뒤 H→2H→H MLP로 갱신한다. Epsilon은 0으로 고정하며 별도 self-loop와 attention은 없다. Readout은 molecular mean과 virtual node를 concat한 2H에 LayerNorm을 적용한다. 상세 출처와 차이는 [HSX 이식 기록](hsx-port.md)을 참고한다.
 
 기본 모델은 hidden128/layers4, block_dim128이다. GINE 전환으로 num_heads 설정은 삭제했다. Graph/fusion/policy MLP는 hidden Kaiming·output Xavier와 zero bias를 사용하고, reaction/type embedding은 uniform[-0.1,0.1]로 초기화한다. Fusion/policy의 Linear→LN→SiLU 순서와 기존 hidden 깊이, 2H readout, GNN 이후 reaction conditioning은 유지한다. GENConv는 GINE로 대체되어 bias 비교 항목도 사라졌다. Empty state는 기존 virtual node 방식이며 anchor readout은 추가하지 않았다. 학습은 policy 전체 gradient norm100으로 clip하며 logZ는 제외한다. Random probability는 0.1, reward floor는 1e-4, weight decay는 기존 1e-8이다.
 
@@ -109,4 +109,4 @@ State graph에는 atom chirality와 main의 bond stereo categorical을 사용한
 
 Library subsampling은 policy batch마다 library별로 한 번만 수행하고 모든 state와 reaction이 공유한다. Budget mask는 state별로 broadcast 연산한다. 관측 action의 존재 여부는 sampling에 영향을 주지 않는다. 다음 policy 호출에서는 새로 sampling하며, full set을 쓰는 작은 library는 index tensor를 그대로 재사용하고 RNG를 소비하지 않는다.
 
-Reaction마다 compatible library를 concat하여 `[state, sampled block]` score matrix를 계산한다. Mask된 column은 `-inf`로 남기며 valid-index 압축은 하지 않는다. Device에서 Gumbel sampling한 뒤 선택된 좌표만 CPU로 옮겨 RxnAction으로 변환한다. TB/replay는 관측 action의 logit을 별도로 계산한다. Reverse worker는 다음 forward 계산과 겹쳐 실행하고, 다음 parent tree를 사용하기 전과 마지막 iteration 이후 결과를 수거한다.
+Reaction마다 compatible library를 concat하여 `[state, sampled block]` score matrix를 계산한다. Mask된 column은 `-inf`로 남기며 valid-index 압축은 하지 않는다. Device에서 Gumbel sampling한 뒤 선택된 좌표만 CPU로 옮겨 Action으로 변환한다. TB/replay는 관측 action의 logit을 별도로 계산한다. Reverse worker는 다음 forward 계산과 겹쳐 실행하고, 다음 parent tree를 사용하기 전과 마지막 iteration 이후 결과를 수거한다.

@@ -9,12 +9,13 @@ from pathlib import Path
 from time import perf_counter
 
 import torch
+from rdkit import Chem
 from torch import Tensor
 
 from rxnflow import __version__
 from rxnflow.config import Config
 from rxnflow.envs.env import SynthesisEnv
-from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device, trajectory_sample
+from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device
 from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.gflownet.types import Trajectory
 from rxnflow.models import RxnFlowModel
@@ -168,7 +169,10 @@ class RxnFlowTrainer:
     def _assign_rewards(self, trajectories: list[Trajectory]) -> dict[str, float]:
         values, metrics = evaluate_rewards(
             self.reward,
-            [trajectory_sample(value) for value in trajectories],
+            [
+                Chem.MolFromSmiles(value.final_smiles) if value.valid else None
+                for value in trajectories
+            ],
             self.sample_filter,
         )
         for trajectory, value in zip(trajectories, values, strict=True):
@@ -180,7 +184,7 @@ class RxnFlowTrainer:
         trajectory_indices: list[int] = []
         backward_flows = torch.tensor(
             [
-                sum(step.log_backward for step in trajectory.steps)
+                sum(step.log_pb for step in trajectory.steps)
                 for trajectory in trajectories
             ],
             dtype=torch.float32,
@@ -261,11 +265,12 @@ class RxnFlowTrainer:
                 "valid_fraction": sum(value.valid for value in fresh) / len(fresh),
                 # These describe raw rollout attempts, before retry/filtering.
                 # In particular, uniqueness is among valid terminal molecules.
-                "unique_fraction": len({value.final_smiles for value in fresh if value.valid})
+                "unique_fraction": len(
+                    {value.final_smiles for value in fresh if value.valid}
+                )
                 / max(1, sum(value.valid for value in fresh)),
-                "mean_reactions": sum(
-                    max(0, len(value.steps) - 1) for value in fresh
-                ) / len(fresh),
+                "mean_reactions": sum(max(0, len(value.steps) - 1) for value in fresh)
+                / len(fresh),
                 **reward_metrics,
                 "rollout_seconds": rollout_seconds,
                 "step_seconds": perf_counter() - started,

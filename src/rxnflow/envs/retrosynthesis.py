@@ -9,13 +9,13 @@ from dataclasses import dataclass, field
 from rdkit import Chem
 
 from rxnflow.envs.chemistry.synthon import typed_dummy_isotopes
-from rxnflow.gflownet.types import ActionKind, RxnAction
+from rxnflow.gflownet.types import Action, ActionKind
 
 
 @dataclass
 class RetrosynthesisTree:
     smiles: str
-    branches: list[tuple[RxnAction, RetrosynthesisTree]] = field(default_factory=list)
+    branches: list[tuple[Action, RetrosynthesisTree]] = field(default_factory=list)
 
     @property
     def is_leaf(self) -> bool:
@@ -52,7 +52,7 @@ class RetrosynthesisSearch:
         self,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
+        known_branches: list[tuple[Action, RetrosynthesisTree]] | None = None,
     ) -> RetrosynthesisTree | None:
         self._max_depth = max_reactions + 1  # Include FirstBlock.
         self._memo = {}
@@ -66,7 +66,7 @@ class RetrosynthesisSearch:
         mol: Chem.Mol,
         canonical: str,
         depth: int,
-        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
+        known_branches: list[tuple[Action, RetrosynthesisTree]] | None = None,
     ) -> RetrosynthesisTree | None:
         if depth > self._max_depth:
             return None
@@ -90,9 +90,8 @@ class RetrosynthesisSearch:
             if block_type in self.brick_types:
                 block_index = self.block_search[block_type].get(brick_smiles)
                 if block_index is not None:
-                    action = RxnAction(
+                    action = Action(
                         ActionKind.FIRST_BLOCK,
-                        product_smiles=canonical,
                         block_type=block_type,
                         block_index=block_index,
                     )
@@ -112,7 +111,7 @@ class RetrosynthesisSearch:
                     if typed_dummy_isotopes(precursor) != (reaction.input_type,):
                         continue
                     parent_smiles = Chem.MolToSmiles(precursor)
-                    action = RxnAction(ActionKind.UNI_REACTION, canonical, reaction=name)
+                    action = Action(ActionKind.UNI_REACTION, reaction=name)
                     if (action, parent_smiles) in branch_keys:
                         continue
                     forward_product = reaction.run_forward(precursor)
@@ -145,9 +144,8 @@ class RetrosynthesisSearch:
                     block_index = library.get(block_canonical)
                     if block_index is None:
                         continue
-                    reverse_action = RxnAction(
+                    reverse_action = Action(
                         ActionKind.BI_REACTION,
-                        product_smiles=canonical,
                         reaction=name,
                         block_type=block_type,
                         block_index=block_index,
@@ -182,7 +180,7 @@ def _init_worker(analyzer: RetrosynthesisSearch) -> None:
 def _worker_run(
     smiles: str,
     max_reactions: int,
-    known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None,
+    known_branches: list[tuple[Action, RetrosynthesisTree]] | None,
 ) -> RetrosynthesisTree | None:
     assert _WORKER_ANALYZER is not None
     return _WORKER_ANALYZER.run(smiles, max_reactions, known_branches)
@@ -207,7 +205,7 @@ class RetrosynthesisWorkers:
         self,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
+        known_branches: list[tuple[Action, RetrosynthesisTree]] | None = None,
     ) -> RetrosynthesisTree | None:
         if self.pool is None:
             if known_branches is None:
@@ -222,7 +220,7 @@ class RetrosynthesisWorkers:
         key: int,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetrosynthesisTree]],
+        known_branches: list[tuple[Action, RetrosynthesisTree]],
     ) -> None:
         if self.pool is None:
             self.results.append(
@@ -247,7 +245,7 @@ class RetrosynthesisWorkers:
     @staticmethod
     def tree_log_probability(
         tree: RetrosynthesisTree | None,
-        action: RxnAction,
+        action: Action,
         total_actions: int,
         parent_smiles: str,
     ) -> float | None:
@@ -268,10 +266,10 @@ class RetrosynthesisWorkers:
         self,
         smiles: str,
         max_reactions: int,
-        action: RxnAction,
+        action: Action,
         total_actions: int,
         parent_smiles: str,
-        known_branches: list[tuple[RxnAction, RetrosynthesisTree]] | None = None,
+        known_branches: list[tuple[Action, RetrosynthesisTree]] | None = None,
     ) -> float | None:
         tree = self.run(smiles, max_reactions, known_branches)
         return self.tree_log_probability(tree, action, total_actions, parent_smiles)

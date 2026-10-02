@@ -57,7 +57,11 @@ def evaluate(trainer: RxnFlowTrainer, count: int, seed: int, name: str) -> dict:
             "smiles": trajectory.final_smiles,
             "invalid_reason": trajectory.invalid_reason,
             "trajectory": [
-                trainer.env.action_to_dict(step.action) for step in trajectory.steps
+                {
+                    **trainer.env.action_to_dict(step.action),
+                    "product_smiles": step.product_smiles,
+                }
+                for step in trajectory.steps
             ],
         }
         for trajectory in trajectories

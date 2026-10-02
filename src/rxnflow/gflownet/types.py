@@ -42,33 +42,93 @@ class MoleculeState:
             raise ValueError(f"invalid state SMILES: {smiles}")
         return cls(mol, reaction_count, terminated)
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "smiles": self.smiles,
+            "reaction_count": self.reaction_count,
+            "terminated": self.terminated,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> MoleculeState:
+        return cls.from_smiles(**data)
+
 
 @dataclass(frozen=True)
-class RxnAction:
+class Action:
+    # A(s, a) -> s'
     kind: ActionKind
-    # Empty during policy scoring; filled after the selected reaction executes.
-    # Canonical product SMILES serve trajectory serialization and reverse search.
-    product_smiles: str
     reaction: str | None = None
     block_type: str | None = None
     block_index: int | None = None
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind.name,
+            "reaction": self.reaction,
+            "block_type": self.block_type,
+            "block_index": self.block_index,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Action:
+        data = data.copy()
+        data["kind"] = ActionKind[data.pop("kind")]
+        return cls(**data)
+
 
 @dataclass
-class TrajectoryStep:
+class Transition:
+    # T(s, a, s')
     state: MoleculeState
-    action: RxnAction
+    action: Action
     product_smiles: str
-    log_backward: float = 0.0
+    log_pb: float = 0.0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state.to_dict(),
+            "action": self.action.to_dict(),
+            "product_smiles": self.product_smiles,
+            "log_pb": self.log_pb,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Transition:
+        return cls(
+            state=MoleculeState.from_dict(data["state"]),
+            action=Action.from_dict(data["action"]),
+            product_smiles=data["product_smiles"],
+            log_pb=data["log_pb"],
+        )
 
 
 @dataclass
 class Trajectory:
-    steps: list[TrajectoryStep]
+    steps: list[Transition]
     final_smiles: str
     reward: float = 0.0
     valid: bool = True
     invalid_reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "steps": [step.to_dict() for step in self.steps],
+            "final_smiles": self.final_smiles,
+            "reward": self.reward,
+            "valid": self.valid,
+            "invalid_reason": self.invalid_reason,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Trajectory:
+        return cls(
+            steps=[Transition.from_dict(step) for step in data["steps"]],
+            final_smiles=data["final_smiles"],
+            reward=data["reward"],
+            valid=data["valid"],
+            invalid_reason=data["invalid_reason"],
+        )
 
 
 @dataclass
@@ -81,45 +141,3 @@ class SamplingResult:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
-
-
-@dataclass(frozen=True)
-class Sample:
-    """A valid molecular sample with canonical SMILES and an RDKit molecule."""
-
-    smiles: str
-    mol: Chem.Mol = field(repr=False, compare=False)
-
-    @classmethod
-    def from_smiles(cls, smiles: str) -> Sample | None:
-        if not smiles:
-            return None
-        mol = Chem.MolFromSmiles(smiles)
-        if mol is None:
-            return None
-        return cls.from_mol(mol)
-
-    @classmethod
-    def from_mol(cls, mol: Chem.Mol) -> Sample | None:
-        normalized = Chem.RemoveHs(Chem.Mol(mol))
-        smiles = Chem.MolToSmiles(normalized, canonical=True)
-        if not smiles:
-            return None
-        return cls(smiles=smiles, mol=normalized)
-
-
-SampleInput = Sample | Chem.Mol | str | None
-
-
-def as_sample(value: SampleInput) -> Sample | None:
-    """Normalize a public sample input without burdening reward authors."""
-
-    if value is None:
-        return None
-    if isinstance(value, Sample):
-        return value
-    if isinstance(value, str):
-        return Sample.from_smiles(value)
-    if isinstance(value, Chem.Mol):
-        return Sample.from_mol(value)
-    raise TypeError(f"unsupported sample type: {type(value).__name__}")

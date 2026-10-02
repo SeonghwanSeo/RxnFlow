@@ -18,27 +18,7 @@ from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
 
 from .mpnn import MPNN
-
-
-def policy_mlp(
-    n_in: int, hidden: int, n_out: int, layers: int, dropout: float
-) -> nn.Sequential:
-    """HSX explore normalization order with main's hidden/output initialization."""
-    sizes = [n_in] + [hidden] * layers + [n_out]
-    modules = []
-    for index in range(len(sizes) - 1):
-        linear = nn.Linear(sizes[index], sizes[index + 1])
-        # Keep Kaiming for SiLU hidden layers; the unactivated output uses
-        # Xavier, following HSX main's MLP.
-        if index < len(sizes) - 2:
-            nn.init.kaiming_uniform_(linear.weight, nonlinearity="relu")
-        else:
-            nn.init.xavier_uniform_(linear.weight)
-        nn.init.zeros_(linear.bias)
-        modules.append(linear)
-        if index < len(sizes) - 2:
-            modules.extend([nn.LayerNorm(hidden), nn.SiLU(), nn.Dropout(dropout)])
-    return nn.Sequential(*modules)
+from .nn import mlp
 
 
 class RxnFlowModel(nn.Module):
@@ -57,59 +37,79 @@ class RxnFlowModel(nn.Module):
             num_layers=config.num_layers,
             max_reactions=env.max_reactions,
         )
-        self.state_norm = nn.LayerNorm(2 * hidden)
-        self.action_embedding = nn.Embedding(len(env.action_names), 2 * hidden)
+        # Mean pooling and the virtual node can have different scales.
+        self.mean_norm = nn.LayerNorm(hidden)
+        self.virtual_norm = nn.LayerNorm(hidden)
+        self.action_embedding = nn.Embedding(len(env.action_names), hidden)
         self.block_type_embedding = nn.Embedding(len(env.block_types), config.block_dim)
-        # HSX main: project and normalize each feature, then learn their
-        # nonlinear interactions in the fusion MLP. Type is included; price
-        # tiers are absent from the public Enamine environment.
-        self.fingerprint_encoder = nn.Sequential(
-            nn.Linear(FINGERPRINT_DIM, config.block_dim),
-            nn.LayerNorm(config.block_dim),
-        )
-        self.property_encoder = nn.Sequential(
-            nn.Linear(PROPERTY_DIM, config.block_dim),
-            nn.LayerNorm(config.block_dim),
-        )
-        self.block_encoder = policy_mlp(
+        # Project each feature, then normalize only in the fusion MLP.
+        # Properties are scaled before projection in encode_block_features.
+        self.fingerprint_encoder = nn.Linear(FINGERPRINT_DIM, config.block_dim)
+        self.property_encoder = nn.Linear(PROPERTY_DIM, config.block_dim)
+        self.block_encoder = mlp(
             config.block_dim * 3,
             config.block_dim,
             config.block_dim,
             config.block_mlp_layers,
-            0.0,
+            layernorm=True,
         )
-        self.first_block_head = policy_mlp(
-            2 * hidden, hidden, config.block_dim, config.mlp_layers, config.dropout
+        # Concatenate the 2H state and H reaction embeddings. Each head learns
+        # their joint projection while the graph encoding is shared by reactions.
+        self.first_block_head = mlp(
+            3 * hidden,
+            hidden,
+            config.block_dim,
+            config.mlp_layers,
+            layernorm=True,
+            dropout=config.dropout,
         )
-        self.bi_reaction_head = policy_mlp(
-            2 * hidden, hidden, config.block_dim, config.mlp_layers, config.dropout
+        self.bi_reaction_head = mlp(
+            3 * hidden,
+            hidden,
+            config.block_dim,
+            config.mlp_layers,
+            layernorm=True,
+            dropout=config.dropout,
         )
-        self.uni_reaction_head = policy_mlp(
-            2 * hidden, hidden, 1, config.mlp_layers, config.dropout
+        self.uni_reaction_head = mlp(
+            3 * hidden,
+            hidden,
+            1,
+            config.mlp_layers,
+            layernorm=True,
+            dropout=config.dropout,
         )
-        # Main's feature projections have no activation and use Xavier init.
-        for encoder in (self.fingerprint_encoder, self.property_encoder):
-            nn.init.xavier_uniform_(encoder[0].weight)
-            nn.init.zeros_(encoder[0].bias)
         # HSX main SimilarityMDP(dot): normalize only block embeddings and learn
         # a bounded temperature per reaction. Unary logits use the same scale
         # convention because all Uni/Bi choices share one categorical policy.
         self.min_temperature = 0.01
         self.max_temperature = 10.0
+        self.logit_temperature = nn.Parameter(torch.empty(len(env.action_names)))
+        self.log_z = nn.Parameter(torch.empty(()))
+        self.init_weight()
+
+    def init_weight(self) -> None:
+        # Keep policy outputs nonzero so both dot-product branches receive
+        # gradients from the first update. All Linear layers share this rule.
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+            elif isinstance(module, nn.LayerNorm):
+                module.reset_parameters()
+        # HSX main initializes both reaction and block-type embeddings small.
+        nn.init.uniform_(self.action_embedding.weight, -0.1, 0.1)
+        nn.init.uniform_(self.block_type_embedding.weight, -0.1, 0.1)
         # HSX main ModelConfig initializes SimilarityMDP at 0.2.
         initial = (0.2 - self.min_temperature) / (
             self.max_temperature - self.min_temperature
         )
-        self.logit_temperature = nn.Parameter(
-            torch.full((len(env.action_names),), math.log(initial / (1.0 - initial)))
-        )
-        # HSX main initializes both reaction and block-type embeddings small.
-        nn.init.uniform_(self.action_embedding.weight, -0.1, 0.1)
-        nn.init.uniform_(self.block_type_embedding.weight, -0.1, 0.1)
-        self.log_z = nn.Parameter(torch.tensor(0.0))
+        nn.init.constant_(self.logit_temperature, math.log(initial / (1.0 - initial)))
+        nn.init.zeros_(self.log_z)
 
     def encode_graphs(self, batch: GraphBatch) -> Tensor:
-        return self.state_norm(self.graph_encoder(batch))
+        mean, virtual = self.graph_encoder(batch).chunk(2, dim=-1)
+        return torch.cat([self.mean_norm(mean), self.virtual_norm(virtual)], dim=-1)
 
     @property
     def temperature(self) -> Tensor:
@@ -150,7 +150,8 @@ class RxnFlowModel(nn.Module):
 
     def action_query(self, states: Tensor, action_name: str) -> Tensor:
         index = self.env.action_to_index[action_name]
-        conditioned = F.silu(states + self.action_embedding.weight[index])
+        reaction = self.action_embedding.weight[index].expand(states.shape[0], -1)
+        conditioned = torch.cat([states, reaction], dim=-1)
         if action_name == "first_block":
             head = self.first_block_head
         elif action_name in self.env.uni_reactions:

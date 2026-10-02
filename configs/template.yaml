@@ -32,8 +32,8 @@ model:
   hidden_dim: 128
   num_layers: 4
   block_dim: 128
-  mlp_layers: 2
-  block_mlp_layers: 1
+  mlp_layers: 2  # Total Linear layers, including output.
+  block_mlp_layers: 2
   dropout: 0.0
 
 training:
@@ -46,7 +46,7 @@ training:
   lr_decay_steps: 20000
   weight_decay: 0.00000001
   sampling_temperature: 1.0
-  random_action_prob: 0.1
+  random_action_prob: 0.05
   ema_decay: 0.99
   checkpoint_every: 100
   log_every: 10

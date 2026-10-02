@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-from dataclasses import replace
 
 import torch
 from torch import Tensor
@@ -14,15 +13,14 @@ from rxnflow.envs.chemistry.features import molecular_properties
 from rxnflow.envs.env import InvalidTransition, SynthesisEnv
 from rxnflow.envs.graph import GraphBatch, molecule_to_graph_data
 from rxnflow.envs.retrosynthesis import RetrosynthesisTree
-from rxnflow.gflownet.categorical import ActionCategorical, ProtocolLogits
+from rxnflow.gflownet.categorical import ActionCategorical, ActionLogits
 from rxnflow.gflownet.subsampling import BlockSubsampler
 from rxnflow.gflownet.types import (
+    Action,
     ActionKind,
     MoleculeState,
-    RxnAction,
-    Sample,
     Trajectory,
-    TrajectoryStep,
+    Transition,
 )
 from rxnflow.models import RxnFlowModel
 
@@ -68,7 +66,7 @@ class SynthesisPolicy:
         keys = [(state.smiles, state.reaction_count) for state in states]
         # Metadata contains only state rows and library names, never candidate
         # objects or per-state arrays of valid block indices.
-        protocol_rows, protocol_libraries, kinds, library_rows = {}, {}, {}, {}
+        action_rows, action_libraries, kinds, library_rows = {}, {}, {}, {}
         for row, (state, key) in enumerate(zip(states, keys, strict=True)):
             if key not in graphs:
                 descriptors = molecular_properties(state.mol)
@@ -78,9 +76,9 @@ class SynthesisPolicy:
                 )
             for group in self.env.available_groups(state):
                 kinds[group.name] = group.kind
-                protocol_rows.setdefault(group.name, set()).add(row)
+                action_rows.setdefault(group.name, set()).add(row)
                 if group.block_type is not None:
-                    protocol_libraries.setdefault(group.name, {}).setdefault(
+                    action_libraries.setdefault(group.name, {}).setdefault(
                         group.block_type, []
                     ).append(row)
                     library_rows.setdefault(group.block_type, set()).add(row)
@@ -133,13 +131,13 @@ class SynthesisPolicy:
             )
             block_embeddings = dict(zip(samples, encoded.split(sizes), strict=True))
 
-        protocols = []
-        for name, rows in protocol_rows.items():
+        action_groups = []
+        for name, rows in action_rows.items():
             rows = torch.tensor(sorted(rows), device=self.device)
             query = self.model.action_query(embeddings[rows], name)
-            libraries = list(protocol_libraries.get(name, {}))
+            libraries = list(action_libraries.get(name, {}))
             if libraries:
-                # CGFlow: a single protocol matrix over concatenated libraries.
+                # CGFlow: a single group matrix over concatenated libraries.
                 blocks = torch.cat([block_embeddings[n] for n in libraries])
                 scores = query @ blocks.T
                 logits = embeddings.new_full((len(states), len(blocks)), -torch.inf)
@@ -147,7 +145,7 @@ class SynthesisPolicy:
                 allowed, weights, exploration = [], [], []
                 for n in libraries:
                     eligible = torch.zeros(len(states), dtype=torch.bool)
-                    eligible[protocol_libraries[name][n]] = True
+                    eligible[action_libraries[name][n]] = True
                     allowed.append(masks[n] & eligible[:, None])
                     count = len(samples[n].indices)
                     weights.append(torch.full((count,), samples[n].log_importance))
@@ -166,8 +164,8 @@ class SynthesisPolicy:
                 )
                 weights = embeddings.new_zeros(1)
                 exploration = embeddings.new_zeros(1)
-            protocols.append(
-                ProtocolLogits(
+            action_groups.append(
+                ActionLogits(
                     name,
                     kinds[name],
                     libraries,
@@ -177,9 +175,9 @@ class SynthesisPolicy:
                     exploration,
                 )
             )
-        return ActionCategorical(protocols, embeddings)
+        return ActionCategorical(action_groups, embeddings)
 
-    def observed_logits(self, embeddings: Tensor, actions: list[RxnAction]) -> Tensor:
+    def observed_logits(self, embeddings: Tensor, actions: list[Action]) -> Tensor:
         """Score numerator edges independently of the denominator subsample.
 
         This is RxnFlow's _cal_action_logits, batched by reaction/library to
@@ -238,14 +236,14 @@ class SynthesisPolicy:
     @torch.no_grad()
     def choose_actions(
         self, states: list[MoleculeState], temperature: float, random_action_prob: float
-    ) -> list[RxnAction | None]:
+    ) -> list[Action | None]:
         return self.candidate_batch(states).sample(
             temperature, random_action_prob, self.config.subsampling.importance_temp
         )
 
     def choose_action(
         self, state: MoleculeState, temperature: float, random_action_prob: float
-    ) -> RxnAction:
+    ) -> Action:
         action = self.choose_actions([state], temperature, random_action_prob)[0]
         if action is None:
             raise NoValidActions(
@@ -254,13 +252,13 @@ class SynthesisPolicy:
         return action
 
     def action_log_probabilities(
-        self, states: list[MoleculeState], actions: list[RxnAction]
+        self, states: list[MoleculeState], actions: list[Action]
     ) -> Tensor:
         categorical = self.candidate_batch(states)
         numerator = self.observed_logits(categorical.embeddings, actions)
         return (numerator - categorical.log_partition()).clamp(max=0.0)
 
-    def action_log_probability(self, state: MoleculeState, action: RxnAction) -> Tensor:
+    def action_log_probability(self, state: MoleculeState, action: Action) -> Tensor:
         return self.action_log_probabilities([state], [action])[0]
 
     def rollout(
@@ -281,7 +279,7 @@ class SynthesisPolicy:
         if count <= 0:
             raise ValueError("rollout count must be positive")
         states = [self.env.initial_state() for _ in range(count)]
-        steps: list[list[TrajectoryStep]] = [[] for _ in range(count)]
+        steps: list[list[Transition]] = [[] for _ in range(count)]
         reasons: list[str | None] = [None] * count
         retro_trees = [RetrosynthesisTree("") for _ in range(count)]
 
@@ -296,7 +294,7 @@ class SynthesisPolicy:
                 )
                 if value is None or tree is None:
                     raise RuntimeError("backward analysis lost the generated route")
-                transition.log_backward = value
+                transition.log_pb = value
                 retro_trees[index] = tree
 
         # FirstBlock + at most max_reactions chemical transformations.
@@ -328,12 +326,11 @@ class SynthesisPolicy:
                 try:
                     next_state = self.env.step(state, action)
                 except InvalidTransition as error:
-                    steps[index].append(TrajectoryStep(state, action, ""))
+                    steps[index].append(Transition(state, action, ""))
                     reasons[index] = str(error)
                     continue
                 # Unexpected RDKit/model errors still surface to the caller.
-                action = replace(action, product_smiles=next_state.smiles)
-                steps[index].append(TrajectoryStep(state, action, next_state.smiles))
+                steps[index].append(Transition(state, action, next_state.smiles))
                 states[index] = next_state
                 if analyze_backward:
                     self.env.retro_analyzer.submit(
@@ -359,7 +356,3 @@ class SynthesisPolicy:
                 )
             )
         return trajectories
-
-
-def trajectory_sample(trajectory: Trajectory) -> Sample | None:
-    return Sample.from_smiles(trajectory.final_smiles) if trajectory.valid else None

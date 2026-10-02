@@ -9,7 +9,7 @@ from rxnflow.envs.retrosynthesis import (
     RetrosynthesisTree,
     RetrosynthesisWorkers,
 )
-from rxnflow.gflownet.types import ActionKind, RxnAction
+from rxnflow.gflownet.types import Action, ActionKind
 
 
 class StaticAnalyzer:
@@ -25,7 +25,7 @@ class EchoAnalyzer:
         self,
         smiles: str,
         max_reactions: int,
-        known_branches: list[tuple[RxnAction, RetrosynthesisTree]],
+        known_branches: list[tuple[Action, RetrosynthesisTree]],
     ) -> RetrosynthesisTree:
         return RetrosynthesisTree(smiles, known_branches)
 
@@ -36,8 +36,8 @@ class UnexpectedUnaryReaction:
 
 
 def test_depth_weighted_backward_probability() -> None:
-    selected = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="selected")
-    alternative = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="alternative")
+    selected = Action(ActionKind.UNI_REACTION, reaction="selected")
+    alternative = Action(ActionKind.UNI_REACTION, reaction="alternative")
     leaf = RetrosynthesisTree("")
     one_step = RetrosynthesisTree("one", [(selected, leaf)])
     two_step = RetrosynthesisTree("two", [(alternative, one_step)])
@@ -66,7 +66,7 @@ def test_known_branch_is_preserved_and_reaction_budget_bounds_dfs() -> None:
     assert tree is not None
     assert [action.kind for action, _ in tree.branches] == [ActionKind.FIRST_BLOCK]
 
-    generated = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="generated")
+    generated = Action(ActionKind.UNI_REACTION, reaction="generated")
     child = RetrosynthesisTree(brick, tree.branches)
     empty_env = SimpleNamespace(
         uni_reactions={}, bi_reactions={}, blocks={}, brick_types=[]
@@ -120,7 +120,7 @@ def test_short_route_does_not_hide_longer_route_within_budget() -> None:
 
 def test_worker_queue_collects_multiple_submissions() -> None:
     analyzer = RetrosynthesisWorkers(EchoAnalyzer(), workers=2)
-    action = RxnAction(ActionKind.FIRST_BLOCK, "[1*]C", block_type="1", block_index=0)
+    action = Action(ActionKind.FIRST_BLOCK, block_type="1", block_index=0)
     child = RetrosynthesisTree("")
     try:
         analyzer.submit(3, "first", 0, [(action, child)])
@@ -137,7 +137,7 @@ def test_worker_queue_collects_multiple_submissions() -> None:
 
 
 def test_same_action_from_different_parents_has_distinct_backward_probability() -> None:
-    action = RxnAction(ActionKind.UNI_REACTION, "CC", reaction="conversion")
+    action = Action(ActionKind.UNI_REACTION, reaction="conversion")
     leaf = RetrosynthesisTree("")
     first = RetrosynthesisTree("first", [(action, leaf)])
     second = RetrosynthesisTree("second", [(action, leaf)])

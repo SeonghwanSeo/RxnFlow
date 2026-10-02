@@ -7,11 +7,12 @@ import json
 from pathlib import Path
 
 import torch
+from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
 from rxnflow.envs.env import SynthesisEnv
-from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device, trajectory_sample
+from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device
 from rxnflow.gflownet.types import SamplingResult, Trajectory
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction, SampleFilter, evaluate_rewards
@@ -60,7 +61,10 @@ class RxnFlowSampler:
         )
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
-        actions = [self.env.action_to_dict(step.action) for step in trajectory.steps]
+        actions = [
+            {**self.env.action_to_dict(step.action), "product_smiles": step.product_smiles}
+            for step in trajectory.steps
+        ]
         intermediates = [step.product_smiles for step in trajectory.steps]
         return SamplingResult(
             smiles=trajectory.final_smiles,
@@ -109,7 +113,7 @@ class RxnFlowSampler:
         if self.reward is not None and results:
             values, metrics = evaluate_rewards(
                 self.reward,
-                [trajectory_sample(value) for value in trajectories],
+                [Chem.MolFromSmiles(value.final_smiles) for value in trajectories],
                 self.sample_filter,
             )
             for result, value in zip(results, values, strict=True):

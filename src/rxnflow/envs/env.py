@@ -19,7 +19,7 @@ from rxnflow.envs.chemistry.features import (
 )
 from rxnflow.envs.chemistry.reaction import BiReaction, UniReaction
 from rxnflow.envs.chemistry.synthon import load_synthon_specs, typed_dummy_isotopes
-from rxnflow.gflownet.types import ActionKind, MoleculeState, RxnAction
+from rxnflow.gflownet.types import Action, ActionKind, MoleculeState
 
 from .library import load_block_libraries
 
@@ -326,20 +326,20 @@ class SynthesisEnv:
 
     def outcomes(
         self, state: MoleculeState, group: ActionGroup, block_index: int | None = None
-    ) -> list[RxnAction]:
+    ) -> list[Action]:
         """Execute one fixed-site action; return no outcome for invalid chemistry."""
+        if not self._products(state.mol, group, block_index):
+            return []
         return [
-            RxnAction(
+            Action(
                 group.kind,
-                Chem.MolToSmiles(product),
                 reaction=None if group.kind == ActionKind.FIRST_BLOCK else group.name,
                 block_type=group.block_type,
                 block_index=block_index,
             )
-            for product in self._products(state.mol, group, block_index)
         ]
 
-    def step(self, state: MoleculeState, action: RxnAction) -> MoleculeState:
+    def step(self, state: MoleculeState, action: Action) -> MoleculeState:
         group = ActionGroup(
             action.kind, action.reaction or "first_block", action.block_type
         )
@@ -351,22 +351,12 @@ class SynthesisEnv:
                 "the selected reaction failed structural or graph-capacity checks"
             )
         product = products[0]
-        if action.product_smiles and action.product_smiles != Chem.MolToSmiles(product):
-            raise ValueError(
-                f"action product is not available for the current state: {action}"
-            )
         count = state.reaction_count + int(action.kind != ActionKind.FIRST_BLOCK)
         terminal = not typed_dummy_isotopes(product)
         return MoleculeState(product, count, terminal)
 
-    def action_to_dict(self, action: RxnAction) -> dict[str, object]:
-        result: dict[str, object] = {
-            "type": action.kind.name,
-            "reaction": action.reaction,
-            "product_smiles": action.product_smiles,
-            "block_type": action.block_type,
-            "block_index": action.block_index,
-        }
+    def action_to_dict(self, action: Action) -> dict[str, object]:
+        result = action.to_dict()
         if action.block_type is not None:
             assert action.block_index is not None
             library = self.blocks[action.block_type]
@@ -381,7 +371,7 @@ class SynthesisEnv:
         return result
 
     def backward_log_probability(
-        self, state: MoleculeState, action: RxnAction, parent_smiles: str
+        self, state: MoleculeState, action: Action, parent_smiles: str
     ) -> float | None:
         return self.retro_analyzer.log_probability(
             state.smiles,
