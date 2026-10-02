@@ -247,7 +247,7 @@ def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
         steps=[
             Transition(
                 state,
-                Action(ActionType.UNI_REACTION, reaction="convert"),
+                Action(ActionType.UNIRXN_TRANSFORM, reaction="convert"),
                 product_smiles="CC",
                 log_p_B=-0.7,
             ),

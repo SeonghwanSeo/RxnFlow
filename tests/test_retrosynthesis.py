@@ -34,8 +34,8 @@ def policy(prepared_env):
 
 
 def test_depth_weighted_backward_probability(policy) -> None:
-    selected = Action(ActionType.UNI_REACTION, reaction="selected")
-    alternative = Action(ActionType.UNI_REACTION, reaction="alternative")
+    selected = Action(ActionType.UNIRXN_TRANSFORM, reaction="selected")
+    alternative = Action(ActionType.UNIRXN_TRANSFORM, reaction="alternative")
     first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     routes = [
         [(selected, "one"), (first, "")],
@@ -66,7 +66,7 @@ def test_known_routes_are_preserved_and_reaction_budget_bounds_dfs() -> None:
     # Seeding an already discoverable branch must not duplicate its mass.
     assert analyzer.run(brick, max_reactions=0, known_trajectories=routes) == routes
 
-    generated = Action(ActionType.UNI_REACTION, reaction="generated")
+    generated = Action(ActionType.UNIRXN_TRANSFORM, reaction="generated")
     known = [[(generated, brick), *route] for route in routes]
     empty_env = SimpleNamespace(
         uni_reactions={}, bi_reactions={}, synthons={}, brick_types=[]
@@ -145,7 +145,7 @@ def test_worker_queue_collects_multiple_submissions(workers) -> None:
 def test_same_action_from_different_parents_has_distinct_backward_probability(
     policy,
 ) -> None:
-    action = Action(ActionType.UNI_REACTION, reaction="conversion")
+    action = Action(ActionType.UNIRXN_TRANSFORM, reaction="conversion")
     first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     routes = [
         [(action, "first"), (first, "")],

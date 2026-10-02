@@ -20,7 +20,7 @@ reward:
 # Optional upper bounds on additive state + synthon property estimates.
 property_penalty: {}
 
-# Uniform sampling within each compatible synthon synthon library.
+# Uniform sampling within each compatible synthon library.
 subsampling:
   sampling_ratio: 0.05
   min_sampling: 50

@@ -303,7 +303,7 @@ def test_oriented_synthon_scoring_and_observed_action_log_probability(
     state = State.from_smiles("[3*]C")
     from rxnflow.core.errors import InvalidTransition
 
-    spec = (ActionType.BI_REACTION, "amide_coupling_synthon_first", "1-1")
+    spec = (ActionType.BIRXN_LINKER, "amide_coupling_synthon_first", "1-1")
     assert any(
         subspace.action_type == spec[0] and subspace.name == (spec[1], spec[2])
         for subspace in trainer.env.get_action_space(state)
@@ -402,7 +402,7 @@ def test_failed_selected_action_is_retained_for_tb(
     state = State.from_smiles("[1*]NCCN")
     index = trainer.env.synthons["3"].smiles.index("*C")
     action = Action(
-        ActionType.BI_REACTION,
+        ActionType.BIRXN_BRICK,
         reaction="amide_coupling_state_first",
         synthon_type="3",
         synthon_index=index,
@@ -426,7 +426,10 @@ def test_failed_selected_action_is_retained_for_tb(
     loss, _ = trainer.compute_batch_losses([trajectory], num_fresh=1)
     assert torch.isfinite(loss)
     loss.backward()
-    assert trainer.model.mlp_birxn[0].weight.grad.abs().sum() > 0
+    assert (
+        trainer.model.action_heads[ActionType.BIRXN_BRICK.name][0].weight.grad.abs().sum()
+        > 0
+    )
 
 
 @pytest.mark.parametrize("sampling_ratio", [0.35, 1.0])
@@ -443,13 +446,14 @@ def test_batched_scores_and_gradients_match_scalar_reference(
         State(),
         State.from_smiles("[3*]C"),
         State.from_smiles("[3*]C", num_reactions=trainer.env.max_reactions - 1),
-        State.from_smiles("[11*]C"),
+        State.from_smiles("[11*]C", num_synthons=2, num_reactions=1),
         State.from_smiles("[33*]NCC"),
     ]
     categorical = trainer.policy.forward(
         states, beta=torch.ones(len(states)), preferences=torch.ones(len(states), 1)
     )
     reference, actual = [], []
+    selected_actions, selected_rows = [], []
     for row, state in enumerate(states):
         embedding = model.graph_embedding(
             GraphBatch.from_graphs(
@@ -492,7 +496,7 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                         action.reaction,
                         logit_scale=model.logit_scale(_condition(model, 1)),
                     )
-                    if action.action_type == ActionType.UNI_REACTION
+                    if action.action_type.is_unirxn
                     else model.get_synthon_logits(
                         embedding,
                         group.subspace.name[0],
@@ -503,8 +507,18 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                 )
                 reference.append(score)
                 actual.append(group.logits[row, column])
+                selected_actions.append(action)
+                selected_rows.append(row)
     actual, expected = torch.stack(actual), torch.stack(reference)
     torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
+    # Numerator scoring must split the same reaction into brick/linker heads
+    # exactly as denominator scoring does, without changing the action order.
+    indices = torch.tensor(selected_rows)
+    observed = trainer.policy.get_action_logits(
+        categorical.graph_emb[indices], selected_actions, categorical.logit_scale[indices]
+    )
+    torch.testing.assert_close(observed, actual, atol=3e-6, rtol=3e-5)
+    assert {action.action_type for action in selected_actions} == set(ActionType)
     params = tuple(model.parameters())
     a = torch.autograd.grad(actual.square().mean(), params, allow_unused=True)
     b = torch.autograd.grad(expected.square().mean(), params, allow_unused=True)
@@ -533,9 +547,9 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
     queries = []
     forward_mdp = trainer.model.forward_mdp
 
-    def record_query(graph_emb, name, logit_scale):
+    def record_query(graph_emb, name, logit_scale, action_type):
         queries.append(name)
-        return forward_mdp(graph_emb, name, logit_scale)
+        return forward_mdp(graph_emb, name, logit_scale, action_type)
 
     monkeypatch.setattr(trainer.model, "forward_mdp", record_query)
     initial = trainer.env.initial_state()
@@ -561,7 +575,7 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
     assert len(unary.action_logits) == 1
     assert unary.action_logits[0].subspace.sample_indices.tolist() == [0]
     assert unary.action_logits[0].log_importance.tolist() == [0.0]
-    assert unary.sample(1.0, 0.0, 1.0)[0].action_type == ActionType.UNI_REACTION
+    assert unary.sample(1.0, 0.0, 1.0)[0].action_type == ActionType.UNIRXN_TRANSFORM
     dead = State.from_smiles("[33*]NCC", trainer.env.max_reactions - 1)
     choices = trainer.policy.sample_actions(
         [dead, initial],
@@ -626,7 +640,8 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     )
     state = trainer.env.initial_state()
     actions = [
-        Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=i) for i in (0, 1)
+        Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=i)
+        for i in (0, 1)
     ]
     categorical = trainer.policy.forward(
         [state, state],
@@ -703,7 +718,7 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     terminal = State.from_smiles("NC", num_reactions=1, terminated=True)
     first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
     last = Action(
-        ActionType.BI_REACTION,
+        ActionType.BIRXN_BRICK,
         reaction="amide_coupling_synthon_first",
         synthon_type="3",
         synthon_index=0,

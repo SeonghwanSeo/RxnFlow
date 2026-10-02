@@ -44,7 +44,10 @@ class SynthesisEnv:
         self.max_synthons = max_synthons
         self.min_reactions = min_reactions
         self.max_reactions = max_reactions
-        if not 1 <= min_synthons <= max_synthons or not 1 <= min_reactions <= max_reactions:
+        if (
+            not 1 <= min_synthons <= max_synthons
+            or not 1 <= min_reactions <= max_reactions
+        ):
             raise ValueError("invalid synthon/reaction bounds")
         if min_synthons > max_reactions + 1:
             raise ValueError("min_synthons cannot be reached within max_reactions")
@@ -114,9 +117,17 @@ class SynthesisEnv:
                 if reaction == "first_synthon":
                     action_type = ActionType.FIRST_SYNTHON
                 elif library is None:
-                    action_type = ActionType.UNI_REACTION
+                    action_type = (
+                        ActionType.UNIRXN_TERMINAL
+                        if self.uni_reactions[reaction].output_type is None
+                        else ActionType.UNIRXN_TRANSFORM
+                    )
                 else:
-                    action_type = ActionType.BI_REACTION
+                    action_type = (
+                        ActionType.BIRXN_BRICK
+                        if self.synthons[library].is_brick
+                        else ActionType.BIRXN_LINKER
+                    )
                 result.append(
                     ActionSubspace(
                         (reaction, library),
@@ -150,7 +161,7 @@ class SynthesisEnv:
                 subspace.num_actions
                 for space in self.reaction_action_spaces.values()
                 for subspace in space
-                if subspace.action_type == ActionType.BI_REACTION
+                if subspace.action_type.is_birxn
             ),
         )
         # Prepared artifacts are immutable until the next preparation. Reading
@@ -279,7 +290,9 @@ class SynthesisEnv:
         # 1. Resolve the selected catalog row, when this action consumes a synthon.
         if action.synthon_type is not None:
             library = self.synthons[action.synthon_type]
-            if action.synthon_index is None or not 0 <= action.synthon_index < len(library):
+            if action.synthon_index is None or not 0 <= action.synthon_index < len(
+                library
+            ):
                 raise ValueError("synthon_index is out of range")
             synthon_smiles = library.smiles[action.synthon_index]
         elif action.synthon_index is not None:
@@ -298,7 +311,7 @@ class SynthesisEnv:
             expected = library.site_types
         else:
             assert current is not None
-            if action.action_type == ActionType.UNI_REACTION:
+            if action.action_type.is_unirxn:
                 reaction = self.uni_reactions[action.reaction]
                 mol = reaction.run_forward(current)
                 expected = () if reaction.output_type is None else (reaction.output_type,)
@@ -327,7 +340,10 @@ class SynthesisEnv:
             else action.reaction,
             action.synthon_type,
         )
-        if not any(space.name == name for space in self.get_action_space(state)):
+        if not any(
+            space.name == name and space.action_type == action.action_type
+            for space in self.get_action_space(state)
+        ):
             raise InvalidTransition("action cannot finish within the synthesis budgets")
         product = self._apply_action(state.mol, action)
         if product is None:
@@ -339,8 +355,7 @@ class SynthesisEnv:
         return State(
             mol=product,
             num_reactions=count,
-            num_synthons=state.num_synthons
-            + int(action.action_type != ActionType.UNI_REACTION),
+            num_synthons=state.num_synthons + int(not action.action_type.is_unirxn),
             terminated=terminal,
         )
 

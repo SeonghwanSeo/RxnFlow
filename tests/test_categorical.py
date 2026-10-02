@@ -14,17 +14,17 @@ def test_device_sampling_balances_libraries_and_keeps_property_masks():
     # Each library pair and unary action gets mass 1/3 before masks, even
     # when the two libraries share a reaction and have very different sizes.
     small = ActionLogits(
-        ActionSubspace(("couple", "small"), ActionType.BI_REACTION, 1),
+        ActionSubspace(("couple", "small"), ActionType.BIRXN_BRICK, 1),
         torch.full((n, 1), 100.0),
         torch.full((1,), 5.0),
     )
     large = ActionLogits(
-        ActionSubspace(("couple", "large"), ActionType.BI_REACTION, 9),
+        ActionSubspace(("couple", "large"), ActionType.BIRXN_BRICK, 9),
         torch.full((n, 9), 100.0),
         torch.full((9,), 5.0),
     )
     unary = ActionLogits(
-        ActionSubspace(("convert", None), ActionType.UNI_REACTION, 1),
+        ActionSubspace(("convert", None), ActionType.UNIRXN_TRANSFORM, 1),
         torch.full((n, 1), -100.0),
         torch.zeros(1),
     )
@@ -43,7 +43,7 @@ def test_device_sampling_balances_libraries_and_keeps_property_masks():
     unary.logits[0] = -torch.inf
     actions = policy.sample(1.0, 1.0, 1.0)
     assert actions[0] is None
-    assert all(action.action_type == ActionType.UNI_REACTION for action in actions[1:])
+    assert all(action.action_type.is_unirxn for action in actions[1:])
 
 
 def test_policy_sampling_matches_temperature_and_importance_weights():
@@ -52,7 +52,7 @@ def test_policy_sampling_matches_temperature_and_importance_weights():
     logits = torch.tensor([0.0, 0.5, -torch.inf])
     weights = torch.tensor([math.log(4), 0.0, 0.0])
     group = ActionLogits(
-        ActionSubspace(("couple", "a"), ActionType.BI_REACTION, 3, np.arange(3)),
+        ActionSubspace(("couple", "a"), ActionType.BIRXN_BRICK, 3, np.arange(3)),
         logits.repeat(n, 1),
         weights,
     )
@@ -72,12 +72,12 @@ def test_subspace_decodes_sampled_library_indices():
 
     subspace = ActionSubspace(
         ("couple", "a"),
-        ActionType.BI_REACTION,
+        ActionType.BIRXN_BRICK,
         10,
         np.array([9, 4]),
     )
-    assert subspace.action_at(0) == Action(ActionType.BI_REACTION, "couple", "a", 9)
-    assert subspace.action_at(1) == Action(ActionType.BI_REACTION, "couple", "a", 4)
+    assert subspace.action_at(0) == Action(ActionType.BIRXN_BRICK, "couple", "a", 9)
+    assert subspace.action_at(1) == Action(ActionType.BIRXN_BRICK, "couple", "a", 4)
 
 
 def test_full_subspace_and_sampled_copy_decode_without_mutation():
@@ -100,5 +100,5 @@ def test_full_subspace_and_sampled_copy_decode_without_mutation():
     assert sampled.action_at(1) == Action(
         ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=1
     )
-    unary = ActionSubspace(("convert", None), ActionType.UNI_REACTION, 1)
-    assert unary.action_at(0) == Action(ActionType.UNI_REACTION, "convert")
+    unary = ActionSubspace(("convert", None), ActionType.UNIRXN_TRANSFORM, 1)
+    assert unary.action_at(0) == Action(ActionType.UNIRXN_TRANSFORM, "convert")

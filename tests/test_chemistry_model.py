@@ -199,7 +199,9 @@ def test_dot_scores_ignore_synthon_norm_and_train_both_action_scales(
 
 def test_chirality_and_graph_padding_are_preserved(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1).eval()
+    model = RxnFlowModel(
+        env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1
+    ).eval()
     graphs = [
         molecule_to_graph_data(parse_molecule(s), 12, 1)
         for s in ("N[C@H](C)O", "N[C@@H](C)O")
@@ -221,7 +223,9 @@ def test_chirality_and_graph_padding_are_preserved(prepared_env):
 
 def test_graph_encoder_distinguishes_bond_stereoisomers(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1).eval()
+    model = RxnFlowModel(
+        env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1
+    ).eval()
     # Same atoms and connectivity; only double-bond stereo differs (E/Z/none).
     graphs = [
         molecule_to_graph_data(parse_molecule(s), 12, 1)
@@ -281,7 +285,9 @@ def test_gine_layer_matches_equations_and_gradients():
 
 def test_mpnn_readout_is_invariant_to_atom_order_and_batch_companions(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1).eval()
+    model = RxnFlowModel(
+        env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1
+    ).eval()
     mol = parse_molecule("CC(O)N[33*]")
     reordered = Chem.RenumberAtoms(mol, list(reversed(range(mol.GetNumAtoms()))))
     graphs = [

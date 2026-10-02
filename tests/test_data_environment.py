@@ -53,7 +53,14 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
     }
     assert required <= {path.name for path in prepared_env.iterdir()}
     synthon_names = {path.name for path in (prepared_env / "synthons").glob("*.smi")}
-    assert {"1.smi", "1-1.smi", "1-3.smi", "3-33.smi", "34.smi", "35.smi"} <= synthon_names
+    assert {
+        "1.smi",
+        "1-1.smi",
+        "1-3.smi",
+        "3-33.smi",
+        "34.smi",
+        "35.smi",
+    } <= synthon_names
     assert not list(prepared_env.rglob("*cluster*"))
     from scripts.prepare import main
 
@@ -113,7 +120,7 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     protected = env.step(start, coupling)
     assert env.get_synthon_types(protected.smiles) == (33,)
     assert {g.action_type for g in env.get_action_space(protected)} == {
-        ActionType.UNI_REACTION
+        ActionType.UNIRXN_TRANSFORM
     }
     deprotect = actions_for(env, protected, "boc_deprotection")[0]
     activated = env.step(protected, deprotect)
@@ -231,7 +238,8 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
     symmetric = Chem.MolToSmiles(Chem.MolFromSmiles("*NCCN[1*]"))
     assert env.synthons["1-1"].smiles.count(symmetric) == 1
     assert (
-        len(actions_for(env, state, "amide_coupling_synthon_first", "1-1", symmetric)) == 1
+        len(actions_for(env, state, "amide_coupling_synthon_first", "1-1", symmetric))
+        == 1
     )
 
     # Ordered library types determine which end attaches, even for two types.

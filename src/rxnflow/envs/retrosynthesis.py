@@ -100,7 +100,12 @@ class Worker:
                     if typed_dummy_isotopes(precursor) != (reaction.input_type,):
                         continue
                     parent_smiles = Chem.MolToSmiles(precursor)
-                    action = Action(ActionType.UNI_REACTION, reaction=name)
+                    action = Action(
+                        ActionType.UNIRXN_TERMINAL
+                        if reaction.output_type is None
+                        else ActionType.UNIRXN_TRANSFORM,
+                        reaction=name,
+                    )
                     if (action, parent_smiles) in branch_keys:
                         continue
                     forward_product = reaction.run_forward(precursor)
@@ -129,7 +134,9 @@ class Worker:
                     synthon_sites = typed_dummy_isotopes(synthon_mol)
                     if not synthon_sites or synthon_sites[0] != 0:
                         continue
-                    synthon_type = "-".join(map(str, (action.synthon_type, *synthon_sites[1:])))
+                    synthon_type = "-".join(
+                        map(str, (action.synthon_type, *synthon_sites[1:]))
+                    )
                     library = self.synthon_search.get(synthon_type)
                     if library is None:
                         continue
@@ -137,7 +144,9 @@ class Worker:
                     if synthon_index is None:
                         continue
                     reverse_action = Action(
-                        ActionType.BI_REACTION,
+                        ActionType.BIRXN_BRICK
+                        if len(synthon_sites) == 1
+                        else ActionType.BIRXN_LINKER,
                         reaction=name,
                         synthon_type=synthon_type,
                         synthon_index=synthon_index,

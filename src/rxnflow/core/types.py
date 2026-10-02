@@ -13,8 +13,18 @@ from rdkit import Chem
 
 class ActionType(IntEnum):
     FIRST_SYNTHON = 0
-    UNI_REACTION = 1
-    BI_REACTION = 2
+    UNIRXN_TRANSFORM = 1
+    UNIRXN_TERMINAL = 2
+    BIRXN_BRICK = 3
+    BIRXN_LINKER = 4
+
+    @property
+    def is_unirxn(self) -> bool:
+        return self in (ActionType.UNIRXN_TRANSFORM, ActionType.UNIRXN_TERMINAL)
+
+    @property
+    def is_birxn(self) -> bool:
+        return self in (ActionType.BIRXN_BRICK, ActionType.BIRXN_LINKER)
 
 
 @dataclass(frozen=True)

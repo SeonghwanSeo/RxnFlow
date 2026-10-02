@@ -172,21 +172,22 @@ class RxnFlowPolicy:
         """Retain sampled columns; mask logits instead of packing valid actions.
 
         Each library draw is shared across states and reactions. Each reaction
-        shares one query/matmul across libraries, then exposes one logit matrix
-        per (reaction, library). Observed actions do not affect these draws or
+        shares one query/matmul across libraries of the same action type, then
+        exposes one logit matrix per (reaction, library). Observed actions do not affect these draws or
         their importance weights.
         """
         assert states
         # 1. Build state features and collect compatible reaction/library rows.
         graphs: dict[tuple[str, int, int], GraphData] = {}
         properties: dict[tuple[str, int, int], NDArray[np.float32]] = {}
-        keys = [(state.smiles, state.num_reactions, state.num_synthons) for state in states]
+        keys = [
+            (state.smiles, state.num_reactions, state.num_synthons) for state in states
+        ]
         # Metadata contains only state rows and library names, never candidate
         # objects or per-state arrays of valid synthon indices.
-        action_rows: dict[str, set[int]] = {}  # reaction -> batch rows
-        # reaction -> library -> batch rows
-        action_libraries: dict[str, dict[str, list[int]]] = {}
-        action_types: dict[str, ActionType] = {}
+        action_rows: dict[tuple[str, ActionType], set[int]] = {}
+        # (reaction, action type) -> library -> batch rows
+        action_libraries: dict[tuple[str, ActionType], dict[str, list[int]]] = {}
         library_rows: dict[str | None, set[int]] = {}  # None is the unary range
         for row, (state, key) in enumerate(zip(states, keys, strict=True)):
             if key not in graphs:
@@ -201,10 +202,10 @@ class RxnFlowPolicy:
                 )
             for subspace in self.env.get_action_space(state):
                 name, synthon_type = subspace.name
-                action_types[name] = subspace.action_type
-                action_rows.setdefault(name, set()).add(row)
+                group = (name, subspace.action_type)
+                action_rows.setdefault(group, set()).add(row)
                 if synthon_type is not None:
-                    action_libraries.setdefault(name, {}).setdefault(
+                    action_libraries.setdefault(group, {}).setdefault(
                         synthon_type, []
                     ).append(row)
                 library_rows.setdefault(synthon_type, set()).add(row)
@@ -269,14 +270,15 @@ class RxnFlowPolicy:
             )
             synthon_embs = dict(zip(masks, encoded.split(sizes), strict=True))
 
-        # 4. Score by reaction, apply masks, and split columns into subspaces.
+        # 4. Score by reaction and action type, apply masks, and split columns into subspaces.
         action_logits: list[ActionLogits] = []
-        for name, rows in action_rows.items():
+        for group, rows in action_rows.items():
+            name, action_type = group
             row_indices = torch.tensor(sorted(rows), device=self.device)
             state_emb = self.model.forward_mdp(
-                graph_emb[row_indices], name, logit_scale[row_indices]
+                graph_emb[row_indices], name, logit_scale[row_indices], action_type
             )
-            libraries = list(action_libraries.get(name, {}))
+            libraries = list(action_libraries.get(group, {}))
             if libraries:
                 # Compute the reaction query and matrix product once, then split
                 # columns into library subspaces without recomputing embeddings.
@@ -288,7 +290,7 @@ class RxnFlowPolicy:
                 weight_parts: list[torch.Tensor] = []
                 for n in libraries:
                     eligible = np.zeros(len(states), dtype=np.bool_)
-                    eligible[action_libraries[name][n]] = True
+                    eligible[action_libraries[group][n]] = True
                     allowed.append(masks[n] & eligible[:, None])
                     count = len(samples[n])
                     weight_parts.append(torch.full((count,), log_importance[n]))
@@ -314,7 +316,7 @@ class RxnFlowPolicy:
                         ActionLogits(
                             ActionSubspace(
                                 (name, library),
-                                action_types[name],
+                                action_type,
                                 self.subsampling[library].num_actions,
                                 samples[library],
                             ),
@@ -325,9 +327,7 @@ class RxnFlowPolicy:
             else:
                 action_logits.append(
                     ActionLogits(
-                        ActionSubspace(
-                            (name, None), action_types[name], 1, samples[None]
-                        ),
+                        ActionSubspace((name, None), action_type, 1, samples[None]),
                         logits,
                         weights,
                     )
@@ -339,7 +339,7 @@ class RxnFlowPolicy:
     ) -> torch.Tensor:
         """Score numerator edges independently of the denominator subsample.
 
-        Group observed actions by reaction and library so their scores use
+        Group observed actions by reaction, action type and library so their scores use
         batched encodings, including actions absent from the denominator draw.
         """
         # 1. Group observed rows while retaining their original batch positions.
@@ -350,7 +350,7 @@ class RxnFlowPolicy:
                 if action.action_type == ActionType.FIRST_SYNTHON
                 else action.reaction
             )
-            by_reaction.setdefault(name, []).append(row)
+            by_reaction.setdefault((name, action.action_type), []).append(row)
             if action.synthon_type is not None:
                 by_library.setdefault(action.synthon_type, []).append(row)
         # 2. Gather and encode only the synthons selected by those actions.
@@ -386,14 +386,14 @@ class RxnFlowPolicy:
             )
         # 3. Score each reaction and restore the original action order.
         logits = graph_emb.new_zeros(len(actions))
-        for name, rows in by_reaction.items():
+        for (name, action_type), rows in by_reaction.items():
             indices = torch.tensor(rows, device=self.device)
             state_emb = self.model.forward_mdp(
-                graph_emb[indices], name, logit_scale[indices]
+                graph_emb[indices], name, logit_scale[indices], action_type
             )
             values = (
                 state_emb.squeeze(1)
-                if actions[rows[0]].action_type == ActionType.UNI_REACTION
+                if action_type.is_unirxn
                 else (state_emb * synthons[indices]).sum(1)
             )
             logits = logits.index_copy(0, indices, values)
@@ -527,10 +527,7 @@ class RxnFlowPolicy:
                     route
                     for route in routes
                     if len(route) == state.num_reactions + 1
-                    and sum(
-                        action.action_type != ActionType.UNI_REACTION
-                        for action, _ in route
-                    )
+                    and sum(not action.action_type.is_unirxn for action, _ in route)
                     == state.num_synthons
                 ]
                 value = self.calc_bck_logprob(

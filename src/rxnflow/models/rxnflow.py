@@ -9,6 +9,7 @@ from torch import nn
 from torch.nn import functional as F
 
 from rxnflow.config import ModelConfig
+from rxnflow.core.types import ActionType
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.features import (
     FINGERPRINT_DIM,
@@ -62,29 +63,21 @@ class RxnFlowModel(nn.Module):
         )
         # Concatenate the 2H state and H reaction embeddings. Each head learns
         # their joint projection while the graph encoding is shared by reactions.
-        self.mlp_firstsynthon = mlp(
-            3 * num_emb,
-            num_emb,
-            cfg.num_synthon_emb,
-            cfg.num_mlp_layers,
-            layernorm=True,
-            dropout=cfg.dropout,
-        )
-        self.mlp_birxn = mlp(
-            3 * num_emb,
-            num_emb,
-            cfg.num_synthon_emb,
-            cfg.num_mlp_layers,
-            layernorm=True,
-            dropout=cfg.dropout,
-        )
-        self.mlp_unirxn = mlp(
-            3 * num_emb,
-            num_emb,
-            1,
-            cfg.num_mlp_layers,
-            layernorm=True,
-            dropout=cfg.dropout,
+        # Unary heads emit scalar logits; FirstSynthon and binary heads emit
+        # query vectors for the shared synthon embeddings. All actions still
+        # compete in one categorical distribution.
+        self.action_heads = nn.ModuleDict(
+            {
+                action_type.name: mlp(
+                    3 * num_emb,
+                    num_emb,
+                    1 if action_type.is_unirxn else cfg.num_synthon_emb,
+                    cfg.num_mlp_layers,
+                    layernorm=True,
+                    dropout=cfg.dropout,
+                )
+                for action_type in ActionType
+            }
         )
         # One condition-dependent multiplier controls the scale of all action logits.
         self._logit_scale = mlp(num_emb, num_emb, 1, 2)
@@ -135,7 +128,12 @@ class RxnFlowModel(nn.Module):
     def get_unirxn_logits(
         self, graph_emb: torch.Tensor, action_name: str, logit_scale: torch.Tensor
     ) -> torch.Tensor:
-        return self.forward_mdp(graph_emb, action_name, logit_scale)[0, 0]
+        action_type = (
+            ActionType.UNIRXN_TERMINAL
+            if self.env.uni_reactions[action_name].output_type is None
+            else ActionType.UNIRXN_TRANSFORM
+        )
+        return self.forward_mdp(graph_emb, action_name, logit_scale, action_type)[0, 0]
 
     def get_synthon_emb(
         self, synthon_type: str, indices: torch.Tensor, device: torch.device
@@ -168,19 +166,18 @@ class RxnFlowModel(nn.Module):
         )
 
     def forward_mdp(
-        self, graph_emb: torch.Tensor, action_name: str, logit_scale: torch.Tensor
+        self,
+        graph_emb: torch.Tensor,
+        action_name: str,
+        logit_scale: torch.Tensor,
+        action_type: ActionType,
     ) -> torch.Tensor:
         """Return a synthon-query vector or unary logit for one reaction and batch."""
         # Add reaction identity after graph encoding so all reactions share the GNN.
         index = self.env.action_to_index[action_name]
         rxn_emb = self.emb_rxn.weight[index].expand(graph_emb.shape[0], -1)
         state_rxn_emb = torch.cat([graph_emb, rxn_emb], dim=-1)
-        if action_name == "first_synthon":
-            head = self.mlp_firstsynthon
-        elif action_name in self.env.uni_reactions:
-            head = self.mlp_unirxn
-        else:
-            head = self.mlp_birxn
+        head = self.action_heads[action_type.name]
         return head(state_rxn_emb) * logit_scale[:, None]
 
     def get_synthon_logits(
@@ -192,6 +189,13 @@ class RxnFlowModel(nn.Module):
         logit_scale: torch.Tensor,
     ) -> torch.Tensor:
         assert indices.ndim == 1 and graph_emb.shape[0] == 1
-        state_emb = self.forward_mdp(graph_emb, action_name, logit_scale)
+        action_type = (
+            ActionType.FIRST_SYNTHON
+            if action_name == "first_synthon"
+            else ActionType.BIRXN_BRICK
+            if self.env.synthons[synthon_type].is_brick
+            else ActionType.BIRXN_LINKER
+        )
+        state_emb = self.forward_mdp(graph_emb, action_name, logit_scale, action_type)
         synthon_emb = self.get_synthon_emb(synthon_type, indices, graph_emb.device)
         return F.normalize(synthon_emb, dim=-1) @ state_emb.squeeze(0)
