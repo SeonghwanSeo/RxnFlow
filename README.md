@@ -18,7 +18,7 @@ This project is based on Recursion's GFlowNet Repository; `src/gflownet/` is a c
 
 With a collaboration with [eMolecules](https://www.emolecules.com) and [HITS](https://hits.ai/index_en.html), we developed the **Hyper Screening X** ([HyperLab](https://hyperlab.ai/en/)), which identifies candidate compounds from eMolecules' make-on-demand eXplore library.
 
-We will release our **in-house model architecture** used in Hyper Screening X soon.
+Hyper Screening X has successfully discovered first-in-class lead compounds. With the preprint coming soon, we’re also preparing to release the core architecture behind HSX.
 
 ## Setup
 
