@@ -40,7 +40,7 @@ python scripts/prepare.py \
   --min-library-size 10
 ```
 
-Use a new output directory. Preparation removes salts, excludes source building blocks above 50 heavy atoms, and creates synthon libraries with precomputed features. `--min-library-size` keeps libraries with at least that many distinct synthons; use `1` for small trial datasets. Building-block source IDs are retained for tracing generated synthesis paths.
+Use a new output directory. Preparation removes salts, excludes source building blocks above 50 heavy atoms, and creates synthon libraries with precomputed features. `--min-library-size` keeps libraries with at least that many distinct synthons; use `1` for small trial datasets. Building-block source IDs are retained for tracing generated synthesis paths. Preparation also writes `action_space.json` with action-space pairs and `signature.json` with the environment identity and the RxnFlow version used to prepare it. Keep the prepared files together and regenerate them after changing templates or building blocks; environments without these files must be regenerated.
 
 ## Train
 

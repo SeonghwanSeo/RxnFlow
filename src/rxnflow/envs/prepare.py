@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from contextlib import nullcontext
@@ -16,6 +17,8 @@ import numpy as np
 from rdkit import Chem
 from rdkit.Chem.SaltRemover import SaltRemover
 
+from rxnflow import __version__
+from rxnflow.core.reaction import load_reactions
 from rxnflow.core.synthon import (
     SynthonConversion,
     SynthonSpec,
@@ -252,6 +255,8 @@ def convert_stage(
 
     # 4. Write sorted library rows, source provenance, and the active templates.
     env_path.mkdir(parents=True, exist_ok=True)
+    (env_path / "signature.json").unlink(missing_ok=True)
+    (env_path / "action_space.json").unlink(missing_ok=True)
     block_dir = env_path / "blocks"
     block_dir.mkdir(exist_ok=True)
     for old in block_dir.glob("*.smi"):
@@ -304,6 +309,10 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     files = sorted(block_dir.glob("*.smi"))
     if not files:
         raise ValueError(f"no .smi files in {block_dir}")
+    # The signature and action space must never outlive an interrupted feature rebuild.
+    (env_path / "signature.json").unlink(missing_ok=True)
+    (env_path / "action_space.json").unlink(missing_ok=True)
+    counts: dict[str, int] = {}
     output = env_path / "bb_feature.npz"
     temporary = output.with_suffix(".tmp")
     context = get_context("spawn").Pool(num_workers) if num_workers > 1 else nullcontext()
@@ -318,6 +327,7 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
         for path in files:
             smiles = _read_prepared_smiles(path)
             count = len(smiles)
+            counts[path.stem] = count
             if not count:
                 raise ValueError(f"empty building-block file: {path}")
             properties = np.empty((count, PROPERTY_DIM), dtype=np.float32)
@@ -344,8 +354,99 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
                     np.lib.format.write_array(entry, array, allow_pickle=False)
     # 3. Publish the archive only after every library has been written.
     temporary.replace(output)
+    # 4. Finalize static eligibility and identity before marking the stage complete.
+    _write_action_space_and_signature(env_path, counts)
     _complete_stage(
         env_path,
         "features",
         {"block_types": sorted(path.stem for path in block_dir.glob("*.smi"))},
     )
+
+
+def _write_action_space_and_signature(env_path: Path, counts: dict[str, int]) -> None:
+    """Finalize only static eligibility and identity; runtime derives indices/counts."""
+    # Keep SMARTS and library descriptors in their existing source files.
+    # The spec stores only pairs whose compatibility would otherwise be rebuilt.
+    synthon_types = {spec.type for spec in load_synthon_specs(env_path / "synthon.yaml")}
+    uni, bi = load_reactions(env_path / "reaction.yaml")
+    bricks = []
+    by_attachment: dict[int, list[str]] = {}
+    # Counts follow sorted .smi filenames, matching the library loader order.
+    for name in counts:
+        sites = tuple(int(value) for value in name.split("-"))
+        if len(sites) not in (1, 2) or not set(sites) <= synthon_types:
+            raise ValueError(f"invalid brick/linker type: {name}")
+        by_attachment.setdefault(sites[0], []).append(name)
+        if len(sites) == 1:
+            bricks.append(name)
+    if not bricks:
+        raise ValueError("prepared environment contains no one-site bricks")
+    reactions: dict[int, list[tuple[str, str | None]]] = {
+        site: [] for site in sorted(synthon_types)
+    }
+    for name, reaction in uni.items():
+        if reaction.input_type not in synthon_types or (
+            reaction.output_type is not None and reaction.output_type not in synthon_types
+        ):
+            raise ValueError(f"unknown synthon type in {name}")
+        reactions[reaction.input_type].append((name, None))
+    for name, reaction in bi.items():
+        if not set(reaction.block_types) <= synthon_types:
+            raise ValueError(f"unknown synthon type in {name}")
+        for library in by_attachment.get(reaction.block_type, []):
+            reactions[reaction.state_type].append((name, library))
+    last = {
+        site: [
+            (reaction, library)
+            for reaction, library in pairs
+            if (
+                uni[reaction].output_type is None
+                if library is None
+                else library in bricks
+            )
+        ]
+        for site, pairs in reactions.items()
+    }
+    spaces = {
+        "initial": [("first_block", name) for name in bricks],
+        "reaction": reactions,
+        "last": last,
+    }
+    action_names = ["first_block", *sorted(uni), *sorted(bi)]
+    if len(set(action_names)) != len(action_names):
+        raise ValueError("reaction action names must be unique")
+
+    # Hash once after all data is published, including the stored eligibility.
+    # Templates/features/rows must be regenerated together, not edited in place.
+    action_path = env_path / "action_space.json"
+    temporary = action_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(spaces, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(action_path)
+    digest = hashlib.sha256()
+    for name in (
+        "action_space.json",
+        "synthon.yaml",
+        "reaction.yaml",
+        "building_blocks.json",
+        "bb_feature.npz",
+    ):
+        with (env_path / name).open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    for name in sorted(counts):
+        digest.update(name.encode())
+        with (env_path / "blocks" / f"{name}.smi").open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+    # Publish identity last: it describes all completed data, including action space.
+    signature = {
+        "format": "rxnflow-env",
+        "rxnflow_version": __version__,
+        "block_counts": counts,
+        "reaction_names": action_names,
+        "content_sha256": digest.hexdigest(),
+    }
+    path = env_path / "signature.json"
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(signature, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)

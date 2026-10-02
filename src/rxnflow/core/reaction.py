@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
 from rdkit import Chem
 from rdkit.Chem.rdChemReactions import (
     ChemicalReaction,
@@ -180,3 +183,31 @@ class BiReaction(Reaction):
     @property
     def block_type(self) -> int:
         return self.block_types[int(not self.block_first)]
+
+
+def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReaction]]:
+    """Compile the named unary reactions and permitted binary orientations."""
+    raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict) or set(raw) != {"UniReaction", "BiReaction"}:
+        raise ValueError(
+            "reaction.yaml requires only UniReaction and BiReaction sections"
+        )
+    uni = {
+        name: UniReaction(name=name, **value)
+        for name, value in raw["UniReaction"].items()
+    }
+    bi = {}
+    for name, value in raw["BiReaction"].items():
+        # Compile each permitted direction with the state first and incoming
+        # block second, so runtime execution always uses the same argument order.
+        for block_first in [False, True] if value["ordered"] else [False]:
+            direction = "block_first" if block_first else "state_first"
+            oriented_name = f"{name}_{direction}"
+            bi[oriented_name] = BiReaction(
+                name=oriented_name,
+                forward=value["forward"],
+                reverse=value["reverse"],
+                block_types=tuple(value["block_types"]),
+                block_first=block_first,
+            )
+    return uni, bi

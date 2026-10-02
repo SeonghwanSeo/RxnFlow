@@ -48,6 +48,8 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
         "building_blocks.json",
         "bb_feature.npz",
         "prepare_manifest.json",
+        "action_space.json",
+        "signature.json",
     }
     assert required <= {path.name for path in prepared_env.iterdir()}
     block_names = {path.name for path in (prepared_env / "blocks").glob("*.smi")}
@@ -270,6 +272,8 @@ def test_reconversion_invalidates_features(prepared_env: Path, tmp_path: Path) -
         root / "data/templates",
     )
     assert not (env_dir / "bb_feature.npz").exists()
+    assert not (env_dir / "action_space.json").exists()
+    assert not (env_dir / "signature.json").exists()
     assert (
         "features"
         not in json.loads((env_dir / "prepare_manifest.json").read_text())["stages"]
@@ -512,3 +516,80 @@ def test_conversion_filters_source_bbs_at_50_heavy_atoms(tmp_path: Path) -> None
         "convert"
     ]
     assert stage["max_bb_atoms"] == 50
+
+
+def test_prepared_action_spaces_and_signature(prepared_env, monkeypatch):
+    import hashlib
+
+    spaces = json.loads((prepared_env / "action_space.json").read_text())
+    signature = json.loads((prepared_env / "signature.json").read_text())
+
+    def no_hash(*args, **kwargs):
+        raise AssertionError("startup must use the prepared signature")
+
+    monkeypatch.setattr(hashlib, "sha256", no_hash)
+    env = SynthesisEnv(prepared_env, max_reactions=1)
+    from rxnflow import __version__
+
+    assert signature["rxnflow_version"] == __version__ == "1.0.0"
+    assert env.signature == signature
+    assert set(spaces) == {"initial", "reaction", "last"}
+    assert [list(s.name) for s in env.initial_action_space] == spaces["initial"]
+    # Derive compatibility independently from the reaction input types, including
+    # both orientations. Verify preparation retained every eligible pair in order.
+    for site in env.synthon_types:
+        expected = [
+            (name, None) for name, r in env.uni_reactions.items() if r.input_type == site
+        ]
+        expected += [
+            (name, library)
+            for name, r in env.bi_reactions.items()
+            if r.state_type == site
+            for library, block in env.blocks.items()
+            if block.attachment_type == r.block_type
+        ]
+        assert [s.name for s in env.reaction_action_spaces[site]] == expected
+        assert [list(pair) for pair in expected] == spaces["reaction"][str(site)]
+        terminal = [
+            s
+            for s in env.reaction_action_spaces[site]
+            if (
+                env.uni_reactions[s.name[0]].output_type is None
+                if s.name[1] is None
+                else env.blocks[s.name[1]].is_brick
+            )
+        ]
+        assert env.last_action_spaces[site] == terminal
+        assert all(
+            a is b for a, b in zip(env.last_action_spaces[site], terminal, strict=True)
+        )
+    expected_count = len(env.uni_reactions) + sum(
+        len(env.blocks[n]) for n in env.brick_types
+    )
+    expected_count += sum(
+        len(block)
+        for r in env.bi_reactions.values()
+        for block in env.blocks.values()
+        if block.attachment_type == r.block_type
+    )
+    assert env.num_total_actions == max(2, expected_count)
+
+
+def test_missing_spec_and_failed_rebuild_do_not_load_stale_spaces(
+    prepared_env, tmp_path, monkeypatch
+):
+    import rxnflow.envs.prepare as prepare
+
+    copied = tmp_path / "env"
+    shutil.copytree(prepared_env, copied)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("feature calculation interrupted")
+
+    monkeypatch.setattr(prepare, "block_feature_row", fail)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        features_stage(copied)
+    assert not (copied / "action_space.json").exists()
+    assert not (copied / "signature.json").exists()
+    with pytest.raises(FileNotFoundError, match="action_space.json"):
+        SynthesisEnv(copied)

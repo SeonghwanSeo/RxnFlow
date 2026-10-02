@@ -2,18 +2,16 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from functools import cached_property
 from pathlib import Path
 
 import numpy as np
-import yaml
 from numpy.typing import NDArray
 from rdkit import Chem
 
 from rxnflow.core.errors import InvalidTransition
-from rxnflow.core.reaction import BiReaction, UniReaction
+from rxnflow.core.reaction import load_reactions
 from rxnflow.core.synthon import load_synthon_specs, typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionSpace, ActionSubspace, ActionType, State
 from rxnflow.envs.features import (
@@ -48,18 +46,14 @@ class SynthesisEnv:
         self.retrosynthesis_workers = retrosynthesis_workers
         self._load_libraries()
         self._load_reactions()
-        self._build_action_spaces()
-        self.signature = self._compute_signature()
+        self._load_action_spaces()
 
     def _load_libraries(self) -> None:
-        """Load block data and index libraries by their attachment type."""
+        """Load aligned block data and derive library/type indices."""
         self.blocks = load_block_libraries(self.env_dir)
         self.sources = json.loads((self.env_dir / "building_blocks.json").read_text())
         self.block_types = sorted(self.blocks)
         self.block_type_to_index = {name: i for i, name in enumerate(self.block_types)}
-        self.blocks_by_attachment: dict[int, list[str]] = {}
-        for name, library in self.blocks.items():
-            self.blocks_by_attachment.setdefault(library.attachment_type, []).append(name)
         self.brick_types = [
             name for name in self.block_types if self.blocks[name].is_brick
         ]
@@ -77,31 +71,9 @@ class SynthesisEnv:
 
     def _load_reactions(self) -> None:
         """Compile oriented reactions and assign their policy indices."""
-        path = self.env_dir / "reaction.yaml"
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or set(raw) != {"UniReaction", "BiReaction"}:
-            raise ValueError(
-                "reaction.yaml requires only UniReaction and BiReaction sections"
-            )
-        uni = {
-            name: UniReaction(name=name, **value)
-            for name, value in raw["UniReaction"].items()
-        }
-        bi = {}
-        for name, value in raw["BiReaction"].items():
-            # Compile each permitted direction with the state first and incoming
-            # block second, so runtime execution always uses the same argument order.
-            for block_first in [False, True] if value["ordered"] else [False]:
-                direction = "block_first" if block_first else "state_first"
-                oriented_name = f"{name}_{direction}"
-                bi[oriented_name] = BiReaction(
-                    name=oriented_name,
-                    forward=value["forward"],
-                    reverse=value["reverse"],
-                    block_types=tuple(value["block_types"]),
-                    block_first=block_first,
-                )
-        self.uni_reactions, self.bi_reactions = uni, bi
+        self.uni_reactions, self.bi_reactions = load_reactions(
+            self.env_dir / "reaction.yaml"
+        )
         for reaction in self.uni_reactions.values():
             if reaction.input_type not in self.synthon_types or (
                 reaction.output_type is not None
@@ -120,89 +92,62 @@ class SynthesisEnv:
             raise ValueError("reaction action names must be unique")
         self.action_to_index = {name: i for i, name in enumerate(self.action_names)}
 
-    def _build_action_spaces(self) -> None:
-        """Precompute eligible actions for each handle and reaction budget."""
-        # 1. Estimate a branching scale for depth-weighted backward probabilities.
-        # Site outcomes depend on the state, so this is not an exact action count.
+    def _load_action_spaces(self) -> None:
+        """Connect prepared reaction/library pairs to the loaded runtime objects."""
+        spaces = json.loads((self.env_dir / "action_space.json").read_text())
+
+        def load_space(pairs: list[list[str | None]]) -> ActionSpace:
+            result = []
+            for reaction, library in pairs:
+                if reaction == "first_block":
+                    action_type = ActionType.FIRST_BLOCK
+                elif library is None:
+                    action_type = ActionType.UNI_REACTION
+                else:
+                    action_type = ActionType.BI_REACTION
+                result.append(
+                    ActionSubspace(
+                        (reaction, library),
+                        action_type,
+                        1 if library is None else len(self.blocks[library]),
+                    )
+                )
+            return result
+
+        self.initial_action_space = load_space(spaces["initial"])
+        self.reaction_action_spaces = {
+            int(site): load_space(pairs) for site, pairs in spaces["reaction"].items()
+        }
+        # Last-step lists refer to the same subspaces, not duplicated objects.
+        by_name = {
+            subspace.name: subspace
+            for space in self.reaction_action_spaces.values()
+            for subspace in space
+        }
+        self.last_action_spaces = {
+            int(site): [by_name[tuple(pair)] for pair in pairs]
+            for site, pairs in spaces["last"].items()
+        }
+        # Derived from connected spaces, so counts cannot drift from libraries.
+        # This is a branching scale for backward weights, not a state action count.
         self.num_total_actions = max(
             2,
             len(self.uni_reactions)
-            + sum(len(self.blocks[name]) for name in self.brick_types)
+            + sum(subspace.num_actions for subspace in self.initial_action_space)
             + sum(
-                len(self.blocks[name])
-                for action in self.bi_reactions.values()
-                for name in self._get_compatible_libraries(action.block_type)
+                subspace.num_actions
+                for space in self.reaction_action_spaces.values()
+                for subspace in space
+                if subspace.action_type == ActionType.BI_REACTION
             ),
         )
-        # 2. Initialization selects a brick without a current synthon type.
-        # Full spaces contain library metadata, not per-block index arrays.
-        self.initial_action_space: ActionSpace = [
-            ActionSubspace(
-                ("first_block", name), ActionType.FIRST_BLOCK, len(self.blocks[name])
-            )
-            for name in self.brick_types
-        ]
-        # 3. Index unary and binary continuations by the state's remaining handle.
-        self.reaction_action_spaces: dict[int, ActionSpace] = {
-            site_type: [] for site_type in self.synthon_types
-        }
-        for name, reaction in self.uni_reactions.items():
-            self.reaction_action_spaces[reaction.input_type].append(
-                ActionSubspace((name, None), ActionType.UNI_REACTION, 1)
-            )
-        for name, reaction in self.bi_reactions.items():
-            for library in self._get_compatible_libraries(reaction.block_type):
-                self.reaction_action_spaces[reaction.state_type].append(
-                    ActionSubspace(
-                        (name, library), ActionType.BI_REACTION, len(self.blocks[library])
-                    )
-                )
-
-        # 4. The last reaction must close the handle: terminal unary or a brick.
-        # These terminating actions are also available before the final step.
-        self.last_action_spaces: dict[int, ActionSpace] = {}
-        for site_type, space in self.reaction_action_spaces.items():
-            last_space: ActionSpace = []
-            for subspace in space:
-                reaction, library = subspace.name
-                terminal = (
-                    self.uni_reactions[reaction].output_type is None
-                    if library is None
-                    else self.blocks[library].is_brick
-                )
-                if terminal:
-                    last_space.append(subspace)
-            self.last_action_spaces[site_type] = last_space
+        # Prepared artifacts are immutable until the next preparation. Reading
+        # this saved signature avoids hashing the full feature archive at startup.
+        self.signature = json.loads((self.env_dir / "signature.json").read_text())
 
     @cached_property
     def retro_analyzer(self) -> RetroSynthesisAnalyzer:
         return RetroSynthesisAnalyzer(self, self.retrosynthesis_workers)
-
-    def _get_compatible_libraries(self, site_type: int) -> list[str]:
-        """Return library names whose attachment type matches the reaction input."""
-        return self.blocks_by_attachment.get(site_type, [])
-
-    def _compute_signature(self) -> dict[str, object]:
-        """Identify the prepared environment by its metadata and file contents."""
-        digest = hashlib.sha256()
-        for name in (
-            "synthon.yaml",
-            "reaction.yaml",
-            "building_blocks.json",
-            "bb_feature.npz",
-        ):
-            with (self.env_dir / name).open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-        for name in self.block_types:
-            digest.update(name.encode())
-            digest.update((self.env_dir / "blocks" / f"{name}.smi").read_bytes())
-        return {
-            "format": "rxnflow-env",
-            "block_counts": {name: len(library) for name, library in self.blocks.items()},
-            "reaction_names": self.action_names,
-            "content_sha256": digest.hexdigest(),
-        }
 
     @staticmethod
     def initial_state() -> State:
