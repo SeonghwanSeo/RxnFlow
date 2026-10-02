@@ -60,12 +60,12 @@ class RewardConfig:
 
 @dataclass
 class ModelConfig:
-    # Each graph attention head has hidden_dim channels; readout has 2H.
+    # HSX main graph/block sizes. Each head has hidden_dim channels;
+    # keep explore's 2H readout and hidden MLP depths.
     hidden_dim: int = 128
-    num_heads: int = 4
-    num_layers: int = 3
-    # HSX explore block embedding size and numbers of hidden MLP layers.
-    block_dim: int = 64
+    num_heads: int = 2
+    num_layers: int = 4
+    block_dim: int = 128
     mlp_layers: int = 2
     block_mlp_layers: int = 1
     dropout: float = 0.0
@@ -106,7 +106,7 @@ class TrainingConfig:
     lr_decay_steps: float = 20_000
     weight_decay: float = 1e-8
     sampling_temperature: float = 1.0
-    random_action_prob: float = 0.05
+    random_action_prob: float = 0.1
     ema_decay: float = 0.99
     checkpoint_every: int = 100
     log_every: int = 10

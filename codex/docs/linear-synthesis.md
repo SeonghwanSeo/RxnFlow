@@ -83,11 +83,11 @@ hsx의 state budget + block budget 방식을 사용한다. 가능한 reaction/li
 
 후보별 반응 실행 없이 점수를 계산하고 action을 선택한다. 선택한 action만 RDKit으로 실행하여 site signature와 실제 `max_atoms`를 확인한다. 실패하면 해당 trajectory는 invalid이며 실패 action도 빈 product SMILES로 trajectory에 남겨 TB 학습에 포함한다. 재선택하거나 mask를 풀지 않는다. UniReaction은 typed handle과 step 규칙으로 선택하며 block budget이나 생성물 property 검사는 적용하지 않는다. 선택된 생성물 Mol을 state와 graph encoding에서 재사용한다. Product SMILES는 선택 후 action 기록에 채우며, policy choice의 identity는 reaction과 oriented block row이다.
 
-Descriptor는 현재 synthon에 대해 계산하며 dummy isotope가 가짜 원자 질량으로 포함되지 않도록 한다. 이는 복원된 실제 중간체의 물성을 보장한다는 뜻은 아니다. 최종 생성물에는 dummy가 없으므로 물성 및 reward는 그 실제 최종 구조를 평가한다.
+MW는 `Descriptors.ExactMolWt`로 통일한다. 기존 MolWt 기반 prepared 환경은 사용 전에 features stage를 다시 실행해야 한다. Descriptor는 현재 synthon에 대해 계산하며 dummy isotope가 가짜 원자 질량으로 포함되지 않도록 한다. 이는 복원된 실제 중간체의 물성을 보장한다는 뜻은 아니다. 최종 생성물에는 dummy가 없으므로 물성 및 reward는 그 실제 최종 구조를 평가한다.
 
 `property_penalty`의 상한은 유한한 수를 받는다. `rings: 0`, `hbd: 0`처럼 특정 count를 금지하거나 음수 logP 상한을 지정할 수 있다. 제한하지 않을 property는 mapping에서 생략한다.
 
-Graph는 `max_atoms + 1`개의 고정 node slot을 사용한다. RDKit heavy atom에는 dummy가 포함되지 않으므로 마지막 slot을 예약한다. Atom/type one-hot, degree, charge, aromaticity, mass, H count, hybridization, chirality(CW/CCW/unspecified)를 사용하며 bond feature는 7개다. 전역 입력은 property 9개, 남은 heavy-atom capacity, 반응 횟수다. Block은 Morgan count 512 + MACCS 166, property 9개와 library type embedding을 사용한다. Fingerprint는 count를 255에서 포화시킨 뒤 MACCS와 함께 uint8로 저장하고 CPU library에서도 그대로 유지한다. 모델에서 선택된 행만 float32로 변환한다. 기본 Morgan이 dummy isotope를 구분하지 않으므로 typed dummy의 atom invariant를 명시적으로 지정한다. 현재 state의 graph embedding과 reaction embedding으로 UniReaction 점수를 계산하고, FirstBlock/BiReaction에서는 준비된 block fingerprint/property와 library type embedding을 추가로 사용한다. 생성물 fingerprint encoder와 추가 scoring은 사용하지 않는다. 현재 state와 준비된 block의 property 합을 budget masking에 사용한다.
+Graph는 `max_atoms + 1`개의 고정 node slot을 사용한다. RDKit heavy atom에는 dummy가 포함되지 않으므로 마지막 slot을 예약한다. Atom/type one-hot, degree, charge, aromaticity, mass, H count, hybridization, chirality(CW/CCW/unspecified)를 사용하며 bond feature는 type 4개·stereo 7개·conjugation/ring 2개로 총 13개다. 전역 입력은 property 9개, 남은 heavy-atom capacity, 반응 횟수다. Block은 Morgan count 512 + MACCS 166, property 9개와 library type embedding을 사용한다. Fingerprint는 count를 255에서 포화시킨 뒤 MACCS와 함께 uint8로 저장하고 CPU library에서도 그대로 유지한다. 모델에서 선택된 행만 float32로 변환한다. 기본 Morgan이 dummy isotope를 구분하지 않으므로 typed dummy의 atom invariant를 명시적으로 지정한다. 현재 state의 graph embedding과 reaction embedding으로 UniReaction 점수를 계산하고, FirstBlock/BiReaction에서는 준비된 block fingerprint/property와 library type embedding을 추가로 사용한다. 생성물 fingerprint encoder와 추가 scoring은 사용하지 않는다. 현재 state와 준비된 block의 property 합을 budget masking에 사용한다.
 
 ## 학습과 검증 범위
 
@@ -100,6 +100,8 @@ Invalid trajectory는 raw reward 0으로 기록하고 학습에서 reward floor�
 Synthetic quick 검증은 선형 경로의 전이·mask·site 선택·backward·학습 연결을 확인한다. Production template의 실험적 적용 범위, 전체 Enamine catalog의 성능 및 분포 품질은 별도 검토 대상이다. hsx 방식 multi-step workflow library는 이번 구현에 포함하지 않는다.
 
 TB loss는 MSE이며, logZ는 policy와 별도 learning rate를 사용한다. Replay는 fresh trajectory를 넣기 전에 기존 buffer에서 균일 비복원 추출한다. Learning rate는 지정한 half-life에 따라 감소하고, optimizer/scheduler 상태를 함께 복원한다. 모델은 FP/property별 Linear→LayerNorm projection(main의 Xavier 초기화), type embedding과 결합하는 fusion MLP, GNN 이후 additive reaction conditioning, block 정규화 dot score 및 학습 temperature를 사용한다. Temperature 범위는 0.01–10이며 초기값은 main과 같은 0.2다. UniReaction scalar score도 같은 temperature convention을 따른다. Graph encoder는 native Torch의 GENConv(add)·TransformerConv 수식, graph-mode normalization과 conditional scale/shift를 사용한다. Readout은 molecular mean과 virtual node를 concat한 2H에 LayerNorm을 적용한다. 상세 출처와 차이는 [HSX 이식 기록](hsx-port.md)을 참고한다.
+
+기본 모델은 hidden128/heads2/layers4, block_dim128로 main의 크기에 맞췄다. Graph/fusion/policy MLP는 hidden Kaiming·output Xavier와 zero bias를 사용하고, reaction/type embedding은 uniform[-0.1,0.1]로 초기화한다. Fusion/policy의 Linear→LN→SiLU 순서와 기존 hidden 깊이, 2H readout, GNN 이후 reaction conditioning은 유지한다. GENConv bias와 empty state 변경은 추후 architecture 검토로 보류했다. 학습은 policy 전체 gradient norm100으로 clip하며 logZ는 제외한다. Random probability는 0.1, reward floor는 1e-4, weight decay는 기존 1e-8이다.
 
 Checkpoint에는 library subsampling용 CPU generator와 Gumbel sampling·dropout용 전역 CPU·CUDA RNG 상태를 함께 보관한다. 복원 시 checkpoint를 CPU로 읽고 model/optimizer loader가 parameter를 해당 device로 옮긴다. RNG 상태가 없는 이전 checkpoint의 호환 복원은 제공하지 않는다.
 

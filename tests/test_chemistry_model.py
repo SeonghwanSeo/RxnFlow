@@ -128,7 +128,7 @@ def test_dot_scores_ignore_block_norm_and_train_both_action_scales(
     )
     block_type = env.brick_types[0]
     indices = torch.arange(2)
-    blocks = torch.randn(2, 64)
+    blocks = torch.randn(2, model.block_type_embedding.embedding_dim)
     monkeypatch.setattr(model, "_encode_blocks", lambda *args: blocks)
     before = model.score_blocks(state, "first_block", block_type, indices)
     blocks = blocks * torch.tensor([[0.1], [100.0]])

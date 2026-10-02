@@ -23,12 +23,17 @@ from .graph_transformer import GraphTransformer
 def policy_mlp(
     n_in: int, hidden: int, n_out: int, layers: int, dropout: float
 ) -> nn.Sequential:
-    """HSX explore MLP: normalized SiLU hidden layers, linear output."""
+    """HSX explore normalization order with main's hidden/output initialization."""
     sizes = [n_in] + [hidden] * layers + [n_out]
     modules = []
     for index in range(len(sizes) - 1):
         linear = nn.Linear(sizes[index], sizes[index + 1])
-        nn.init.kaiming_uniform_(linear.weight, nonlinearity="relu")
+        # Keep Kaiming for SiLU hidden layers; the unactivated output uses
+        # Xavier, following HSX main's MLP.
+        if index < len(sizes) - 2:
+            nn.init.kaiming_uniform_(linear.weight, nonlinearity="relu")
+        else:
+            nn.init.xavier_uniform_(linear.weight)
         nn.init.zeros_(linear.bias)
         modules.append(linear)
         if index < len(sizes) - 2:
@@ -99,8 +104,9 @@ class RxnFlowModel(nn.Module):
         self.logit_temperature = nn.Parameter(
             torch.full((len(env.action_names),), math.log(initial / (1.0 - initial)))
         )
-        nn.init.normal_(self.action_embedding.weight)
-        nn.init.uniform_(self.block_type_embedding.weight, -1.0, 1.0)
+        # HSX main initializes both reaction and block-type embeddings small.
+        nn.init.uniform_(self.action_embedding.weight, -0.1, 0.1)
+        nn.init.uniform_(self.block_type_embedding.weight, -0.1, 0.1)
         self.log_z = nn.Parameter(torch.tensor(0.0))
 
     def encode_graphs(self, batch: GraphBatch) -> Tensor:

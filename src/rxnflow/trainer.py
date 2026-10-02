@@ -246,7 +246,7 @@ class RxnFlowTrainer:
             self.optimizer.zero_grad(set_to_none=True)
             loss = self._loss(batch)
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.policy_parameters, 10.0)
+            torch.nn.utils.clip_grad_norm_(self.policy_parameters, 100.0)
             self.optimizer.step()
             self.lr_scheduler.step()
             self._update_ema()

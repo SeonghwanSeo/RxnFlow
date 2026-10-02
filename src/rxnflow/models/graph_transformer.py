@@ -21,8 +21,11 @@ def graph_mlp(n_in: int, hidden: int, n_out: int, layers: int) -> nn.Sequential:
     modules = []
     for i in range(len(sizes) - 1):
         linear = nn.Linear(sizes[i], sizes[i + 1])
-        # Reference GraphTransformer.reset_parameters applies this to its MLPs.
-        nn.init.kaiming_uniform_(linear.weight, a=0.01, nonlinearity="leaky_relu")
+        # HSX main: activation-aware hidden weights and Xavier linear outputs.
+        if i < len(sizes) - 2:
+            nn.init.kaiming_uniform_(linear.weight, a=0.01, nonlinearity="leaky_relu")
+        else:
+            nn.init.xavier_uniform_(linear.weight)
         nn.init.zeros_(linear.bias)
         modules.append(linear)
         if i < len(sizes) - 2:
@@ -59,7 +62,7 @@ class GraphTransformerLayer(nn.Module):
         self.output = nn.Linear(heads * hidden, hidden)
         self.condition_scale = nn.Linear(hidden, 2 * hidden)
         # The reference conv/linear modules use their default Kaiming-uniform
-        # initialization; only the graph MLPs use the explicit LeakyReLU rule.
+        # initialization; graph MLPs use explicit hidden/output rules above.
         self.ff = graph_mlp(hidden, 4 * hidden, hidden, 1)
 
     def forward(

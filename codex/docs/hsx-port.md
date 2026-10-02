@@ -12,7 +12,8 @@
 
 | 부분 | 참고 구현 | 현재 선택과 차이 |
 | --- | --- | --- |
-| Block encoder | main의 `models/layers.py:BlockEmbedding` projection + explore fusion MLP | FP와 property 각각 Linear/LayerNorm으로 projection하고 type embedding과 concat한 뒤 MLP. Projection은 main의 Xavier/zero-bias 초기화. Tier 제외, block_dim64와 기존 fusion MLP 유지. |
+| Block encoder | main의 `models/layers.py:BlockEmbedding` projection + explore fusion MLP 순서 | FP와 property 각각 Linear/LayerNorm으로 projection하고 type embedding과 concat한 뒤 MLP. Projection은 main의 Xavier/zero-bias 초기화. Tier 제외, block_dim128. Fusion hidden layer는 기존 한 층 유지. |
+| Model 크기·초기화 | main의 graph/block 크기, MLP output/embedding 초기화 | Hidden128/heads2/layers4, block128. MLP hidden은 Kaiming, output은 Xavier/zero bias. Reaction/type embedding은 uniform[-0.1,0.1]. Fusion/policy는 Linear→LN→SiLU 유지, GENConv bias와 empty state는 사용자 요청으로 보류. |
 | Reaction conditioning | explore의 `hook_firstblock`, `hook_birxn` | State + reaction embedding에 SiLU를 적용하고 FirstBlock/BiReaction별 MLP. Workflow/order 대신 reaction name으로 식별. Graph를 reaction마다 다시 계산하지 않음. |
 | Action similarity | main의 `models/layers.py:SimilarityMDP(dot)` | Block embedding만 L2 정규화하고 query와 dot product. Reaction별 bounded temperature 0.01–10, 초기 0.2. 별도 클래스/선택 옵션 없이 현재 모델에 직접 구현. |
 | UniReaction | 현재 합의한 동적 MDP | State + reaction embedding의 scalar head. 동일한 bounded temperature convention을 적용하고 BiReaction/block과 하나의 categorical에서 경쟁. 두 hsx 버전의 workflow-determined placeholder와 다름. |
@@ -20,9 +21,9 @@
 | Attention 구현 | RxnFlow master/CGFlow/HSX explore | GENConv(add), TransformerConv, graph-mode normalization, conditional scale/shift를 native Torch로 구현. Fixed padding과 virtual node 유지. 출력·gradient를 독립 수식으로 비교. |
 | Mask | explore의 sampled-row 적용 + main의 1% margin | 가능한 type의 library를 먼저 uniform subsampling한 뒤, 선택된 row에 적용. Positive bound는 `< limit × 1.01`; negative bound는 `< limit + abs(limit) × 0.01`; zero bound는 `<= 0`. Heavy-atom capacity는 항상 strict. |
 | Bond stereo | main의 `utils/vocab.py:BondFeaturizer` | NONE/ANY/Z/E/CIS/TRANS/unknown categorical로 인코딩. 기존 bond type·conjugation·ring과 합쳐 13차원. |
-| Synple property 보정 | explore의 `envs/building_block.py` | At isotope 차감 및 linker MW +29는 사용하지 않음. 기존 dummy-aware Enamine descriptor 유지. |
+| Synple property 보정 | explore의 `envs/building_block.py` | At isotope 차감 및 linker MW +29는 사용하지 않음. Dummy label 질량은 제외하고 state/block 모두 Descriptors.ExactMolWt 사용. 기존 MolWt 기반 feature NPZ는 재생성 필요. |
 | TB loss/reward | main의 `gflownet/algo/trajectory_balance.py` | `mean((logZ + ΣlogPF - ΣlogPB - exponent × log(max(raw_reward, floor)))²)`. Invalid raw reward는 0. Local injectable reward 유지. |
-| Optimizer | main의 `gflownet/online_trainer.py` | AdamW 두 parameter group. Policy와 logZ learning rate 분리, 공통 `2^(-step/lr_decay_steps)` decay. Policy gradient만 norm 10으로 clip. Gradient clip/weight decay의 기존 설정값은 유지. |
+| Optimizer | main의 `gflownet/online_trainer.py` | AdamW 두 parameter group. Policy와 logZ learning rate 분리, 공통 `2^(-step/lr_decay_steps)` decay. Policy gradient만 global norm 100으로 clip. 사용자 선택으로 random probability 0.1, reward floor 1e-4. Weight decay는 기존 1e-8 유지. |
 | Replay | main의 FIFO buffer와 data source 순서 | 균일 비복원 추출. 기존 buffer에서 추출한 다음 fresh trajectory 추가. Warmup service/data-source abstraction은 도입하지 않음. |
 | Sampling model | explore의 EMA | `target = decay × target + (1-decay) × model`. Checkpoint에 model과 EMA 모두 보관. |
 | Subsampling probability | RxnFlow master의 별도 numerator scoring | 관측 action과 독립인 library draw로 분모 추정. 관측 action은 별도 scoring하며 logP≤0 clamp. Mask된 column은 -inf로 유지. |

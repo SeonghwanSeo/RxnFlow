@@ -70,7 +70,7 @@ def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
             if atom.GetAtomicNum() == 0:
                 atom.SetIsotope(0)
     values = [
-        Descriptors.MolWt(mol),
+        Descriptors.ExactMolWt(mol),
         Descriptors.TPSA(mol),
         Lipinski.NumHDonors(mol),
         Lipinski.NumHAcceptors(mol),
