@@ -2,7 +2,7 @@
 
 
 class InvalidTransition(ValueError):
-    """A selected reaction has no structurally valid product within capacity."""
+    """A selected action violates synthesis budgets or has no valid product."""
 
 
 class NoValidActions(ValueError):

@@ -42,8 +42,6 @@ class RxnFlowModel(nn.Module):
             g_dim=PROPERTY_DIM,
             num_emb=num_emb,
             num_layers=cfg.num_layers,
-            max_reactions=env.max_reactions,
-            max_synthons=env.max_synthons,
         )
         # Mean pooling and the virtual node can have different scales.
         self.norm_mean = nn.LayerNorm(num_emb)
@@ -125,33 +123,8 @@ class RxnFlowModel(nn.Module):
     def logZ(self, cond_info: torch.Tensor) -> torch.Tensor:
         return self._logZ(cond_info)
 
-    def get_unirxn_logits(
-        self, graph_emb: torch.Tensor, action_name: str, logit_scale: torch.Tensor
-    ) -> torch.Tensor:
-        action_type = (
-            ActionType.UNIRXN_TERMINAL
-            if self.env.uni_reactions[action_name].output_type is None
-            else ActionType.UNIRXN_TRANSFORM
-        )
-        return self.forward_mdp(graph_emb, action_name, logit_scale, action_type)[0, 0]
-
-    def get_synthon_emb(
-        self, synthon_type: str, indices: torch.Tensor, device: torch.device
-    ) -> torch.Tensor:
-        library = self.env.synthons[synthon_type]
-        cpu_indices = indices.detach().cpu().to(torch.long).numpy()
-        fp = torch.from_numpy(library.fingerprints[cpu_indices]).to(
-            device, dtype=torch.float32
-        )
-        prop = torch.from_numpy(library.properties[cpu_indices]).to(device)
-        type_index = self.env.library_to_index[synthon_type]
-        synthon_types = torch.full(
-            (len(indices),), type_index, dtype=torch.long, device=device
-        )
-        return self.synthon_embedding(fp, prop, synthon_types)
-
     def synthon_embedding(
-        self, fp: torch.Tensor, prop: torch.Tensor, synthon_types: torch.Tensor
+        self, fp: torch.Tensor, prop: torch.Tensor, library_indices: torch.Tensor
     ) -> torch.Tensor:
         prop = prop / self.property_scale
         return self.mlp_synthon(
@@ -159,7 +132,7 @@ class RxnFlowModel(nn.Module):
                 [
                     self.lin_fp(fp),
                     self.lin_prop(prop),
-                    self.emb_type(synthon_types),
+                    self.emb_type(library_indices),
                 ],
                 dim=-1,
             )
@@ -179,23 +152,3 @@ class RxnFlowModel(nn.Module):
         state_rxn_emb = torch.cat([graph_emb, rxn_emb], dim=-1)
         head = self.action_heads[action_type.name]
         return head(state_rxn_emb) * logit_scale[:, None]
-
-    def get_synthon_logits(
-        self,
-        graph_emb: torch.Tensor,
-        action_name: str,
-        synthon_type: str,
-        indices: torch.Tensor,
-        logit_scale: torch.Tensor,
-    ) -> torch.Tensor:
-        assert indices.ndim == 1 and graph_emb.shape[0] == 1
-        action_type = (
-            ActionType.FIRST_SYNTHON
-            if action_name == "first_synthon"
-            else ActionType.BIRXN_BRICK
-            if self.env.synthons[synthon_type].is_brick
-            else ActionType.BIRXN_LINKER
-        )
-        state_emb = self.forward_mdp(graph_emb, action_name, logit_scale, action_type)
-        synthon_emb = self.get_synthon_emb(synthon_type, indices, graph_emb.device)
-        return F.normalize(synthon_emb, dim=-1) @ state_emb.squeeze(0)

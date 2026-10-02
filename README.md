@@ -84,6 +84,8 @@ python examples/qed.py --config configs/qed.yaml
 
 The policy distinguishes `FIRST_SYNTHON`, `UNIRXN_TRANSFORM`, `UNIRXN_TERMINAL`, `BIRXN_BRICK`, and `BIRXN_LINKER`. Each type has its own output head; graph and synthon encoders are shared, and all eligible actions compete in one softmax.
 
+Training estimates backward probabilities from catalog-supported reverse paths. Reverse search preserves generated paths and prunes further exploration beyond the shortest path found, counting FirstSynthon and each reaction as one step. This is an approximation over chemical paths: alternatives may use different synthon or reaction counts from the generated history.
+
 The output directory contains `checkpoints/`, per-update metrics in `training.jsonl`, and fresh trajectories in `samples/step_XXXXXX.jsonl` (one file per update and one trajectory per line, including invalid attempts). Each sample contains final SMILES, rewards, conditions, validity, and a compact `traj`: each entry records the pre-action state SMILES, reaction template name, and oriented synthon SMILES (`null` for unary reactions). FirstSynthon is omitted; the first reaction's state contains the initial brick. Resume with the same configuration and prepared environment:
 
 ```bash

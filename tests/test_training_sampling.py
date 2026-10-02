@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
+from model_reference import get_synthon_logits, get_unirxn_logits
 from numpy.typing import NDArray
 from rdkit import Chem
 
@@ -358,9 +359,9 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
     )
     original = env.get_synthon_mask
 
-    def mask(properties, synthon_type, indices=None):
+    def mask(properties, library_name, indices=None):
         assert indices is not None
-        return original(properties, synthon_type, indices)
+        return original(properties, library_name, indices)
 
     monkeypatch.setattr(env, "get_synthon_mask", mask)
     found = missed = 0
@@ -384,7 +385,7 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
         position = int(valid.nonzero().flatten()[0])
         assert valid.sum() == 1
         action = group.subspace.action_at(position)
-        assert action.synthon_type == name and action.synthon_index == target
+        assert action.library_name == name and action.synthon_index == target
         count = trainer.policy.subsampling[name].num_sampling
         assert group.log_importance[position].item() == pytest.approx(
             math.log(len(env.synthons[name]) / count)
@@ -404,7 +405,7 @@ def test_failed_selected_action_is_retained_for_tb(
     action = Action(
         ActionType.BIRXN_BRICK,
         reaction="amide_coupling_state_first",
-        synthon_type="3",
+        library_name="3",
         synthon_index=index,
     )
     monkeypatch.setattr(trainer.env, "initial_state", lambda: state)
@@ -448,36 +449,26 @@ def test_batched_scores_and_gradients_match_scalar_reference(
         State.from_smiles("[3*]C", num_reactions=trainer.env.max_reactions - 1),
         State.from_smiles("[11*]C", num_synthons=2, num_reactions=1),
         State.from_smiles("[33*]NCC"),
+        State.from_smiles("[3*]C", num_synthons=2, num_reactions=1),
     ]
     categorical = trainer.policy.forward(
         states, beta=torch.ones(len(states)), preferences=torch.ones(len(states), 1)
     )
+    # Molecular embeddings must not reveal the path's reaction/synthon counts.
+    torch.testing.assert_close(categorical.graph_emb[1], categorical.graph_emb[2])
+    torch.testing.assert_close(categorical.graph_emb[1], categorical.graph_emb[-1])
     reference, actual = [], []
     selected_actions, selected_rows = [], []
     for row, state in enumerate(states):
         embedding = model.graph_embedding(
             GraphBatch.from_graphs(
-                [
-                    molecule_to_graph_data(
-                        state.mol,
-                        trainer.env.max_atoms,
-                        state.num_reactions,
-                        num_synthons=state.num_synthons,
-                    )
-                ]
+                [molecule_to_graph_data(state.mol, trainer.env.max_atoms)]
             ),
             cond_info=_condition(
                 model,
                 len(
                     GraphBatch.from_graphs(
-                        [
-                            molecule_to_graph_data(
-                                state.mol,
-                                trainer.env.max_atoms,
-                                state.num_reactions,
-                                num_synthons=state.num_synthons,
-                            )
-                        ]
+                        [molecule_to_graph_data(state.mol, trainer.env.max_atoms)]
                     ).node_mask
                 ),
             ),
@@ -491,16 +482,18 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                     continue
                 action = group.subspace.action_at(column)
                 score = (
-                    model.get_unirxn_logits(
+                    get_unirxn_logits(
+                        model,
                         embedding,
                         action.reaction,
                         logit_scale=model.logit_scale(_condition(model, 1)),
                     )
                     if action.action_type.is_unirxn
-                    else model.get_synthon_logits(
+                    else get_synthon_logits(
+                        model,
                         embedding,
                         group.subspace.name[0],
-                        action.synthon_type,
+                        action.library_name,
                         torch.tensor([action.synthon_index]),
                         logit_scale=model.logit_scale(_condition(model, 1)),
                     )[0]
@@ -594,7 +587,7 @@ def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypa
         tiny_config(prepared_env, tmp_path / "index-actions"), QEDReward()
     )
     initial = trainer.env.initial_state()
-    observed = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
+    observed = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     constructed = []
 
     def record_action(*args, **kwargs):
@@ -640,7 +633,7 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     )
     state = trainer.env.initial_state()
     actions = [
-        Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=i)
+        Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=i)
         for i in (0, 1)
     ]
     categorical = trainer.policy.forward(
@@ -660,7 +653,8 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     )
     numerator = torch.stack(
         [
-            trainer.model.get_synthon_logits(
+            get_synthon_logits(
+                trainer.model,
                 categorical.graph_emb[i : i + 1],
                 "first_synthon",
                 "1",
@@ -716,11 +710,11 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     initial = trainer.env.initial_state()
     middle = State.from_smiles("[1*]N")
     terminal = State.from_smiles("NC", num_reactions=1, terminated=True)
-    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
+    first = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     last = Action(
         ActionType.BIRXN_BRICK,
         reaction="amide_coupling_synthon_first",
-        synthon_type="3",
+        library_name="3",
         synthon_index=0,
     )
 

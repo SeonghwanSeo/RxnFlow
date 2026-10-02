@@ -15,23 +15,23 @@ from rxnflow.envs.graph import molecule_to_graph_data
 from rxnflow.envs.prepare import convert_stage, features_stage
 
 
-def synthon_index(env, synthon_type, smiles):
-    return env.synthons[synthon_type].smiles.index(
+def synthon_index(env, library_name, smiles):
+    return env.synthons[library_name].smiles.index(
         Chem.MolToSmiles(Chem.MolFromSmiles(smiles))
     )
 
 
-def actions_for(env, state, name, synthon_type=None, smiles=None):
+def actions_for(env, state, name, library_name=None, smiles=None):
     subspace = next(
         subspace
         for subspace in env.get_action_space(state)
-        if subspace.name == (name, synthon_type)
+        if subspace.name == (name, library_name)
     )
-    index = synthon_index(env, synthon_type, smiles) if smiles is not None else None
+    index = synthon_index(env, library_name, smiles) if smiles is not None else None
     action = Action(
         subspace.action_type,
         None if subspace.action_type == ActionType.FIRST_SYNTHON else subspace.name[0],
-        synthon_type,
+        library_name,
         index,
     )
     try:
@@ -133,11 +133,14 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     assert (terminal.num_synthons, terminal.num_reactions) == (3, 3)
     assert State.from_dict(terminal.to_dict()).to_dict() == terminal.to_dict()
     assert "*" not in terminal.smiles and not env.get_action_space(terminal)
-    assert all(env.synthons[g.name[1]].is_brick for g in env.get_action_space(activated))
+    assert all(
+        env.synthons[g.name[1]].is_brick for g in env.get_action_space(activated)
+    )
     public = env.action_to_dict(first)
     assert public["synthon_ids"] == ["EN-A", "EN-A2"]
     assert public["building_blocks"][0] == {"id": "EN-A", "smiles": "NCCN"}
-    assert env.action_to_dict(coupling)["synthon_type"] == "linker"
+    assert env.synthons[coupling.library_name].is_linker
+    assert env.action_to_dict(coupling)["library_name"] == coupling.library_name
     assert any(
         route[0] == (first, "") for route in env.retro_analyzer.run(start.smiles, 0)
     )
@@ -161,7 +164,7 @@ def test_state_retains_product_molecule_and_stereochemistry(
 
     # The selected synthon is stored as SMILES, but the parent and product must
     # stay as molecule objects throughout the transition and graph encoding.
-    synthon_smiles = env.synthons[action.synthon_type].smiles[action.synthon_index]
+    synthon_smiles = env.synthons[action.library_name].smiles[action.synthon_index]
     parse = Chem.MolFromSmiles
     parsed = []
 
@@ -172,11 +175,9 @@ def test_state_retains_product_molecule_and_stereochemistry(
 
     monkeypatch.setattr(Chem, "MolFromSmiles", parse_synthon)
     child = env.step(parent, action)
-    graph = molecule_to_graph_data(child.mol, env.max_atoms, child.num_reactions)
+    graph = molecule_to_graph_data(child.mol, env.max_atoms)
     restored = pickle.loads(pickle.dumps(child))
-    restored_graph = molecule_to_graph_data(
-        restored.mol, env.max_atoms, restored.num_reactions
-    )
+    restored_graph = molecule_to_graph_data(restored.mol, env.max_atoms)
     assert parsed == [synthon_smiles]
     assert child.smiles == expected
     assert restored.smiles == expected == Chem.MolToSmiles(restored.mol)
@@ -316,7 +317,7 @@ def test_versioned_feature_artifact_is_rejected(
         SynthesisEnv(env_dir)
 
 
-def test_regular_and_last_action_spaces(prepared_env: Path) -> None:
+def test_budget_action_spaces(prepared_env: Path) -> None:
     env = SynthesisEnv(prepared_env, max_reactions=3)
     state = State.from_smiles("[3*]C")
     assert env.get_action_space(state) is env.budget_action_spaces[3, 1, 0]
@@ -326,7 +327,7 @@ def test_regular_and_last_action_spaces(prepared_env: Path) -> None:
         if subspace.name[1] is not None
     ]
     assert any(env.synthons[name].is_brick for name in libraries)
-    assert any(not env.synthons[name].is_brick for name in libraries)
+    assert any(env.synthons[name].is_linker for name in libraries)
     last = replace(state, num_reactions=2)
     assert env.get_action_space(last) is env.budget_action_spaces[3, 1, 2]
     assert all(
@@ -520,7 +521,7 @@ def test_conversion_filters_source_bbs_at_50_heavy_atoms(tmp_path: Path) -> None
 
     libraries = load_synthon_libraries(env_dir)
     assert any(library.is_brick for library in libraries.values())
-    assert any(not library.is_brick for library in libraries.values())
+    assert any(library.is_linker for library in libraries.values())
     for library in libraries.values():
         assert library.heavy_atoms.dtype == np.uint8
         expected_count = 49 if library.is_brick else 48
@@ -555,7 +556,7 @@ def test_prepared_action_spaces_and_signature(prepared_env, monkeypatch):
 
     assert signature["rxnflow_version"] == __version__ == "1.0.0"
     assert env.signature == signature
-    assert set(spaces) == {"initial", "reaction", "last"}
+    assert set(spaces) == {"initial", "reaction"}
     assert [list(s.name) for s in env.initial_action_space] == [
         pair
         for pair in spaces["initial"]
@@ -572,23 +573,10 @@ def test_prepared_action_spaces_and_signature(prepared_env, monkeypatch):
             for name, r in env.bi_reactions.items()
             if r.state_type == site
             for library, synthon in env.synthons.items()
-            if synthon.attachment_type == r.synthon_type
+            if synthon.attachment_type == r.attachment_type
         ]
         assert [s.name for s in env.reaction_action_spaces[site]] == expected
         assert [list(pair) for pair in expected] == spaces["reaction"][str(site)]
-        terminal = [
-            s
-            for s in env.reaction_action_spaces[site]
-            if (
-                env.uni_reactions[s.name[0]].output_type is None
-                if s.name[1] is None
-                else env.synthons[s.name[1]].is_brick
-            )
-        ]
-        assert env.last_action_spaces[site] == terminal
-        assert all(
-            a is b for a, b in zip(env.last_action_spaces[site], terminal, strict=True)
-        )
     expected_count = len(env.uni_reactions) + sum(
         len(env.synthons[n]) for n in env.brick_types
     )
@@ -596,7 +584,7 @@ def test_prepared_action_spaces_and_signature(prepared_env, monkeypatch):
         len(synthon)
         for r in env.bi_reactions.values()
         for synthon in env.synthons.values()
-        if synthon.attachment_type == r.synthon_type
+        if synthon.attachment_type == r.attachment_type
     )
     assert env.num_total_actions == max(2, expected_count)
 

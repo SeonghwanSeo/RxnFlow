@@ -87,7 +87,7 @@ def test_condition_encoding_reaches_all_three_branches(prepared_env, tmp_path):
     assert not torch.allclose(condition[0], condition[1])
     same_beta = model.encode_cond(torch.full((2,), 32.0), torch.eye(2))
     assert not torch.allclose(same_beta[0], same_beta[1])
-    graphs = GraphBatch.from_graphs([molecule_to_graph_data(None, 20, 0)] * 4)
+    graphs = GraphBatch.from_graphs([molecule_to_graph_data(None, 20)] * 4)
     embeddings = model.graph_embedding(graphs, condition)
     assert not torch.allclose(embeddings[0], embeddings[1])
     torch.testing.assert_close(model.logit_scale(condition), torch.ones(4))

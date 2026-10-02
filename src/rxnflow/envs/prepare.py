@@ -168,13 +168,13 @@ def _convert_batch(
                     for site, other in (sites, sites[::-1]):
                         oriented = Chem.Mol(product_mol)
                         attachment = oriented.GetAtomWithIdx(site)
-                        synthon_type = (
+                        library_name = (
                             f"{attachment.GetIsotope()}-"
                             f"{oriented.GetAtomWithIdx(other).GetIsotope()}"
                         )
                         attachment.SetIsotope(0)
                         smiles = Chem.MolToSmiles(oriented)
-                        synthons.setdefault(synthon_type, {}).setdefault(
+                        synthons.setdefault(library_name, {}).setdefault(
                             smiles, set()
                         ).update(identifiers)
 
@@ -237,8 +237,8 @@ def convert_stage(
             pool.imap(convert, batches) if pool is not None else map(convert, batches)
         )
         for result in results:
-            for synthon_type, values in result.items():
-                target = synthons.setdefault(synthon_type, {})
+            for library_name, values in result.items():
+                target = synthons.setdefault(library_name, {})
                 for smiles, identifiers in values.items():
                     target.setdefault(smiles, set()).update(identifiers)
 
@@ -262,17 +262,17 @@ def convert_stage(
     for old in synthon_dir.glob("*.smi"):
         old.unlink()
     counts: dict[str, int] = {}
-    for synthon_type, values in sorted(synthons.items()):
+    for library_name, values in sorted(synthons.items()):
         if len(values) < min_library_size:
             continue
-        output = synthon_dir / f"{synthon_type}.smi"
+        output = synthon_dir / f"{library_name}.smi"
         temporary = output.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as handle:
             for smiles in sorted(values):
                 identifiers = json.dumps(sorted(values[smiles]))
                 handle.write(f"{smiles}\t{identifiers}\n")
         temporary.replace(output)
-        counts[synthon_type] = len(values)
+        counts[library_name] = len(values)
     # One source record can map to many synthons, and identical synthons may
     # have several suppliers' IDs. Keep this provenance outside the MDP state.
     (env_path / "building_blocks.json").write_text(
@@ -355,16 +355,17 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     # 3. Publish the archive only after every library has been written.
     temporary.replace(output)
     # 4. Finalize static eligibility and identity before marking the stage complete.
-    _write_action_space_and_signature(env_path, counts)
+    action_names = _write_action_space(env_path, counts)
+    _write_signature(env_path, counts, action_names)
     _complete_stage(
         env_path,
         "features",
-        {"synthon_types": sorted(path.stem for path in synthon_dir.glob("*.smi"))},
+        {"library_names": sorted(path.stem for path in synthon_dir.glob("*.smi"))},
     )
 
 
-def _write_action_space_and_signature(env_path: Path, counts: dict[str, int]) -> None:
-    """Finalize only static eligibility and identity; runtime derives indices/counts."""
+def _write_action_space(env_path: Path, counts: dict[str, int]) -> list[str]:
+    """Write chemical eligibility; runtime applies synthesis budgets."""
     # Keep SMARTS and library descriptors in their existing source files.
     # The spec stores only pairs whose compatibility would otherwise be rebuilt.
     synthon_types = {spec.type for spec in load_synthon_specs(env_path / "synthon.yaml")}
@@ -393,35 +394,28 @@ def _write_action_space_and_signature(env_path: Path, counts: dict[str, int]) ->
     for name, reaction in bi.items():
         if not set(reaction.synthon_types) <= synthon_types:
             raise ValueError(f"unknown synthon type in {name}")
-        for library in by_attachment.get(reaction.synthon_type, []):
+        for library in by_attachment.get(reaction.attachment_type, []):
             reactions[reaction.state_type].append((name, library))
-    last = {
-        site: [
-            (reaction, library)
-            for reaction, library in pairs
-            if (
-                uni[reaction].output_type is None
-                if library is None
-                else library in bricks
-            )
-        ]
-        for site, pairs in reactions.items()
-    }
     spaces = {
         "initial": [("first_synthon", name) for name in bricks],
         "reaction": reactions,
-        "last": last,
     }
     action_names = ["first_synthon", *sorted(uni), *sorted(bi)]
     if len(set(action_names)) != len(action_names):
         raise ValueError("reaction action names must be unique")
 
-    # Hash once after all data is published, including the stored eligibility.
-    # Templates/features/rows must be regenerated together, not edited in place.
+    # Publish the spec only after every compatible pair is assembled.
     action_path = env_path / "action_space.json"
     temporary = action_path.with_suffix(".tmp")
     temporary.write_text(json.dumps(spaces, indent=2) + "\n", encoding="utf-8")
     temporary.replace(action_path)
+    return action_names
+
+
+def _write_signature(
+    env_path: Path, counts: dict[str, int], action_names: list[str]
+) -> None:
+    """Publish identity after templates, rows, features and eligibility are complete."""
     digest = hashlib.sha256()
     for name in (
         "action_space.json",

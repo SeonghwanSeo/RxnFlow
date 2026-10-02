@@ -77,14 +77,14 @@ class Action:
 
     action_type: ActionType
     reaction: str | None = None
-    synthon_type: str | None = None
+    library_name: str | None = None
     synthon_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "action_type": self.action_type.name,
             "reaction": self.reaction,
-            "synthon_type": self.synthon_type,
+            "library_name": self.library_name,
             "synthon_index": self.synthon_index,
         }
 
@@ -126,7 +126,7 @@ class ActionSubspace:
         return Action(
             self.action_type,
             reaction=None if self.action_type == ActionType.FIRST_SYNTHON else reaction,
-            synthon_type=library,
+            library_name=library,
             synthon_index=synthon_index,
         )
 

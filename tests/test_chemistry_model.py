@@ -3,6 +3,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 import torch
+from model_reference import get_synthon_logits, get_unirxn_logits
 from rdkit import Chem
 
 from rxnflow.config import ModelConfig
@@ -18,7 +19,7 @@ from rxnflow.models import RxnFlowModel
 
 
 def test_heavy_atom_capacity_isotopes_and_no_truncation() -> None:
-    empty = molecule_to_graph_data(None, 50, 0)
+    empty = molecule_to_graph_data(None, 50)
     assert empty.node_features.shape == (51, NODE_FEATURE_DIM)
     assert empty.bond_features.shape == (51, 51, BOND_FEATURE_DIM)
     assert not empty.node_mask.any()
@@ -27,16 +28,16 @@ def test_heavy_atom_capacity_isotopes_and_no_truncation() -> None:
     assert heavy_atom_count(explicit_hydrogen) == 1
     assert heavy_atom_count(parse_molecule("C[100At]")) == 2
 
-    exact = molecule_to_graph_data(parse_molecule("C" * 50), 50, 1)
+    exact = molecule_to_graph_data(parse_molecule("C" * 50), 50)
     assert exact.node_mask.sum().item() == 50
     with pytest.raises(ValueError, match="exceeding"):
-        molecule_to_graph_data(parse_molecule("C" * 51), 50, 1)
+        molecule_to_graph_data(parse_molecule("C" * 51), 50)
 
-    boundary = molecule_to_graph_data(parse_molecule("[1*]" + "C" * 50), 50, 1)
+    boundary = molecule_to_graph_data(parse_molecule("[1*]" + "C" * 50), 50)
     assert boundary.node_mask.sum().item() == 51
 
-    type_one = molecule_to_graph_data(parse_molecule("[1*]C"), 4, 0)
-    type_two = molecule_to_graph_data(parse_molecule("[2*]C"), 4, 0)
+    type_one = molecule_to_graph_data(parse_molecule("[1*]C"), 4)
+    type_two = molecule_to_graph_data(parse_molecule("[2*]C"), 4)
     assert not torch.equal(type_one.node_features[0], type_two.node_features[0])
 
 
@@ -56,13 +57,14 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
         env, ModelConfig(num_emb=32, num_layers=2, dropout=0.0), num_objectives=1
     )
     model.eval()
-    graph = molecule_to_graph_data(None, env.max_atoms, 0)
+    graph = molecule_to_graph_data(None, env.max_atoms)
     start_embedding = model.graph_embedding(
         GraphBatch.from_graphs([graph]),
         cond_info=_condition(model, len(GraphBatch.from_graphs([graph]).node_mask)),
     )
     assert (
-        model.get_unirxn_logits(
+        get_unirxn_logits(
+            model,
             start_embedding,
             "nitrile_to_tetrazole",
             logit_scale=model.logit_scale(_condition(model, 1)),
@@ -70,7 +72,7 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
         == 0
     )
 
-    molecular = molecule_to_graph_data(parse_molecule("CCO"), 12, 1)
+    molecular = molecule_to_graph_data(parse_molecule("CCO"), 12)
     order = torch.tensor([2, 0, 1] + list(range(3, 13)))
     permuted = _permute_graph(molecular, order)
     embeddings = model.graph_embedding(
@@ -91,18 +93,20 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
     )
     assert not torch.allclose(bond_embeddings[0], bond_embeddings[1])
 
-    synthon_type = env.brick_types[0]
-    indices = torch.arange(min(2, len(env.synthons[synthon_type])))
-    logits = model.get_synthon_logits(
+    library_name = env.brick_types[0]
+    indices = torch.arange(min(2, len(env.synthons[library_name])))
+    logits = get_synthon_logits(
+        model,
         start_embedding,
         "first_synthon",
-        synthon_type,
+        library_name,
         indices,
         logit_scale=model.logit_scale(_condition(model, 1)),
     )
     loss = (
         logits.square().mean()
-        + model.get_unirxn_logits(
+        + get_unirxn_logits(
+            model,
             start_embedding,
             "nitrile_to_tetrazole",
             logit_scale=model.logit_scale(_condition(model, 1)),
@@ -155,33 +159,36 @@ def test_dot_scores_ignore_synthon_norm_and_train_both_action_scales(
     env = SynthesisEnv(prepared_env, max_atoms=20)
     model = RxnFlowModel(env, ModelConfig(num_emb=32, num_layers=1), num_objectives=1)
     state = model.graph_embedding(
-        GraphBatch.from_graphs([molecule_to_graph_data(None, 20, 0)]),
+        GraphBatch.from_graphs([molecule_to_graph_data(None, 20)]),
         cond_info=_condition(
             model,
-            len(GraphBatch.from_graphs([molecule_to_graph_data(None, 20, 0)]).node_mask),
+            len(GraphBatch.from_graphs([molecule_to_graph_data(None, 20)]).node_mask),
         ),
     )
-    synthon_type = env.brick_types[0]
+    library_name = env.brick_types[0]
     indices = torch.arange(2)
     synthons = torch.randn(2, model.emb_type.embedding_dim)
-    monkeypatch.setattr(model, "get_synthon_emb", lambda *args: synthons)
-    before = model.get_synthon_logits(
+    monkeypatch.setattr("model_reference.get_synthon_emb", lambda *args: synthons)
+    before = get_synthon_logits(
+        model,
         state,
         "first_synthon",
-        synthon_type,
+        library_name,
         indices,
         logit_scale=model.logit_scale(_condition(model, 1)),
     )
     synthons = synthons * torch.tensor([[0.1], [100.0]])
-    after = model.get_synthon_logits(
+    after = get_synthon_logits(
+        model,
         state,
         "first_synthon",
-        synthon_type,
+        library_name,
         indices,
         logit_scale=model.logit_scale(_condition(model, 1)),
     )
     assert torch.allclose(before, after, atol=1e-6)
-    unary = model.get_unirxn_logits(
+    unary = get_unirxn_logits(
+        model,
         state,
         "nitrile_to_tetrazole",
         logit_scale=model.logit_scale(_condition(model, 1)),
@@ -203,7 +210,7 @@ def test_chirality_and_graph_padding_are_preserved(prepared_env):
         env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1
     ).eval()
     graphs = [
-        molecule_to_graph_data(parse_molecule(s), 12, 1)
+        molecule_to_graph_data(parse_molecule(s), 12)
         for s in ("N[C@H](C)O", "N[C@@H](C)O")
     ]
     assert not torch.equal(graphs[0].node_features, graphs[1].node_features)
@@ -228,7 +235,7 @@ def test_graph_encoder_distinguishes_bond_stereoisomers(prepared_env):
     ).eval()
     # Same atoms and connectivity; only double-bond stereo differs (E/Z/none).
     graphs = [
-        molecule_to_graph_data(parse_molecule(s), 12, 1)
+        molecule_to_graph_data(parse_molecule(s), 12)
         for s in ("F/C=C/F", "F/C=C\\F", "FC=CF")
     ]
     for graph in graphs[1:]:
@@ -291,7 +298,7 @@ def test_mpnn_readout_is_invariant_to_atom_order_and_batch_companions(prepared_e
     mol = parse_molecule("CC(O)N[33*]")
     reordered = Chem.RenumberAtoms(mol, list(reversed(range(mol.GetNumAtoms()))))
     graphs = [
-        molecule_to_graph_data(value, 12, 1 if value is not None else 0)
+        molecule_to_graph_data(value, 12)
         for value in (None, mol, reordered, parse_molecule("CCO"))
     ]
     together = model.graph_embedding(

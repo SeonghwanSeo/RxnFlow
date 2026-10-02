@@ -31,12 +31,12 @@ def test_device_sampling_balances_libraries_and_keeps_property_masks():
     policy = ActionCategorical(
         [small, large, unary], torch.zeros(n, 2), logit_scale=torch.ones(n, 1)
     )
-    counts = Counter(action.synthon_type for action in policy.sample(1.0, 1.0, 1.0))
+    counts = Counter(action.library_name for action in policy.sample(1.0, 1.0, 1.0))
     for name in ("small", "large", None):
         assert abs(counts[name] / n - 1 / 3) < 0.03
     # Masking eight of nine large-library columns leaves mass 1/9 there.
     large.logits[:, 1:] = -torch.inf
-    counts = Counter(action.synthon_type for action in policy.sample(1.0, 1.0, 1.0))
+    counts = Counter(action.library_name for action in policy.sample(1.0, 1.0, 1.0))
     assert abs(counts["large"] / n - 1 / 19) < 0.02
     small.logits.fill_(-torch.inf)
     large.logits.fill_(-torch.inf)
@@ -89,16 +89,16 @@ def test_full_subspace_and_sampled_copy_decode_without_mutation():
     sampled = replace(full, sample_indices=np.array([4, 1]))
     assert full.sample_indices is None
     assert full.action_at(0) == Action(
-        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=0
+        ActionType.FIRST_SYNTHON, library_name="a", synthon_index=0
     )
     assert full.action_at(4) == Action(
-        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=4
+        ActionType.FIRST_SYNTHON, library_name="a", synthon_index=4
     )
     assert sampled.action_at(0) == Action(
-        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=4
+        ActionType.FIRST_SYNTHON, library_name="a", synthon_index=4
     )
     assert sampled.action_at(1) == Action(
-        ActionType.FIRST_SYNTHON, synthon_type="a", synthon_index=1
+        ActionType.FIRST_SYNTHON, library_name="a", synthon_index=1
     )
     unary = ActionSubspace(("convert", None), ActionType.UNIRXN_TRANSFORM, 1)
     assert unary.action_at(0) == Action(ActionType.UNIRXN_TRANSFORM, "convert")

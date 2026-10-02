@@ -36,7 +36,7 @@ def policy(prepared_env):
 def test_depth_weighted_backward_probability(policy) -> None:
     selected = Action(ActionType.UNIRXN_TRANSFORM, reaction="selected")
     alternative = Action(ActionType.UNIRXN_TRANSFORM, reaction="alternative")
-    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
+    first = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     routes = [
         [(selected, "one"), (first, "")],
         [(selected, "one"), (alternative, "two"), (first, "")],
@@ -61,8 +61,10 @@ def test_known_routes_are_preserved_and_reaction_budget_bounds_dfs() -> None:
     )
     analyzer = Worker(env)
     routes = analyzer.run(brick, max_reactions=0)
-    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
+    first = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     assert routes == [[(first, "")]]
+    # A catalog origin tightens a larger budget before any reverse chemistry.
+    assert analyzer.run(brick, max_reactions=3) == routes
     # Seeding an already discoverable branch must not duplicate its mass.
     assert analyzer.run(brick, max_reactions=0, known_trajectories=routes) == routes
 
@@ -96,14 +98,14 @@ def test_reverse_search_finds_catalog_match_after_second_decomposition() -> None
     routes = Worker(env).run("CCCCCC", max_reactions=1)
     assert len(routes) == 1
     action, parent = routes[0][0]
-    assert action.synthon_type == "2" and parent == "[1*]CCC"
+    assert action.library_name == "2" and parent == "[1*]CCC"
     assert routes[0][-1] == (
-        Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0),
+        Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0),
         "",
     )
 
 
-def test_short_route_does_not_hide_longer_route_within_budget() -> None:
+def test_short_route_prunes_deeper_search_but_preserves_generated_route() -> None:
     close = UniReaction("close", "[#6:1]-[1*]>>[#6:1]", "[#6:1]>>[#6:1]-[1*]", 1, None)
     activate = UniReaction(
         "activate",
@@ -121,16 +123,31 @@ def test_short_route_does_not_hide_longer_route_within_budget() -> None:
     analyzer = Worker(env)
     assert [len(route) for route in analyzer.run("CC", max_reactions=1)] == [2]
     routes = analyzer.run("CC", max_reactions=2)
-    assert sorted(map(len, routes)) == [2, 3]
+    assert list(map(len, routes)) == [2]
     assert all(route[-1][0].action_type == ActionType.FIRST_SYNTHON for route in routes)
     assert all(route[-1][1] == "" for route in routes)
+    # The longer generated history remains represented in the backward mass.
+    known = [
+        [
+            (Action(ActionType.UNIRXN_TERMINAL, reaction="close"), "[1*]CC"),
+            (Action(ActionType.UNIRXN_TRANSFORM, reaction="activate"), "[33*]CC"),
+            (Action(ActionType.FIRST_SYNTHON, library_name="33", synthon_index=0), ""),
+        ]
+    ]
+    assert analyzer.run("CC", max_reactions=2, known_trajectories=known) == known
+    # Root branches are preserved as supplied. Seed at the precursor to allow
+    # discovery of a shorter FirstSynthon route alongside the generated history.
+    precursor_routes = analyzer.run(
+        "[1*]CC", max_reactions=1, known_trajectories=[known[0][1:]]
+    )
+    assert sorted(map(len, precursor_routes)) == [1, 2]
 
 
 @pytest.mark.parametrize("workers", [0, 2])
 def test_worker_queue_collects_multiple_submissions(workers) -> None:
     env = SimpleNamespace(uni_reactions={}, bi_reactions={}, synthons={}, brick_types=[])
     analyzer = RetroSynthesisAnalyzer(env, workers=workers)
-    action = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
+    action = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     known = [[(action, "")]]
     try:
         analyzer.submit(3, "CC", 0, known)
@@ -146,7 +163,7 @@ def test_same_action_from_different_parents_has_distinct_backward_probability(
     policy,
 ) -> None:
     action = Action(ActionType.UNIRXN_TRANSFORM, reaction="conversion")
-    first = Action(ActionType.FIRST_SYNTHON, synthon_type="1", synthon_index=0)
+    first = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     routes = [
         [(action, "first"), (first, "")],
         [(action, "second"), (first, "")],

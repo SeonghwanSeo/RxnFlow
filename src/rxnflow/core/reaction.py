@@ -125,7 +125,7 @@ class BiReaction(Reaction):
     """A bimolecular template oriented as (state, incoming synthon).
 
     The incoming synthon's unique isotope-0 dummy fixes its attachment site.
-    Its chemical type is carried by the library key and ``synthon_type``. The
+    Its chemical type is carried by the library key and ``attachment_type``. The
     reverse template recreates that marker so catalog lookup preserves direction.
     """
 
@@ -147,7 +147,9 @@ class BiReaction(Reaction):
             or self.reverse_reaction.GetNumProductTemplates() != 2
         ):
             raise ValueError(f"invalid bimolecular reaction shape: {self.name}")
-        if len(self.synthon_types) != 2 or any(value <= 0 for value in self.synthon_types):
+        if len(self.synthon_types) != 2 or any(
+            value <= 0 for value in self.synthon_types
+        ):
             raise ValueError(f"invalid synthon types for reaction {self.name}")
 
         # Reorder both directions into (state, synthon), then change the synthon's
@@ -181,7 +183,7 @@ class BiReaction(Reaction):
         return self.synthon_types[int(self.synthon_first)]
 
     @property
-    def synthon_type(self) -> int:
+    def attachment_type(self) -> int:
         return self.synthon_types[int(not self.synthon_first)]
 
 

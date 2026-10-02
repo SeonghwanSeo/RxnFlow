@@ -79,10 +79,10 @@ class SynthesisEnv:
         self.synthon_types = {spec.type for spec in specs}
         for library in self.synthons.values():
             if (
-                len(library.site_types) not in (1, 2)
-                or not set(library.site_types) <= self.synthon_types
+                len(library.synthon_types) not in (1, 2)
+                or not set(library.synthon_types) <= self.synthon_types
             ):
-                raise ValueError(f"invalid brick/linker type: {library.synthon_type}")
+                raise ValueError(f"invalid brick/linker type: {library.name}")
 
     def _load_reactions(self) -> None:
         """Compile oriented reactions and assign their policy indices."""
@@ -141,16 +141,6 @@ class SynthesisEnv:
         self.reaction_action_spaces = {
             int(site): load_space(pairs) for site, pairs in spaces["reaction"].items()
         }
-        # Last-step lists refer to the same subspaces, not duplicated objects.
-        by_name = {
-            subspace.name: subspace
-            for space in self.reaction_action_spaces.values()
-            for subspace in space
-        }
-        self.last_action_spaces = {
-            int(site): [by_name[tuple(pair)] for pair in pairs]
-            for site, pairs in spaces["last"].items()
-        }
         # Derived from connected spaces, so counts cannot drift from libraries.
         # This is a branching scale for backward weights, not a state action count.
         self.num_total_actions = max(
@@ -189,7 +179,7 @@ class SynthesisEnv:
                             if library is None:
                                 next_site = self.uni_reactions[reaction].output_type
                             else:
-                                sites = self.synthons[library].site_types
+                                sites = self.synthons[library].synthon_types
                                 next_site = None if len(sites) == 1 else sites[1]
                             if next_site is None:
                                 reachable = (
@@ -251,7 +241,7 @@ class SynthesisEnv:
     def get_synthon_mask(
         self,
         state_properties: NDArray[np.float32],
-        synthon_type: str,
+        library_name: str,
         indices: NDArray[np.int64] | None = None,
     ) -> NDArray[np.bool_]:
         """Mask synthon rows using additive state + synthon property estimates.
@@ -260,7 +250,7 @@ class SynthesisEnv:
         Compare raw units so zero and negative upper bounds remain meaningful.
         These sums estimate product properties without executing candidate reactions.
         """
-        library = self.synthons[synthon_type]
+        library = self.synthons[library_name]
         heavy_atoms = (
             library.heavy_atoms if indices is None else library.heavy_atoms[indices]
         )
@@ -288,8 +278,8 @@ class SynthesisEnv:
     def _apply_action(self, current: Chem.Mol | None, action: Action) -> Chem.Mol | None:
         """Apply FirstSynthon/UniReaction/BiReaction and return a valid Mol or None."""
         # 1. Resolve the selected catalog row, when this action consumes a synthon.
-        if action.synthon_type is not None:
-            library = self.synthons[action.synthon_type]
+        if action.library_name is not None:
+            library = self.synthons[action.library_name]
             if action.synthon_index is None or not 0 <= action.synthon_index < len(
                 library
             ):
@@ -308,7 +298,7 @@ class SynthesisEnv:
                 if atom.GetAtomicNum() == 0:
                     atom.SetIsotope(library.attachment_type)
             mol = first
-            expected = library.site_types
+            expected = library.synthon_types
         else:
             assert current is not None
             if action.action_type.is_unirxn:
@@ -320,7 +310,7 @@ class SynthesisEnv:
                 synthon = parse_molecule(synthon_smiles)
                 assert synthon is not None
                 mol = bi.run_forward(current, synthon)
-                expected = library.site_types[1:]
+                expected = library.synthon_types[1:]
         # 3. Check the actual product's handle, capacity, and structural change.
         if mol is None or typed_dummy_isotopes(mol) != expected:
             return None
@@ -338,7 +328,7 @@ class SynthesisEnv:
             "first_synthon"
             if action.action_type == ActionType.FIRST_SYNTHON
             else action.reaction,
-            action.synthon_type,
+            action.library_name,
         )
         if not any(
             space.name == name and space.action_type == action.action_type
@@ -361,11 +351,10 @@ class SynthesisEnv:
 
     def action_to_dict(self, action: Action) -> dict[str, object]:
         result = action.to_dict()
-        if action.synthon_type is not None:
+        if action.library_name is not None:
             assert action.synthon_index is not None
-            library = self.synthons[action.synthon_type]
+            library = self.synthons[action.library_name]
             identifiers = library.identifiers[action.synthon_index]
-            result["synthon_type"] = "brick" if library.is_brick else "linker"
             result["synthon_smiles"] = library.smiles[action.synthon_index]
             result["synthon_ids"] = identifiers
             result["building_blocks"] = [

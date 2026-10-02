@@ -166,6 +166,40 @@ class RxnFlowPolicy:
             for name, count in num_actions.items()
         }
 
+    def _get_state_inputs(
+        self, states: list[State]
+    ) -> tuple[GraphBatch, NDArray[np.float32]]:
+        """Reuse molecular preprocessing for repeated states within a batch."""
+        graphs: dict[str, GraphData] = {}
+        properties: dict[str, NDArray[np.float32]] = {}
+        keys = [state.smiles for state in states]
+        for state, key in zip(states, keys, strict=True):
+            if key not in graphs:
+                mol_properties = molecular_properties(state.mol)
+                properties[key] = mol_properties
+                graphs[key] = molecule_to_graph_data(
+                    state.mol, self.env.max_atoms, mol_properties
+                )
+        batch = GraphBatch.from_graphs([graphs[key] for key in keys]).to(self.device)
+        return batch, np.stack([properties[key] for key in keys])
+
+    def _encode_synthons(
+        self,
+        features: list[tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]],
+    ) -> torch.Tensor:
+        """Encode concatenated library rows with the same normalization everywhere."""
+        fingerprints, properties, library_indices = zip(*features, strict=True)
+        return F.normalize(
+            self.model.synthon_embedding(
+                torch.from_numpy(np.concatenate(fingerprints)).to(
+                    self.device, dtype=torch.float32
+                ),
+                torch.from_numpy(np.concatenate(properties)).to(self.device),
+                torch.from_numpy(np.concatenate(library_indices)).to(self.device),
+            ),
+            dim=-1,
+        )
+
     def forward(
         self, states: list[State], beta: torch.Tensor, preferences: torch.Tensor
     ) -> ActionCategorical:
@@ -178,46 +212,32 @@ class RxnFlowPolicy:
         """
         assert states
         # 1. Build state features and collect compatible reaction/library rows.
-        graphs: dict[tuple[str, int, int], GraphData] = {}
-        properties: dict[tuple[str, int, int], NDArray[np.float32]] = {}
-        keys = [
-            (state.smiles, state.num_reactions, state.num_synthons) for state in states
-        ]
+        graph_batch, descriptors = self._get_state_inputs(states)
         # Metadata contains only state rows and library names, never candidate
         # objects or per-state arrays of valid synthon indices.
         action_rows: dict[tuple[str, ActionType], set[int]] = {}
         # (reaction, action type) -> library -> batch rows
         action_libraries: dict[tuple[str, ActionType], dict[str, list[int]]] = {}
         library_rows: dict[str | None, set[int]] = {}  # None is the unary range
-        for row, (state, key) in enumerate(zip(states, keys, strict=True)):
-            if key not in graphs:
-                mol_properties = molecular_properties(state.mol)
-                properties[key] = mol_properties
-                graphs[key] = molecule_to_graph_data(
-                    state.mol,
-                    self.env.max_atoms,
-                    state.num_reactions,
-                    mol_properties,
-                    num_synthons=state.num_synthons,
-                )
+        for row, state in enumerate(states):
             for subspace in self.env.get_action_space(state):
-                name, synthon_type = subspace.name
+                name, library_name = subspace.name
                 group = (name, subspace.action_type)
                 action_rows.setdefault(group, set()).add(row)
-                if synthon_type is not None:
+                if library_name is not None:
                     action_libraries.setdefault(group, {}).setdefault(
-                        synthon_type, []
+                        library_name, []
                     ).append(row)
-                library_rows.setdefault(synthon_type, set()).add(row)
+                library_rows.setdefault(library_name, set()).add(row)
         # 2. Draw each library once and apply additive budgets to sampled rows.
-        descriptors = np.stack([properties[key] for key in keys])
         samples: dict[str | None, NDArray[np.int64]] = {}
         log_importance: dict[str | None, float] = {}
         masks: dict[str, NDArray[np.bool_]] = {}  # library -> [batch, sampled actions]
-        # Each entry contains fingerprints, properties and synthon type indices.
+        # Each entry contains fingerprints, properties and library embedding indices.
         features: list[
             tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]
         ] = []
+        library_names: list[str] = []
         sizes: list[int] = []
         for library_name, rows in library_rows.items():
             samples[library_name], log_importance[library_name] = self.subsampling[
@@ -244,6 +264,7 @@ class RxnFlowPolicy:
                     ),
                 )
             )
+            library_names.append(library_name)
             sizes.append(len(indices))
 
         # 3. Encode conditions, state graphs, and all sampled synthons in batches.
@@ -251,24 +272,14 @@ class RxnFlowPolicy:
         # have different beta/preferences and need separate neural encodings.
         cond_info = self.model.encode_cond(beta, preferences)
         graph_emb = self.model.graph_embedding(
-            GraphBatch.from_graphs([graphs[key] for key in keys]).to(self.device),
+            graph_batch,
             cond_info,
         )
         logit_scale = self.model.logit_scale(cond_info)
         synthon_embs: dict[str, torch.Tensor] = {}
         if features:
-            fps, props, types = zip(*features, strict=True)
-            encoded = F.normalize(
-                self.model.synthon_embedding(
-                    torch.from_numpy(np.concatenate(fps)).to(
-                        self.device, dtype=torch.float32
-                    ),
-                    torch.from_numpy(np.concatenate(props)).to(self.device),
-                    torch.from_numpy(np.concatenate(types)).to(self.device),
-                ),
-                dim=-1,
-            )
-            synthon_embs = dict(zip(masks, encoded.split(sizes), strict=True))
+            encoded = self._encode_synthons(features)
+            synthon_embs = dict(zip(library_names, encoded.split(sizes), strict=True))
 
         # 4. Score by reaction and action type, apply masks, and split columns into subspaces.
         action_logits: list[ActionLogits] = []
@@ -351,8 +362,8 @@ class RxnFlowPolicy:
                 else action.reaction
             )
             by_reaction.setdefault((name, action.action_type), []).append(row)
-            if action.synthon_type is not None:
-                by_library.setdefault(action.synthon_type, []).append(row)
+            if action.library_name is not None:
+                by_library.setdefault(action.library_name, []).append(row)
         # 2. Gather and encode only the synthons selected by those actions.
         synthon_rows, features = [], []
         for name, rows in by_library.items():
@@ -370,17 +381,7 @@ class RxnFlowPolicy:
             )
         synthons = graph_emb.new_zeros((len(actions), self.config.model.num_synthon_emb))
         if features:
-            fp, prop, typ = zip(*features, strict=True)
-            values = F.normalize(
-                self.model.synthon_embedding(
-                    torch.from_numpy(np.concatenate(fp)).to(
-                        self.device, dtype=torch.float32
-                    ),
-                    torch.from_numpy(np.concatenate(prop)).to(self.device),
-                    torch.from_numpy(np.concatenate(typ)).to(self.device),
-                ),
-                dim=-1,
-            )
+            values = self._encode_synthons(features)
             synthons = synthons.index_copy(
                 0, torch.tensor(synthon_rows, device=self.device), values
             )
@@ -458,6 +459,8 @@ class RxnFlowPolicy:
         parent_smiles: str,
     ) -> float | None:
         """Normalize depth-weighted route mass for the observed reverse edge."""
+        # TODO: Review action-space-dependent route weights and their consistency
+        # with trajectory limits; retain the current approximation until then.
         numerator = 0.0
         denominator = 0.0
         for trajectory in trajectories:
@@ -520,16 +523,9 @@ class RxnFlowPolicy:
         def collect_backward() -> None:
             for index, routes in self.env.retro_analyzer.result():
                 transition = steps[index][-1]
-                state = states[index]
-                # Counts are part of the state: routes with a different number
-                # of synthons/reactions reach another state, even for identical SMILES.
-                routes = [
-                    route
-                    for route in routes
-                    if len(route) == state.num_reactions + 1
-                    and sum(not action.action_type.is_unirxn for action, _ in route)
-                    == state.num_synthons
-                ]
+                # Approximate backward mass includes shorter chemical routes,
+                # even when their counters differ from the generated history.
+                # Forward action selection still enforces both synthesis budgets.
                 value = self.calc_bck_logprob(
                     transition.action, routes, transition.state.smiles
                 )

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
-from functools import cached_property
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -15,27 +14,32 @@ from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 
 @dataclass
 class SynthonLibrary:
-    synthon_type: str
+    name: str  # Catalog identifier, e.g. "7" or "7-8".
     smiles: list[str]
     identifiers: list[list[str]]
     properties: NDArray[np.float32]
     fingerprints: NDArray[np.uint8]
     heavy_atoms: NDArray[np.uint8]
+    synthon_types: tuple[int, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        # One type for a brick; ordered attachment/remaining types for a linker.
+        self.synthon_types = tuple(map(int, self.name.split("-")))
 
     def __len__(self) -> int:
         return len(self.smiles)
 
-    @cached_property
-    def site_types(self) -> tuple[int, ...]:
-        return tuple(int(value) for value in self.synthon_type.split("-"))
-
     @property
     def is_brick(self) -> bool:
-        return len(self.site_types) == 1
+        return len(self.synthon_types) == 1
+
+    @property
+    def is_linker(self) -> bool:
+        return len(self.synthon_types) == 2
 
     @property
     def attachment_type(self) -> int:
-        return self.site_types[0]
+        return self.synthon_types[0]
 
     def validate(self) -> None:
         if self.fingerprints.dtype != np.uint8:
@@ -44,9 +48,9 @@ class SynthonLibrary:
             raise ValueError("heavy_atoms must be uint8; regenerate the environment")
         count = len(self.smiles)
         if count == 0:
-            raise ValueError(f"synthon library {self.synthon_type!r} is empty")
+            raise ValueError(f"synthon library {self.name!r} is empty")
         if len(self.identifiers) != count:
-            raise ValueError(f"identifier alignment failed for {self.synthon_type}")
+            raise ValueError(f"identifier alignment failed for {self.name}")
         expected = {
             "properties": (count, PROPERTY_DIM),
             "fingerprints": (count, FINGERPRINT_DIM),
@@ -56,7 +60,7 @@ class SynthonLibrary:
             value = getattr(self, name)
             if tuple(value.shape) != shape:
                 raise ValueError(
-                    f"{self.synthon_type}.{name} has shape {tuple(value.shape)}, expected {shape}"
+                    f"{self.name}.{name} has shape {tuple(value.shape)}, expected {shape}"
                 )
         # Preparation validates molecules, attachment labels and feature values.
         # Runtime checks only schema/shape, without rescanning every feature or
@@ -111,7 +115,7 @@ def load_synthon_libraries(env_dir: Path) -> dict[str, SynthonLibrary]:
             # full SMILES copy merely to compare trusted prepared rows.
             # Keep catalog data in NumPy. Only sampled model inputs become tensors.
             library = SynthonLibrary(
-                synthon_type=path.stem,
+                name=path.stem,
                 smiles=smiles,
                 identifiers=identifiers,
                 properties=arrays[f"{path.stem}/properties"],

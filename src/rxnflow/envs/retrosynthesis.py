@@ -17,22 +17,22 @@ if TYPE_CHECKING:
 class Worker:
     """Enumerate catalog-supported routes within the supplied reaction budget.
 
-    Depth bounds the search, including cycles; finding a shorter route does
-    not prune other branches. Candidates must match a catalog entry and reproduce
-    the product in the forward direction. Return reverse-ordered edge lists;
-    probability weighting belongs to the policy that consumes these routes.
+    The shortest route found bounds further exploration. Known generated routes
+    remain available even when they are longer than that bound. Candidates must
+    match a catalog entry and reproduce the product in the forward direction.
+    Return reverse-ordered edge lists; probability weighting belongs to the policy.
     """
 
     def __init__(self, env: SynthesisEnv):
         self.uni_reactions = env.uni_reactions
         self.bi_reactions = env.bi_reactions
         self.synthon_search = {
-            synthon_type: {smiles: index for index, smiles in enumerate(library.smiles)}
-            for synthon_type, library in env.synthons.items()
+            library_name: {smiles: index for index, smiles in enumerate(library.smiles)}
+            for library_name, library in env.synthons.items()
         }
         self.brick_types = set(env.brick_types)
-        self._memo: dict[tuple[str, int], list[BackwardTrajectory]] = {}
-        self._max_depth = 0
+        self._memo: dict[tuple[str, int, int], list[BackwardTrajectory]] = {}
+        self._min_depth = 0
 
     def run(
         self,
@@ -40,7 +40,9 @@ class Worker:
         max_reactions: int,
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
-        self._max_depth = max_reactions + 1  # Include FirstSynthon.
+        self._min_depth = max_reactions + 1  # Include FirstSynthon.
+        if known_trajectories:
+            self._min_depth = min(self._min_depth, min(map(len, known_trajectories)))
         self._memo = {}
         mol = Chem.MolFromSmiles(smiles) if smiles else None
         if mol is None:
@@ -54,10 +56,12 @@ class Worker:
         depth: int,
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
-        # 1. Reuse this search's depth-specific results and preserve the known route.
-        if depth > self._max_depth:
+        # 1. Reuse results under the same depth bound and preserve known routes.
+        if depth > self._min_depth:
             return []
-        key = (canonical, depth)
+        # A shorter route can tighten the bound during DFS. Results computed
+        # under the previous bound must not reopen its deeper branches.
+        key = (canonical, depth, self._min_depth)
         if known_trajectories is None and key in self._memo:
             return self._memo[key]
         trajectories = list(known_trajectories or [])
@@ -68,19 +72,20 @@ class Worker:
         # 2. Look for a direct FirstSynthon origin by restoring the catalog marker.
         signature = typed_dummy_isotopes(mol)
         if len(signature) == 1:
-            site_type = signature[0]
+            synthon_type = signature[0]
             brick = Chem.Mol(mol)
             for atom in brick.GetAtoms():
                 if atom.GetAtomicNum() == 0:
                     atom.SetIsotope(0)
             brick_smiles = Chem.MolToSmiles(brick)
-            synthon_type = str(site_type)
-            if synthon_type in self.brick_types:
-                synthon_index = self.synthon_search[synthon_type].get(brick_smiles)
+            library_name = str(synthon_type)
+            if library_name in self.brick_types:
+                synthon_index = self.synthon_search[library_name].get(brick_smiles)
                 if synthon_index is not None:
+                    self._min_depth = depth
                     action = Action(
                         ActionType.FIRST_SYNTHON,
-                        synthon_type=synthon_type,
+                        library_name=library_name,
                         synthon_index=synthon_index,
                     )
                     if (action, "") not in branch_keys:
@@ -88,12 +93,16 @@ class Worker:
                         branch_keys.add((action, ""))
 
         # 3. Reverse unary transformations and verify each precursor forward.
-        if depth < self._max_depth:
+        if depth < self._min_depth:
             for name, reaction in self.uni_reactions.items():
+                if depth >= self._min_depth:
+                    break
                 expected = () if reaction.output_type is None else (reaction.output_type,)
                 if signature != expected:
                     continue
                 for products in reaction.run_reverse(mol):
+                    if depth >= self._min_depth:
+                        break
                     if len(products) != 1:
                         continue
                     precursor = products[0]
@@ -123,7 +132,11 @@ class Worker:
 
             # 4. Reverse couplings, recover the oriented synthon, and find its row.
             for name, action in self.bi_reactions.items():
+                if depth >= self._min_depth:
+                    break
                 for child_mol, synthon_mol in action.run_reverse(mol):
+                    if depth >= self._min_depth:
+                        break
                     child_canonical = Chem.MolToSmiles(child_mol)
                     synthon_canonical = Chem.MolToSmiles(synthon_mol)
                     if typed_dummy_isotopes(child_mol) != (action.state_type,):
@@ -134,10 +147,10 @@ class Worker:
                     synthon_sites = typed_dummy_isotopes(synthon_mol)
                     if not synthon_sites or synthon_sites[0] != 0:
                         continue
-                    synthon_type = "-".join(
-                        map(str, (action.synthon_type, *synthon_sites[1:]))
+                    library_name = "-".join(
+                        map(str, (action.attachment_type, *synthon_sites[1:]))
                     )
-                    library = self.synthon_search.get(synthon_type)
+                    library = self.synthon_search.get(library_name)
                     if library is None:
                         continue
                     synthon_index = library.get(synthon_canonical)
@@ -148,7 +161,7 @@ class Worker:
                         if len(synthon_sites) == 1
                         else ActionType.BIRXN_LINKER,
                         reaction=name,
-                        synthon_type=synthon_type,
+                        library_name=library_name,
                         synthon_index=synthon_index,
                     )
                     if (reverse_action, child_canonical) in branch_keys:

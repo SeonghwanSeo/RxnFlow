@@ -306,6 +306,44 @@ class RxnFlowTrainer:
         ):
             target.mul_(decay).add_(source, alpha=1 - decay)
 
+    def _write_samples(self, trajectories: list[Trajectory]) -> None:
+        """Write the compact reaction paths for one training update."""
+        sample_path = self.sample_dir / f"step_{self.step:06d}.jsonl"
+        with sample_path.open("w", encoding="utf-8") as handle:
+            for index, value in enumerate(trajectories):
+                traj = []
+                for transition in value.steps:
+                    action = transition.action
+                    # The first reaction's state already contains the initial brick.
+                    if action.action_type == ActionType.FIRST_SYNTHON:
+                        continue
+                    synthon_smiles = None
+                    if action.library_name is not None:
+                        assert action.synthon_index is not None
+                        synthon_smiles = self.env.synthons[action.library_name].smiles[
+                            action.synthon_index
+                        ]
+                    traj.append(
+                        {
+                            "state": transition.state.smiles,
+                            "reaction": action.reaction,
+                            "synthon_smiles": synthon_smiles,
+                        }
+                    )
+                sample = {
+                    "step": self.step,
+                    "sample": index,
+                    "final_smiles": value.final_smiles,
+                    "reward": value.reward,
+                    "objective_rewards": value.objective_rewards,
+                    "beta": value.beta,
+                    "preferences": value.preferences,
+                    "valid": value.valid,
+                    "invalid_reason": value.invalid_reason,
+                    "traj": traj,
+                }
+                handle.write(json.dumps(sample) + "\n")
+
     def run(self, steps: int | None = None) -> Path:
         """Run additional optimization steps and return the final checkpoint."""
         final_step = self.step + (
@@ -408,41 +446,7 @@ class RxnFlowTrainer:
             # path log omits replay-only state flags and backward probabilities;
             # checkpoints retain the complete training trajectories.
             log_started = perf_counter()
-            sample_path = self.sample_dir / f"step_{self.step:06d}.jsonl"
-            with sample_path.open("w", encoding="utf-8") as handle:
-                for index, value in enumerate(fresh):
-                    traj = []
-                    for transition in value.steps:
-                        action = transition.action
-                        # The first reaction's state already contains the initial brick.
-                        if action.action_type == ActionType.FIRST_SYNTHON:
-                            continue
-                        synthon_smiles = None
-                        if action.synthon_type is not None:
-                            assert action.synthon_index is not None
-                            synthon_smiles = self.env.synthons[action.synthon_type].smiles[
-                                action.synthon_index
-                            ]
-                        traj.append(
-                            {
-                                "state": transition.state.smiles,
-                                "reaction": action.reaction,
-                                "synthon_smiles": synthon_smiles,
-                            }
-                        )
-                    sample = {
-                        "step": self.step,
-                        "sample": index,
-                        "final_smiles": value.final_smiles,
-                        "reward": value.reward,
-                        "objective_rewards": value.objective_rewards,
-                        "beta": value.beta,
-                        "preferences": value.preferences,
-                        "valid": value.valid,
-                        "invalid_reason": value.invalid_reason,
-                        "traj": traj,
-                    }
-                    handle.write(json.dumps(sample) + "\n")
+            self._write_samples(fresh)
             record["logging_time"] = perf_counter() - log_started
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
