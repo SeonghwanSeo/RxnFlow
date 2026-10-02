@@ -20,9 +20,8 @@ class HeavyAtomReward(RewardFunction):
             dtype=torch.float32,
         ).reshape(-1, 1)
 
-
-def within_heavy_atom_limit(mol: Chem.Mol) -> bool:
-    return mol.GetNumHeavyAtoms() <= 40
+    def filter_object(self, mol: Chem.Mol) -> bool:
+        return mol.GetNumHeavyAtoms() <= 40
 
 
 if __name__ == "__main__":
@@ -31,6 +30,5 @@ if __name__ == "__main__":
     trainer = RxnFlowTrainer(
         config,
         reward,
-        sample_filter=within_heavy_atom_limit,
     )
     trainer.run()

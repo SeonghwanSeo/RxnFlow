@@ -9,7 +9,7 @@ run:
   seed: 0
 
 reward:
-  exponent: 32.0
+  beta: "32"
   settings: {}
 
 property_penalty:

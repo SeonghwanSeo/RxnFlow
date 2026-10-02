@@ -23,8 +23,8 @@ from rxnflow.config import (
     TrainingConfig,
 )
 from rxnflow.envs.chemistry.features import PROPERTY_NAMES, molecular_properties
-from rxnflow.gflownet.types import MoleculeState
-from rxnflow.reward import QEDReward
+from rxnflow.gflownet.types import State
+from examples.qed import QEDReward
 from rxnflow.trainer import RxnFlowTrainer
 
 
@@ -34,7 +34,7 @@ def evaluate(trainer: RxnFlowTrainer, count: int, seed: int, name: str) -> dict:
     trainer.generator.manual_seed(seed)
     started = time.perf_counter()
     try:
-        trajectories = trainer.sampling_policy.rollouts(count, analyze_backward=False, beta=torch.full((count,), float(trainer.config.reward.exponent)), preferences=torch.ones(count, 1))
+        trajectories = trainer.sampling_policy.rollouts(count, analyze_backward=False, beta=torch.full((count,), trainer.config.reward.beta[1][0]), preferences=torch.ones(count, 1))
     finally:
         trainer.generator.set_state(previous_rng)
     elapsed = time.perf_counter() - started
@@ -87,7 +87,7 @@ def evaluate(trainer: RxnFlowTrainer, count: int, seed: int, name: str) -> dict:
         else None,
         "selected_action_kinds": dict(
             Counter(
-                step.action.kind.name
+                step.action.action_type.name
                 for trajectory in trajectories
                 for step in trajectory.steps
             )
@@ -131,20 +131,20 @@ def action_diagnostics(trainer: RxnFlowTrainer) -> dict:
     report = {}
     try:
         for smiles in ("[11*]CC", "[33*]NCC", "[1*]NCC", "[3*]C"):
-            candidates = trainer.sampling_policy.candidate_batch(
-                [MoleculeState.from_smiles(smiles)],
-                torch.tensor([float(trainer.config.reward.exponent)], device=trainer.device),
+            candidates = trainer.sampling_policy.forward(
+                [State.from_smiles(smiles)],
+                torch.tensor([trainer.config.reward.beta[1][0]], device=trainer.device),
                 torch.ones(1, 1, device=trainer.device),
             )
-            groups = candidates.action_groups
+            groups = candidates.action_subspaces
             weighted = [g.logits[0] + trainer.config.subsampling.importance_temp * g.log_importance for g in groups]
             log_partition = torch.logsumexp(torch.cat(weighted), 0)
             by_kind = {}
-            for kind in {g.kind for g in groups}:
-                values = torch.cat([g.logits[0] for g in groups if g.kind == kind])
-                weights = torch.cat([w for g, w in zip(groups, weighted, strict=True) if g.kind == kind])
+            for action_type in {g.action_type for g in groups}:
+                values = torch.cat([g.logits[0] for g in groups if g.action_type == action_type])
+                weights = torch.cat([w for g, w in zip(groups, weighted, strict=True) if g.action_type == action_type])
                 valid = torch.isfinite(values)
-                by_kind[kind.name] = {
+                by_kind[action_type.name] = {
                     "sampled_actions": int(valid.sum()),
                     "logit_min": float(values[valid].min().cpu()) if valid.any() else None,
                     "logit_max": float(values[valid].max().cpu()) if valid.any() else None,
@@ -168,10 +168,10 @@ def main() -> None:
         raise SystemExit("output-dir must be a new path")
     config = Config(
         data=DataConfig(env_dir=str(args.env_dir.resolve()), max_atoms=50),
-        reward=RewardConfig(exponent=8.0),
+        reward=RewardConfig(beta=("fixed", [8.0])),
         property_penalty={"mw": 500.0},
         subsampling=SubsamplingConfig(sampling_ratio=0.002, min_sampling=10),
-        model=ModelConfig(hidden_dim=64, num_heads=4, num_layers=2),
+        model=ModelConfig(num_emb=64, num_heads=4, num_layers=2),
         training=TrainingConfig(
             steps=args.steps,
             batch_size=4,
@@ -233,10 +233,7 @@ def main() -> None:
         report["training_seconds"] = time.perf_counter() - started
         report["after"] = evaluate(trainer, args.count, 11, "after")
         report["action_diagnostics_after"] = action_diagnostics(trainer)
-        report["learned_temperatures"] = {
-            name: float(trainer.model.temperature(trainer.model.encode_condition(torch.tensor([float(trainer.config.reward.exponent)], device=trainer.device), torch.ones(1, 1, device=trainer.device)))[0, index].detach().cpu())
-            for name, index in trainer.env.action_to_index.items()
-        }
+        report["learned_logit_scale"] = float(trainer.model.logit_scale(trainer.model.encode_cond(torch.tensor([trainer.config.reward.beta[1][0]], device=trainer.device), torch.ones(1, 1, device=trainer.device)))[0].detach().cpu())
         report["peak_rss_mib_main_process"] = (
             resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
         )

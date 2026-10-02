@@ -3,13 +3,27 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass, field
+import re
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 from omegaconf import OmegaConf
 
 RUN_FIELDS = ("output_dir", "seed", "device")
+
+
+def parse_distribution(value: str) -> tuple[str, list[float]]:
+    """Parse a CLI/YAML condition. Bare uniform means simplex-uniform weights."""
+    if not isinstance(value, str):
+        raise ValueError("external condition specifications must be strings")
+    value = value.strip()
+    if value == "uniform":
+        return "dirichlet", [1.0]
+    match = re.fullmatch(r"(fixed|uniform|dirichlet)\(([^)]+)\)", value)
+    if match:
+        return match[1], [float(x) for x in match[2].split(",")]
+    return "fixed", [float(value)]
 
 
 @dataclass
@@ -45,28 +59,25 @@ class SubsamplingConfig:
 class RewardConfig:
     """Reward transformation and constructor settings."""
 
-    # Scalar beta or [low, high] for a uniform draw per trajectory.
-    # OmegaConf does not support unions containing containers.
-    exponent: Any = 32.0
-    # None draws uniformly on the objective simplex (Dirichlet(1)).
-    preferences: list[float] | None = None
+    # Reward exponent and preference sampling specifications.
+    beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [32.0]))
+    preferences: tuple[str, list[float]] = field(
+        default_factory=lambda: ("dirichlet", [1.0])
+    )
     floor: float = 1e-4
     settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        bounds = self.exponent if isinstance(self.exponent, list) else [self.exponent]
-        if not bounds or any(not math.isfinite(x) or x <= 0 for x in bounds):
-            raise ValueError("reward.exponent must be positive and finite")
-        if isinstance(self.exponent, list) and (
-            len(bounds) != 2 or bounds[0] >= bounds[1]
-        ):
-            raise ValueError("reward.exponent range must be [low, high] with low < high")
-        if self.preferences is not None and (
-            not self.preferences
-            or any(not math.isfinite(x) or x < 0 for x in self.preferences)
-            or not math.isclose(sum(self.preferences), 1.0, abs_tol=1e-6)
-        ):
-            raise ValueError("reward.preferences must be non-negative and sum to 1")
+        for spec in (self.beta, self.preferences):
+            if (
+                not isinstance(spec, tuple)
+                or len(spec) != 2
+                or not isinstance(spec[0], str)
+                or not isinstance(spec[1], list)
+            ):
+                raise ValueError(
+                    "internal conditions must be (distribution, parameters) tuples"
+                )
         if self.floor <= 0:
             raise ValueError("reward.floor must be positive")
         if not isinstance(self.settings, dict):
@@ -76,18 +87,18 @@ class RewardConfig:
 @dataclass
 class ModelConfig:
     # Residual GINE width/depth; retain the 2H mean/virtual-node readout.
-    hidden_dim: int = 128
+    num_emb: int = 128
     num_layers: int = 4
-    block_dim: int = 128
+    num_block_emb: int = 128
     # Total Linear layers, including the output layer.
-    mlp_layers: int = 2
-    block_mlp_layers: int = 2
+    num_mlp_layers: int = 2
+    num_mlp_layers_block: int = 2
     dropout: float = 0.0
 
     def validate(self) -> None:
-        if self.hidden_dim <= 0 or self.num_layers <= 0:
+        if self.num_emb <= 0 or self.num_layers <= 0:
             raise ValueError("model dimensions must be positive")
-        if self.block_dim <= 0 or self.mlp_layers < 1 or self.block_mlp_layers < 1:
+        if self.num_block_emb <= 0 or self.num_mlp_layers < 1 or self.num_mlp_layers_block < 1:
             raise ValueError("invalid block dimension or MLP depth")
         if not 0 <= self.dropout < 1:
             raise ValueError("model.dropout must be in [0, 1)")
@@ -119,6 +130,7 @@ class TrainingConfig:
     log_z_learning_rate: float = 1e-1
     lr_decay_steps: float = 20_000
     weight_decay: float = 1e-8
+    # Additional softmax temperature, separate from reward exponent beta.
     sampling_temperature: float = 1.0
     random_action_prob: float = 0.05
     ema_decay: float = 0.99
@@ -214,6 +226,10 @@ class Config:
     def to_file_dict(self) -> dict[str, Any]:
         """Return the shallow user-facing YAML representation."""
 
+        reward = asdict(self.reward)
+        for name in ("beta", "preferences"):
+            distribution, params = reward[name]
+            reward[name] = f"{distribution}({','.join(str(x) for x in params)})"
         return {
             "data": asdict(self.data),
             "run": {
@@ -221,7 +237,7 @@ class Config:
                 "seed": self.seed,
                 "device": self.device,
             },
-            "reward": asdict(self.reward),
+            "reward": reward,
             "property_penalty": dict(self.property_penalty),
             "subsampling": asdict(self.subsampling),
             "generation": asdict(self.generation),
@@ -254,9 +270,17 @@ class Config:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Config:
+        unknown = set(raw) - {f.name for f in fields(cls)}
+        if unknown:
+            raise ValueError(f"unknown configuration fields: {sorted(unknown)}")
+        reward = dict(raw["reward"])
+        # JSON/OmegaConf serialize tuples as sequences; restore the typed config.
+        for name in ("beta", "preferences"):
+            dist, params = reward[name]
+            reward[name] = (dist, list(params))
         cfg = cls(
             data=DataConfig(**raw["data"]),
-            reward=RewardConfig(**raw["reward"]),
+            reward=RewardConfig(**reward),
             property_penalty=dict(raw["property_penalty"]),
             subsampling=SubsamplingConfig(**raw["subsampling"]),
             generation=GenerationConfig(**raw["generation"]),
@@ -271,7 +295,8 @@ class Config:
 
     @classmethod
     def from_file(cls, path: str | Path) -> Config:
-        base = OmegaConf.structured(cls())
+        # Parse text at the YAML boundary, before constructing internal config.
+        base = OmegaConf.create(cls().to_dict())
         loaded = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
         if not isinstance(loaded, dict):
             raise ValueError("configuration file must contain a mapping")
@@ -280,6 +305,9 @@ class Config:
         if reward is not None:
             if not isinstance(reward, dict):
                 raise ValueError("reward must be a mapping")
+            for name in ("beta", "preferences"):
+                if name in reward:
+                    reward[name] = parse_distribution(reward[name])
             if "settings" in reward and not isinstance(reward["settings"], dict):
                 raise ValueError("reward.settings must be a mapping")
         property_penalty = normalized.get("property_penalty")

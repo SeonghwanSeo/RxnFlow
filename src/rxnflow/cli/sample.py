@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from rxnflow.reward import QEDReward
+from rxnflow.config import parse_distribution
 from rxnflow.sampler import RxnFlowSampler
 
 
@@ -16,32 +16,29 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--format", choices=("smi", "csv", "json"))
     parser.add_argument("--num-samples", type=int, default=100)
     parser.add_argument(
-        "--temperature",
+        "--sampling-temperature",
         type=float,
-        help="additional sampling temperature; independent of beta",
+        default=1.0,
+        help="softmax temperature (default: 1); independent of reward exponent beta",
     )
-    parser.add_argument("--beta", type=float, required=True)
+    parser.add_argument(
+        "--beta", required=True, help="reward exponent: 32 or uniform(1,64)"
+    )
     parser.add_argument(
         "--preferences",
-        type=float,
-        nargs="+",
-        required=True,
-        help="weights in the checkpoint objective order; sum to 1",
+        default="uniform",
+        help="uniform (default), dirichlet(alpha), or fixed(w1,...)",
     )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device")
-    parser.add_argument(
-        "--qed", action="store_true", help="include QED in structured JSON results"
-    )
     args = parser.parse_args(argv)
-    reward = QEDReward() if args.qed else None
-    sampler = RxnFlowSampler(args.checkpoint, reward=reward, device=args.device)
+    sampler = RxnFlowSampler(args.checkpoint, device=args.device)
     results = sampler.sample(
         args.num_samples,
-        args.temperature,
+        args.sampling_temperature,
         args.seed,
-        beta=args.beta,
-        preferences=args.preferences,
+        beta=parse_distribution(args.beta),
+        preferences=parse_distribution(args.preferences),
     )
     sampler.write(results, args.output, args.format)
     print(f"wrote {len(results)} valid samples to {args.output}")

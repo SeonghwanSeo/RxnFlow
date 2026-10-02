@@ -53,19 +53,19 @@ def _permute_graph(graph, permutation: torch.Tensor):
 def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
     model = RxnFlowModel(
-        env, ModelConfig(hidden_dim=32, num_layers=2, dropout=0.0), num_objectives=1
+        env, ModelConfig(num_emb=32, num_layers=2, dropout=0.0), num_objectives=1
     )
     model.eval()
     graph = molecule_to_graph_data(None, env.max_atoms, 0)
-    start_embedding = model.encode_graphs(
+    start_embedding = model.graph_embedding(
         GraphBatch.from_graphs([graph]),
-        condition=_condition(model, len(GraphBatch.from_graphs([graph]).node_mask)),
+        cond_info=_condition(model, len(GraphBatch.from_graphs([graph]).node_mask)),
     )
     assert (
-        model.score_scalar(
+        model.get_unirxn_logits(
             start_embedding,
             "nitrile_to_tetrazole",
-            temperatures=model.temperature(_condition(model, 1)),
+            logit_scale=model.logit_scale(_condition(model, 1)),
         ).ndim
         == 0
     )
@@ -73,9 +73,9 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
     molecular = molecule_to_graph_data(parse_molecule("CCO"), 12, 1)
     order = torch.tensor([2, 0, 1] + list(range(3, 13)))
     permuted = _permute_graph(molecular, order)
-    embeddings = model.encode_graphs(
+    embeddings = model.graph_embedding(
         GraphBatch.from_graphs([molecular, permuted]),
-        condition=_condition(
+        cond_info=_condition(
             model, len(GraphBatch.from_graphs([molecular, permuted]).node_mask)
         ),
     )
@@ -83,9 +83,9 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
     assert torch.allclose(embeddings[0], embeddings[1], atol=1e-5)
 
     no_bonds = replace(molecular, bond_features=torch.zeros_like(molecular.bond_features))
-    bond_embeddings = model.encode_graphs(
+    bond_embeddings = model.graph_embedding(
         GraphBatch.from_graphs([molecular, no_bonds]),
-        condition=_condition(
+        cond_info=_condition(
             model, len(GraphBatch.from_graphs([molecular, no_bonds]).node_mask)
         ),
     )
@@ -93,19 +93,19 @@ def test_graph_model_shapes_gradients_permutation_and_bonds(prepared_env) -> Non
 
     block_type = env.brick_types[0]
     indices = torch.arange(min(2, len(env.blocks[block_type])))
-    logits = model.score_blocks(
+    logits = model.get_block_logits(
         start_embedding,
         "first_block",
         block_type,
         indices,
-        temperatures=model.temperature(_condition(model, 1)),
+        logit_scale=model.logit_scale(_condition(model, 1)),
     )
     loss = (
         logits.square().mean()
-        + model.score_scalar(
+        + model.get_unirxn_logits(
             start_embedding,
             "nitrile_to_tetrazole",
-            temperatures=model.temperature(_condition(model, 1)),
+            logit_scale=model.logit_scale(_condition(model, 1)),
         ).square()
     )
     loss.backward()
@@ -153,56 +153,53 @@ def test_dot_scores_ignore_block_norm_and_train_both_action_scales(
     prepared_env, monkeypatch
 ) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=20)
-    model = RxnFlowModel(env, ModelConfig(hidden_dim=32, num_layers=1), num_objectives=1)
-    state = model.encode_graphs(
+    model = RxnFlowModel(env, ModelConfig(num_emb=32, num_layers=1), num_objectives=1)
+    state = model.graph_embedding(
         GraphBatch.from_graphs([molecule_to_graph_data(None, 20, 0)]),
-        condition=_condition(
+        cond_info=_condition(
             model,
             len(GraphBatch.from_graphs([molecule_to_graph_data(None, 20, 0)]).node_mask),
         ),
     )
     block_type = env.brick_types[0]
     indices = torch.arange(2)
-    blocks = torch.randn(2, model.block_type_embedding.embedding_dim)
-    monkeypatch.setattr(model, "_encode_blocks", lambda *args: blocks)
-    before = model.score_blocks(
+    blocks = torch.randn(2, model.emb_type.embedding_dim)
+    monkeypatch.setattr(model, "get_block_emb", lambda *args: blocks)
+    before = model.get_block_logits(
         state,
         "first_block",
         block_type,
         indices,
-        temperatures=model.temperature(_condition(model, 1)),
+        logit_scale=model.logit_scale(_condition(model, 1)),
     )
     blocks = blocks * torch.tensor([[0.1], [100.0]])
-    after = model.score_blocks(
+    after = model.get_block_logits(
         state,
         "first_block",
         block_type,
         indices,
-        temperatures=model.temperature(_condition(model, 1)),
+        logit_scale=model.logit_scale(_condition(model, 1)),
     )
     assert torch.allclose(before, after, atol=1e-6)
-    unary = model.score_scalar(
+    unary = model.get_unirxn_logits(
         state,
         "nitrile_to_tetrazole",
-        temperatures=model.temperature(_condition(model, 1)),
+        logit_scale=model.logit_scale(_condition(model, 1)),
     )
-    # A single categorical includes both action kinds, so gradients must reach
-    # both temperatures and both heads through their shared normalization.
+    # A single categorical includes both action action_types, so gradients must reach
+    # the shared scale and both heads through their shared normalization.
     probability = torch.log_softmax(torch.cat([after, unary.reshape(1)]), dim=0)[-1]
     (-probability).backward()
-    for name in ("first_block", "nitrile_to_tetrazole"):
-        assert model.temperature_head[-1].bias.grad[env.action_to_index[name]].abs() > 0
+    assert model._logit_scale[-1].bias.grad[0].abs() > 0
     torch.testing.assert_close(
-        model.temperature(_condition(model, 1)),
-        torch.full((1, len(env.action_names)), 0.2),
+        model.logit_scale(_condition(model, 1)),
+        torch.ones(1),
     )
 
 
 def test_chirality_and_graph_padding_are_preserved(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(
-        env, ModelConfig(hidden_dim=16, num_layers=2), num_objectives=1
-    ).eval()
+    model = RxnFlowModel(env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1).eval()
     graphs = [
         molecule_to_graph_data(parse_molecule(s), 12, 1)
         for s in ("N[C@H](C)O", "N[C@@H](C)O")
@@ -210,23 +207,21 @@ def test_chirality_and_graph_padding_are_preserved(prepared_env):
     assert not torch.equal(graphs[0].node_features, graphs[1].node_features)
     assert torch.equal(graphs[0].node_features[:, :-3], graphs[1].node_features[:, :-3])
     batch = GraphBatch.from_graphs(graphs)
-    original = model.encode_graphs(
-        batch, condition=_condition(model, len(batch.node_mask))
+    original = model.graph_embedding(
+        batch, cond_info=_condition(model, len(batch.node_mask))
     )
     assert not torch.allclose(original[0], original[1])
     # Padding cannot influence message passing or pooling.
     batch.node_features[~batch.node_mask] = 1000
     torch.testing.assert_close(
-        model.encode_graphs(batch, condition=_condition(model, len(batch.node_mask))),
+        model.graph_embedding(batch, cond_info=_condition(model, len(batch.node_mask))),
         original,
     )
 
 
 def test_graph_encoder_distinguishes_bond_stereoisomers(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(
-        env, ModelConfig(hidden_dim=16, num_layers=2), num_objectives=1
-    ).eval()
+    model = RxnFlowModel(env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1).eval()
     # Same atoms and connectivity; only double-bond stereo differs (E/Z/none).
     graphs = [
         molecule_to_graph_data(parse_molecule(s), 12, 1)
@@ -235,9 +230,9 @@ def test_graph_encoder_distinguishes_bond_stereoisomers(prepared_env):
     for graph in graphs[1:]:
         assert torch.equal(graphs[0].node_features, graph.node_features)
         assert torch.equal(graphs[0].adjacency, graph.adjacency)
-    embeddings = model.encode_graphs(
+    embeddings = model.graph_embedding(
         GraphBatch.from_graphs(graphs),
-        condition=_condition(model, len(GraphBatch.from_graphs(graphs).node_mask)),
+        cond_info=_condition(model, len(GraphBatch.from_graphs(graphs).node_mask)),
     )
     for i, j in ((0, 1), (0, 2), (1, 2)):
         assert not torch.equal(graphs[i].bond_features, graphs[j].bond_features)
@@ -271,7 +266,7 @@ def test_gine_layer_matches_equations_and_gradients():
             for i in range(6)
         ]
     )
-    update = reference.update(aggregate).reshape(2, 3, 4)
+    update = reference.mlp(aggregate).reshape(2, 3, 4)
     expected = rx + update
     torch.testing.assert_close(actual[valid], expected[valid], atol=1e-10, rtol=1e-10)
     actual_grads = torch.autograd.grad(
@@ -286,28 +281,26 @@ def test_gine_layer_matches_equations_and_gradients():
 
 def test_mpnn_readout_is_invariant_to_atom_order_and_batch_companions(prepared_env):
     env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
-    model = RxnFlowModel(
-        env, ModelConfig(hidden_dim=16, num_layers=2), num_objectives=1
-    ).eval()
+    model = RxnFlowModel(env, ModelConfig(num_emb=16, num_layers=2), num_objectives=1).eval()
     mol = parse_molecule("CC(O)N[33*]")
     reordered = Chem.RenumberAtoms(mol, list(reversed(range(mol.GetNumAtoms()))))
     graphs = [
         molecule_to_graph_data(value, 12, 1 if value is not None else 0)
         for value in (None, mol, reordered, parse_molecule("CCO"))
     ]
-    together = model.encode_graphs(
+    together = model.graph_embedding(
         GraphBatch.from_graphs(graphs),
-        condition=_condition(model, len(GraphBatch.from_graphs(graphs).node_mask)),
+        cond_info=_condition(model, len(GraphBatch.from_graphs(graphs).node_mask)),
     )
     assert torch.isfinite(together).all()
     torch.testing.assert_close(together[1], together[2], atol=1e-5, rtol=1e-5)
     for i, graph in enumerate(graphs):
-        alone = model.encode_graphs(
+        alone = model.graph_embedding(
             GraphBatch.from_graphs([graph]),
-            condition=_condition(model, len(GraphBatch.from_graphs([graph]).node_mask)),
+            cond_info=_condition(model, len(GraphBatch.from_graphs([graph]).node_mask)),
         )
         torch.testing.assert_close(together[i], alone[0], atol=1e-5, rtol=1e-5)
 
 
 def _condition(model, count):
-    return model.encode_condition(torch.ones(count), torch.ones(count, 1))
+    return model.encode_cond(torch.ones(count), torch.ones(count, 1))

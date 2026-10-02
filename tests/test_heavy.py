@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 import torch
 
+from examples.qed import QEDReward
 from rxnflow.config import (
     Config,
     DataConfig,
@@ -15,7 +16,6 @@ from rxnflow.config import (
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.prepare import convert_stage, features_stage
 from rxnflow.gflownet.subsampling import BlockSubsampler
-from rxnflow.reward import QEDReward
 from rxnflow.sampler import RxnFlowSampler
 from rxnflow.trainer import RxnFlowTrainer
 
@@ -63,9 +63,9 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
     steps = int(os.environ.get("RXNFLOW_HEAVY_STEPS", "10"))
     config = Config(
         data=DataConfig(env_dir=str(env_dir), max_atoms=50),
-        reward=RewardConfig(exponent=1.0),
+        reward=RewardConfig(beta=("fixed", [1.0])),
         subsampling=SubsamplingConfig(sampling_ratio=0.001, min_sampling=50),
-        model=ModelConfig(hidden_dim=64, num_layers=2),
+        model=ModelConfig(num_emb=64, num_layers=2),
         training=TrainingConfig(
             steps=steps,
             batch_size=4,
@@ -85,4 +85,6 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
     checkpoint = restarted.run(1)
     assert restarted.step == steps + 1
     restarted.env.retro_analyzer.close()
-    assert RxnFlowSampler(checkpoint).sample(4, beta=1.0, preferences=[1.0])
+    assert RxnFlowSampler(checkpoint).sample(
+        4, beta=("fixed", [1.0]), preferences=("fixed", [1.0])
+    )

@@ -11,7 +11,8 @@ from rdkit import Chem
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.graph import molecule_to_graph_data
 from rxnflow.envs.prepare import convert_stage, features_stage
-from rxnflow.gflownet.types import ActionKind, MoleculeState
+from rxnflow.errors import InvalidTransition
+from rxnflow.gflownet.types import Action, ActionType, State
 
 
 def block_index(env, block_type, smiles):
@@ -21,13 +22,23 @@ def block_index(env, block_type, smiles):
 
 
 def actions_for(env, state, name, block_type=None, smiles=None):
-    group = next(
-        group
-        for group in env.available_groups(state)
-        if group.name == name and group.block_type == block_type
+    action_type, reaction, library = next(
+        spec
+        for spec in env.get_action_space(state)
+        if spec[1] == name and spec[2] == block_type
     )
     index = block_index(env, block_type, smiles) if smiles is not None else None
-    return env.outcomes(state, group, index)
+    action = Action(
+        action_type,
+        None if action_type == ActionType.FIRST_BLOCK else reaction,
+        library,
+        index,
+    )
+    try:
+        env.step(state, action)
+    except InvalidTransition:
+        return []
+    return [action]
 
 
 def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
@@ -75,23 +86,31 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
 def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=30, max_reactions=3)
     initial = env.initial_state()
-    assert {g.kind for g in env.available_groups(initial)} == {ActionKind.FIRST_BLOCK}
+    assert env.get_action_space(initial) is env.action_space[None]
+    assert set(env.action_space) == {None, *env.synthon_types}
+    # Step variants are precomputed; equivalent states reuse their tuple list.
+    same_site = State.from_smiles("[1*]NCC")
+    assert env.get_action_space(same_site) is env.get_action_space(same_site)
+    assert all(isinstance(spec, tuple) for spec in env.action_space[1])
+    assert {g[0] for g in env.get_action_space(initial)} == {ActionType.FIRST_BLOCK}
     first = actions_for(env, initial, "first_block", "1", "*NCCN")[0]
     start = env.step(initial, first)
     assert start.reaction_count == 0
-    coupling = actions_for(env, start, "rxn1_state_first", "3-33", "*CN[33*]")[0]
+    coupling = actions_for(env, start, "amide_coupling_state_first", "3-33", "*CN[33*]")[
+        0
+    ]
     protected = env.step(start, coupling)
     assert env.dummy_signature(protected.smiles) == (33,)
-    assert {g.kind for g in env.available_groups(protected)} == {ActionKind.UNI_REACTION}
+    assert {g[0] for g in env.get_action_space(protected)} == {ActionType.UNI_REACTION}
     deprotect = actions_for(env, protected, "boc_deprotection")[0]
     activated = env.step(protected, deprotect)
     assert activated.reaction_count == 2
     assert env.dummy_signature(activated.smiles) == (1,)
-    closure = actions_for(env, activated, "rxn1_state_first", "3", "C*")[0]
+    closure = actions_for(env, activated, "amide_coupling_state_first", "3", "C*")[0]
     terminal = env.step(activated, closure)
     assert terminal.terminated and terminal.reaction_count == 3
-    assert "*" not in terminal.smiles and not env.available_groups(terminal)
-    assert all(env.blocks[g.block_type].is_brick for g in env.available_groups(activated))
+    assert "*" not in terminal.smiles and not env.get_action_space(terminal)
+    assert all(env.blocks[g[2]].is_brick for g in env.get_action_space(activated))
     public = env.action_to_dict(first)
     assert public["block_ids"] == ["EN-A", "EN-A2"]
     assert public["building_blocks"][0] == {"id": "EN-A", "smiles": "NCCN"}
@@ -107,12 +126,12 @@ def test_state_retains_product_molecule_and_stereochemistry(
     monkeypatch,
 ) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=30)
-    parent = MoleculeState.from_smiles("[1*]N[C@@H](C)C/C=C/c1ccc([N+](=O)[O-])cc1")
+    parent = State.from_smiles("[1*]N[C@@H](C)C/C=C/c1ccc([N+](=O)[O-])cc1")
     parent_smiles = parent.smiles
     expected = Chem.MolToSmiles(
         Chem.MolFromSmiles("CC(=O)N[C@@H](C)C/C=C/c1ccc([N+](=O)[O-])cc1")
     )
-    action = actions_for(env, parent, "rxn1_state_first", "3", "C*")[0]
+    action = actions_for(env, parent, "amide_coupling_state_first", "3", "C*")[0]
 
     # Explicitly executing the action already produced the molecule. Applying that action and encoding
     # its result must not reparse either the parent or product SMILES.
@@ -149,12 +168,9 @@ def test_terminal_unary_early_exit_and_final_step_masks(prepared_env: Path) -> N
     last = replace(state, reaction_count=2)
     assert actions_for(env, last, "nitrile_to_tetrazole") == [action]
     assert env.step(last, action).terminated
-    assert env.available_groups(replace(state, reaction_count=3)) == []
-    assert (
-        env.available_groups(MoleculeState.from_smiles("[33*]NCC", reaction_count=2))
-        == []
-    )
-    assert not env.available_groups(early)
+    assert env.get_action_space(replace(state, reaction_count=3)) == []
+    assert env.get_action_space(State.from_smiles("[33*]NCC", reaction_count=2)) == []
+    assert not env.get_action_space(early)
     with pytest.raises(ValueError, match="not available"):
         env.step(early, action)
 
@@ -163,13 +179,13 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
     prepared_env: Path,
 ) -> None:
     env = SynthesisEnv(prepared_env, max_atoms=30, max_reactions=3)
-    state = MoleculeState.from_smiles("[3*]C")
+    state = State.from_smiles("[3*]C")
     directions = ["*NCCC(C)N[1*]", "[1*]NCCC(C)N*"]
     outcomes = []
     products = []
     fingerprints = []
     for smiles in directions:
-        actions = actions_for(env, state, "rxn1_block_first", "1-1", smiles)
+        actions = actions_for(env, state, "amide_coupling_block_first", "1-1", smiles)
         assert len(actions) == 1
         action = actions[0]
         outcomes.append(action)
@@ -185,14 +201,16 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
     # Equivalent orientations collapse to one catalog row.
     symmetric = Chem.MolToSmiles(Chem.MolFromSmiles("*NCCN[1*]"))
     assert env.blocks["1-1"].smiles.count(symmetric) == 1
-    assert len(actions_for(env, state, "rxn1_block_first", "1-1", symmetric)) == 1
+    assert (
+        len(actions_for(env, state, "amide_coupling_block_first", "1-1", symmetric)) == 1
+    )
 
     # Ordered library types determine which end attaches, even for two types.
     assert "1-3" in env.blocks and "3-1" in env.blocks
     assert all(
-        g.block_type != "1-3"
-        for g in env.available_groups(MoleculeState.from_smiles("[1*]NCC"))
-        if g.name == "rxn1_state_first"
+        g[2] != "1-3"
+        for g in env.get_action_space(State.from_smiles("[1*]NCC"))
+        if g[1] == "amide_coupling_state_first"
     )
 
 
@@ -201,22 +219,19 @@ def test_selected_product_capacity_and_estimated_property_budget(
 ) -> None:
     # Amidation inserts C=O: the two synthon heavy-atom counts alone undercount.
     env = SynthesisEnv(prepared_env, max_atoms=5)
-    state = MoleculeState.from_smiles("[1*]NCCN")
-    assert actions_for(env, state, "rxn1_state_first", "3", "C*") == []
+    state = State.from_smiles("[1*]NCCN")
+    assert actions_for(env, state, "amide_coupling_state_first", "3", "C*") == []
     relaxed = SynthesisEnv(prepared_env, max_atoms=7)
-    assert actions_for(relaxed, state, "rxn1_state_first", "3", "C*")
+    assert actions_for(relaxed, state, "amide_coupling_state_first", "3", "C*")
     # Terminal tetrazole is seven heavy atoms; it must respect the same limits.
-    assert (
-        actions_for(env, MoleculeState.from_smiles("[11*]CC"), "nitrile_to_tetrazole")
-        == []
-    )
+    assert actions_for(env, State.from_smiles("[11*]CC"), "nitrile_to_tetrazole") == []
     property_limited = SynthesisEnv(
         prepared_env, max_atoms=30, property_penalty={"rings": 0}
     )
     # Property masking is a reactant-budget estimate, not an exact product
     # constraint. Unary ring formation is not vetoed by a product descriptor.
     assert actions_for(
-        property_limited, MoleculeState.from_smiles("[11*]CC"), "nitrile_to_tetrazole"
+        property_limited, State.from_smiles("[11*]CC"), "nitrile_to_tetrazole"
     )
 
 
@@ -255,13 +270,13 @@ def test_versioned_feature_artifact_is_rejected(
 
 def test_minimum_reactions_masks_early_termination(prepared_env: Path) -> None:
     env = SynthesisEnv(prepared_env, min_reactions=2, max_reactions=3)
-    state = MoleculeState.from_smiles("[3*]C")
-    assert env.available_groups(state)
-    assert all(not env.blocks[g.block_type].is_brick for g in env.available_groups(state))
+    state = State.from_smiles("[3*]C")
+    assert env.get_action_space(state)
+    assert all(not env.blocks[g[2]].is_brick for g in env.get_action_space(state))
     assert "nitrile_to_tetrazole" not in {
-        g.name for g in env.available_groups(MoleculeState.from_smiles("[11*]CC"))
+        g[1] for g in env.get_action_space(State.from_smiles("[11*]CC"))
     }
-    allowed = MoleculeState.from_smiles("[11*]CC", reaction_count=1)
+    allowed = State.from_smiles("[11*]CC", reaction_count=1)
     assert env.step(
         allowed, actions_for(env, allowed, "nitrile_to_tetrazole")[0]
     ).terminated
@@ -316,20 +331,27 @@ def test_parallel_preparation_matches_serial(
 
     main(
         [
-            "--building-blocks", str(stock),
-            "--env-dir", str(parallel),
-            "--template-dir", str(root / "data/templates"),
-            "--num-workers", "2",
-            "--min-library-size", str(min_library_size),
+            "--building-blocks",
+            str(stock),
+            "--env-dir",
+            str(parallel),
+            "--template-dir",
+            str(root / "data/templates"),
+            "--num-workers",
+            "2",
+            "--min-library-size",
+            str(min_library_size),
         ]
     )
     assert (parallel / "building_blocks.json").read_bytes() == (
         prepared_env / "building_blocks.json"
     ).read_bytes()
-    counts = json.loads((prepared_env / "prepare_manifest.json").read_text())[
-        "stages"
-    ]["convert"]["block_counts"]
-    retained = {name: count for name, count in counts.items() if count >= min_library_size}
+    counts = json.loads((prepared_env / "prepare_manifest.json").read_text())["stages"][
+        "convert"
+    ]["block_counts"]
+    retained = {
+        name: count for name, count in counts.items() if count >= min_library_size
+    }
     excluded = {name: count for name, count in counts.items() if count < min_library_size}
     if min_library_size > 1:
         assert retained and excluded

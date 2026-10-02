@@ -22,76 +22,72 @@ from .nn import mlp
 
 
 class RxnFlowModel(nn.Module):
-    def __init__(self, env: SynthesisEnv, config: ModelConfig, num_objectives: int):
+    def __init__(self, env: SynthesisEnv, cfg: ModelConfig, num_objectives: int):
         super().__init__()
-        hidden = config.hidden_dim
+        num_emb = cfg.num_emb
         self.env = env
         self.num_objectives = num_objectives
         # Fixed encoder coordinates, independent of the beta sampling range.
         # Keep u itself so periodic features never alias the whole encoding.
-        self.beta_encoder = mlp(9, hidden, hidden, 2)
-        self.preference_encoder = mlp(num_objectives, hidden, hidden, 2)
-        self.graph_condition = nn.Linear(hidden, hidden)
+        self.emb_beta = mlp(9, num_emb, num_emb, 2)
+        self.emb_preferences = mlp(num_objectives, num_emb, num_emb, 2)
+        self.cond2h = nn.Linear(num_emb, num_emb)
         self.register_buffer(
             "property_scale", torch.tensor(PROPERTY_SCALE), persistent=False
         )
-        self.graph_encoder = MPNN(
-            node_dim=NODE_FEATURE_DIM,
-            edge_dim=BOND_FEATURE_DIM,
-            mol_feature_dim=PROPERTY_DIM,
-            hidden_dim=hidden,
-            num_layers=config.num_layers,
+        self.mpnn = MPNN(
+            x_dim=NODE_FEATURE_DIM,
+            e_dim=BOND_FEATURE_DIM,
+            g_dim=PROPERTY_DIM,
+            num_emb=num_emb,
+            num_layers=cfg.num_layers,
             max_reactions=env.max_reactions,
         )
         # Mean pooling and the virtual node can have different scales.
-        self.mean_norm = nn.LayerNorm(hidden)
-        self.virtual_norm = nn.LayerNorm(hidden)
-        self.action_embedding = nn.Embedding(len(env.action_names), hidden)
-        self.block_type_embedding = nn.Embedding(len(env.block_types), config.block_dim)
+        self.norm_mean = nn.LayerNorm(num_emb)
+        self.norm_virtual = nn.LayerNorm(num_emb)
+        self.emb_rxn = nn.Embedding(len(env.action_names), num_emb)
+        self.emb_type = nn.Embedding(len(env.block_types), cfg.num_block_emb)
         # Project each feature, then normalize only in the fusion MLP.
-        # Properties are scaled before projection in encode_block_features.
-        self.fingerprint_encoder = nn.Linear(FINGERPRINT_DIM, config.block_dim)
-        self.property_encoder = nn.Linear(PROPERTY_DIM, config.block_dim)
-        self.block_encoder = mlp(
-            config.block_dim * 3,
-            config.block_dim,
-            config.block_dim,
-            config.block_mlp_layers,
+        # Properties are scaled before projection in block_embedding.
+        self.lin_fp = nn.Linear(FINGERPRINT_DIM, cfg.num_block_emb)
+        self.lin_prop = nn.Linear(PROPERTY_DIM, cfg.num_block_emb)
+        self.mlp_block = mlp(
+            cfg.num_block_emb * 3,
+            cfg.num_block_emb,
+            cfg.num_block_emb,
+            cfg.num_mlp_layers_block,
             layernorm=True,
         )
         # Concatenate the 2H state and H reaction embeddings. Each head learns
         # their joint projection while the graph encoding is shared by reactions.
-        self.first_block_head = mlp(
-            3 * hidden,
-            hidden,
-            config.block_dim,
-            config.mlp_layers,
+        self.mlp_firstblock = mlp(
+            3 * num_emb,
+            num_emb,
+            cfg.num_block_emb,
+            cfg.num_mlp_layers,
             layernorm=True,
-            dropout=config.dropout,
+            dropout=cfg.dropout,
         )
-        self.bi_reaction_head = mlp(
-            3 * hidden,
-            hidden,
-            config.block_dim,
-            config.mlp_layers,
+        self.mlp_birxn = mlp(
+            3 * num_emb,
+            num_emb,
+            cfg.num_block_emb,
+            cfg.num_mlp_layers,
             layernorm=True,
-            dropout=config.dropout,
+            dropout=cfg.dropout,
         )
-        self.uni_reaction_head = mlp(
-            3 * hidden,
-            hidden,
+        self.mlp_unirxn = mlp(
+            3 * num_emb,
+            num_emb,
             1,
-            config.mlp_layers,
+            cfg.num_mlp_layers,
             layernorm=True,
-            dropout=config.dropout,
+            dropout=cfg.dropout,
         )
-        # HSX main SimilarityMDP(dot): normalize only block embeddings and learn
-        # a bounded temperature per reaction. Unary logits use the same scale
-        # convention because all Uni/Bi choices share one categorical policy.
-        self.min_temperature = 0.01
-        self.max_temperature = 10.0
-        self.temperature_head = mlp(hidden, hidden, len(env.action_names), 2)
-        self.log_z = mlp(hidden, hidden, 1, 2)
+        # HSX/Logit-GFN: one positive condition-dependent scale for all actions.
+        self._logit_scale = mlp(num_emb, num_emb, 1, 2)
+        self._logZ = mlp(num_emb, num_emb, 1, 2)
         self.init_weight()
 
     def init_weight(self) -> None:
@@ -104,93 +100,88 @@ class RxnFlowModel(nn.Module):
             elif isinstance(module, nn.LayerNorm):
                 module.reset_parameters()
         # HSX main initializes both reaction and block-type embeddings small.
-        nn.init.uniform_(self.action_embedding.weight, -0.1, 0.1)
-        nn.init.uniform_(self.block_type_embedding.weight, -0.1, 0.1)
-        # HSX main ModelConfig initializes SimilarityMDP at 0.2.
-        initial = (0.2 - self.min_temperature) / (
-            self.max_temperature - self.min_temperature
-        )
-        nn.init.zeros_(self.temperature_head[-1].weight)
-        nn.init.constant_(
-            self.temperature_head[-1].bias, math.log(initial / (1.0 - initial))
-        )
-        nn.init.zeros_(self.log_z[-1].weight)
-        nn.init.zeros_(self.log_z[-1].bias)
+        nn.init.uniform_(self.emb_rxn.weight, -0.1, 0.1)
+        nn.init.uniform_(self.emb_type.weight, -0.1, 0.1)
+        # Start from unscaled logits and log Z = 0.
+        nn.init.zeros_(self._logit_scale[-1].weight)
+        nn.init.zeros_(self._logit_scale[-1].bias)
+        nn.init.zeros_(self._logZ[-1].weight)
+        nn.init.zeros_(self._logZ[-1].bias)
 
-    def encode_condition(self, beta: Tensor, preferences: Tensor) -> Tensor:
+    def encode_cond(self, beta: Tensor, preferences: Tensor) -> Tensor:
         u = (beta[:, None] - 1.0) / 63.0
         frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
         angles = 2 * math.pi * u * frequencies
         features = torch.cat([u, angles.sin(), angles.cos()], dim=-1)
-        return self.beta_encoder(features) + self.preference_encoder(preferences)
+        return self.emb_beta(features) + self.emb_preferences(preferences)
 
-    def encode_graphs(self, batch: GraphBatch, condition: Tensor) -> Tensor:
-        mean, virtual = self.graph_encoder(batch, self.graph_condition(condition)).chunk(
-            2, dim=-1
-        )
-        return torch.cat([self.mean_norm(mean), self.virtual_norm(virtual)], dim=-1)
-
-    def temperature(self, condition: Tensor) -> Tensor:
-        return (
-            self.min_temperature
-            + (self.max_temperature - self.min_temperature)
-            * self.temperature_head(condition).sigmoid()
+    def graph_embedding(self, batch: GraphBatch, cond_info: Tensor) -> Tensor:
+        mean_emb, virtual_emb = self.mpnn(batch, self.cond2h(cond_info)).chunk(2, dim=-1)
+        return torch.cat(
+            [self.norm_mean(mean_emb), self.norm_virtual(virtual_emb)], dim=-1
         )
 
-    def score_scalar(
-        self, state_embedding: Tensor, action_name: str, temperatures: Tensor
+    def logit_scale(self, cond_info: Tensor) -> Tensor:
+        """HSX ELU + 1: positive scalar per condition, without fixed bounds."""
+        return F.elu(self._logit_scale(cond_info)).squeeze(-1) + 1
+
+    def logZ(self, cond_info: Tensor) -> Tensor:
+        return self._logZ(cond_info)
+
+    def get_unirxn_logits(
+        self, graph_emb: Tensor, action_name: str, logit_scale: Tensor
     ) -> Tensor:
-        return self.action_query(state_embedding, action_name, temperatures)[0, 0]
+        return self.forward_mdp(graph_emb, action_name, logit_scale)[0, 0]
 
-    def _encode_blocks(
+    def get_block_emb(
         self, block_type: str, indices: Tensor, device: torch.device
     ) -> Tensor:
         library = self.env.blocks[block_type]
         cpu_indices = indices.detach().cpu().to(torch.long)
-        fingerprints = library.fingerprints[cpu_indices].to(device, dtype=torch.float32)
-        properties = library.properties[cpu_indices].to(device)
+        fp = library.fingerprints[cpu_indices].to(device, dtype=torch.float32)
+        prop = library.properties[cpu_indices].to(device)
         type_index = self.env.block_type_to_index[block_type]
-        types = torch.full((len(indices),), type_index, dtype=torch.long, device=device)
-        return self.encode_block_features(fingerprints, properties, types)
+        block_types = torch.full(
+            (len(indices),), type_index, dtype=torch.long, device=device
+        )
+        return self.block_embedding(fp, prop, block_types)
 
-    def encode_block_features(
-        self, fingerprints: Tensor, properties: Tensor, types: Tensor
-    ) -> Tensor:
-        properties = properties / self.property_scale
-        return self.block_encoder(
+    def block_embedding(self, fp: Tensor, prop: Tensor, block_types: Tensor) -> Tensor:
+        prop = prop / self.property_scale
+        return self.mlp_block(
             torch.cat(
                 [
-                    self.fingerprint_encoder(fingerprints),
-                    self.property_encoder(properties),
-                    self.block_type_embedding(types),
+                    self.lin_fp(fp),
+                    self.lin_prop(prop),
+                    self.emb_type(block_types),
                 ],
                 dim=-1,
             )
         )
 
-    def action_query(
-        self, states: Tensor, action_name: str, temperatures: Tensor
+    def forward_mdp(
+        self, graph_emb: Tensor, action_name: str, logit_scale: Tensor
     ) -> Tensor:
         index = self.env.action_to_index[action_name]
-        reaction = self.action_embedding.weight[index].expand(states.shape[0], -1)
-        conditioned = torch.cat([states, reaction], dim=-1)
+        rxn_emb = self.emb_rxn.weight[index].expand(graph_emb.shape[0], -1)
+        state_rxn_emb = torch.cat([graph_emb, rxn_emb], dim=-1)
         if action_name == "first_block":
-            head = self.first_block_head
+            head = self.mlp_firstblock
         elif action_name in self.env.uni_reactions:
-            head = self.uni_reaction_head
+            head = self.mlp_unirxn
         else:
-            head = self.bi_reaction_head
-        return head(conditioned) / temperatures[:, index, None]
+            head = self.mlp_birxn
+        return head(state_rxn_emb) * logit_scale[:, None]
 
-    def score_blocks(
+    def get_block_logits(
         self,
-        state_embedding: Tensor,
+        graph_emb: Tensor,
         action_name: str,
         block_type: str,
         indices: Tensor,
-        temperatures: Tensor,
+        logit_scale: Tensor,
     ) -> Tensor:
-        assert indices.ndim == 1 and state_embedding.shape[0] == 1
-        query = self.action_query(state_embedding, action_name, temperatures)
-        blocks = self._encode_blocks(block_type, indices, state_embedding.device)
-        return F.normalize(blocks, dim=-1) @ query.squeeze(0)
+        assert indices.ndim == 1 and graph_emb.shape[0] == 1
+        state_emb = self.forward_mdp(graph_emb, action_name, logit_scale)
+        block_emb = self.get_block_emb(block_type, indices, graph_emb.device)
+        return F.normalize(block_emb, dim=-1) @ state_emb.squeeze(0)

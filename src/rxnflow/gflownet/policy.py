@@ -2,23 +2,22 @@
 
 from __future__ import annotations
 
-import math
-
 import torch
 from torch import Tensor
 from torch.nn import functional as F
 
 from rxnflow.config import Config
 from rxnflow.envs.chemistry.features import molecular_properties
-from rxnflow.envs.env import InvalidTransition, SynthesisEnv
+from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.graph import GraphBatch, molecule_to_graph_data
 from rxnflow.envs.retrosynthesis import RetrosynthesisTree
-from rxnflow.gflownet.categorical import ActionCategorical, ActionLogits
+from rxnflow.errors import InvalidTransition, NoValidActions
+from rxnflow.gflownet.categorical import ActionCategorical, ActionSubspace
 from rxnflow.gflownet.subsampling import BlockSubsampler
 from rxnflow.gflownet.types import (
     Action,
-    ActionKind,
-    MoleculeState,
+    ActionType,
+    State,
     Trajectory,
     Transition,
 )
@@ -32,10 +31,6 @@ def resolve_device(value: str) -> torch.device:
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is unavailable")
     return device
-
-
-class NoValidActions(ValueError):
-    """The sampled space has no budget-feasible continuation."""
 
 
 class SynthesisPolicy:
@@ -54,8 +49,8 @@ class SynthesisPolicy:
             for name, library in env.blocks.items()
         }
 
-    def candidate_batch(
-        self, states: list[MoleculeState], beta: Tensor, preferences: Tensor
+    def forward(
+        self, states: list[State], beta: Tensor, preferences: Tensor
     ) -> ActionCategorical:
         """Retain sampled columns; mask logits instead of packing valid actions.
 
@@ -68,7 +63,7 @@ class SynthesisPolicy:
         keys = [(state.smiles, state.reaction_count) for state in states]
         # Metadata contains only state rows and library names, never candidate
         # objects or per-state arrays of valid block indices.
-        action_rows, action_libraries, kinds, library_rows = {}, {}, {}, {}
+        action_rows, action_libraries, action_types, library_rows = {}, {}, {}, {}
         for row, (state, key) in enumerate(zip(states, keys, strict=True)):
             if key not in graphs:
                 descriptors = molecular_properties(state.mol)
@@ -76,14 +71,14 @@ class SynthesisPolicy:
                 graphs[key] = molecule_to_graph_data(
                     state.mol, self.env.max_atoms, state.reaction_count, descriptors
                 )
-            for group in self.env.available_groups(state):
-                kinds[group.name] = group.kind
-                action_rows.setdefault(group.name, set()).add(row)
-                if group.block_type is not None:
-                    action_libraries.setdefault(group.name, {}).setdefault(
-                        group.block_type, []
+            for action_type, name, block_type in self.env.get_action_space(state):
+                action_types[name] = action_type
+                action_rows.setdefault(name, set()).add(row)
+                if block_type is not None:
+                    action_libraries.setdefault(name, {}).setdefault(
+                        block_type, []
                     ).append(row)
-                    library_rows.setdefault(group.block_type, set()).add(row)
+                    library_rows.setdefault(block_type, set()).add(row)
         descriptors = torch.stack([properties[key] for key in keys])
         samples, masks, features, sizes = {}, {}, [], []
         for name, rows in library_rows.items():
@@ -109,73 +104,66 @@ class SynthesisPolicy:
 
         # Graph/property preprocessing is shared, but identical molecules may
         # have different beta/preferences and need separate neural encodings.
-        condition = self.model.encode_condition(beta, preferences)
-        embeddings = self.model.encode_graphs(
+        cond_info = self.model.encode_cond(beta, preferences)
+        graph_emb = self.model.graph_embedding(
             GraphBatch.from_graphs([graphs[key] for key in keys]).to(self.device),
-            condition,
+            cond_info,
         )
-        temperatures = self.model.temperature(condition)
-        block_embeddings = {}
+        logit_scale = self.model.logit_scale(cond_info)
+        block_embs = {}
         if features:
             fps, props, types = zip(*features, strict=True)
             encoded = F.normalize(
-                self.model.encode_block_features(
+                self.model.block_embedding(
                     torch.cat(fps).to(self.device, dtype=torch.float32),
                     torch.cat(props).to(self.device),
                     torch.cat(types).to(self.device),
                 ),
                 dim=-1,
             )
-            block_embeddings = dict(zip(samples, encoded.split(sizes), strict=True))
+            block_embs = dict(zip(samples, encoded.split(sizes), strict=True))
 
-        action_groups = []
+        action_subspaces = []
         for name, rows in action_rows.items():
             rows = torch.tensor(sorted(rows), device=self.device)
-            query = self.model.action_query(embeddings[rows], name, temperatures[rows])
+            state_emb = self.model.forward_mdp(graph_emb[rows], name, logit_scale[rows])
             libraries = list(action_libraries.get(name, {}))
             if libraries:
                 # CGFlow: a single group matrix over concatenated libraries.
-                blocks = torch.cat([block_embeddings[n] for n in libraries])
-                scores = query @ blocks.T
-                logits = embeddings.new_full((len(states), len(blocks)), -torch.inf)
+                blocks = torch.cat([block_embs[n] for n in libraries])
+                scores = state_emb @ blocks.T
+                logits = graph_emb.new_full((len(states), len(blocks)), -torch.inf)
                 logits = logits.index_copy(0, rows, scores)
-                allowed, weights, exploration = [], [], []
+                allowed, weights = [], []
                 for n in libraries:
                     eligible = torch.zeros(len(states), dtype=torch.bool)
                     eligible[action_libraries[name][n]] = True
                     allowed.append(masks[n] & eligible[:, None])
                     count = len(samples[n].indices)
                     weights.append(torch.full((count,), samples[n].log_importance))
-                    # Exactly CGFlow's library-size correction, before masking.
-                    exploration.append(
-                        torch.full((count,), -math.log(len(libraries) * count))
-                    )
                 logits = logits.masked_fill(
                     ~torch.cat(allowed, 1).to(self.device), -torch.inf
                 )
                 weights = torch.cat(weights).to(self.device)
-                exploration = torch.cat(exploration).to(self.device)
             else:
-                logits = embeddings.new_full((len(states), 1), -torch.inf).index_copy(
-                    0, rows, query
+                logits = graph_emb.new_full((len(states), 1), -torch.inf).index_copy(
+                    0, rows, state_emb
                 )
-                weights = embeddings.new_zeros(1)
-                exploration = embeddings.new_zeros(1)
-            action_groups.append(
-                ActionLogits(
+                weights = graph_emb.new_zeros(1)
+            action_subspaces.append(
+                ActionSubspace(
                     name,
-                    kinds[name],
+                    action_types[name],
                     libraries,
                     [samples[n].indices for n in libraries],
                     logits,
                     weights,
-                    exploration,
                 )
             )
-        return ActionCategorical(action_groups, embeddings, temperatures)
+        return ActionCategorical(action_subspaces, graph_emb, logit_scale)
 
-    def observed_logits(
-        self, embeddings: Tensor, actions: list[Action], temperatures: Tensor
+    def get_action_logits(
+        self, graph_emb: Tensor, actions: list[Action], logit_scale: Tensor
     ) -> Tensor:
         """Score numerator edges independently of the denominator subsample.
 
@@ -186,7 +174,7 @@ class SynthesisPolicy:
         for row, action in enumerate(actions):
             name = (
                 "first_block"
-                if action.kind == ActionKind.FIRST_BLOCK
+                if action.action_type == ActionType.FIRST_BLOCK
                 else action.reaction
             )
             by_reaction.setdefault(name, []).append(row)
@@ -206,11 +194,11 @@ class SynthesisPolicy:
                     ),
                 )
             )
-        blocks = embeddings.new_zeros((len(actions), self.config.model.block_dim))
+        blocks = graph_emb.new_zeros((len(actions), self.config.model.num_block_emb))
         if features:
             fp, prop, typ = zip(*features, strict=True)
             values = F.normalize(
-                self.model.encode_block_features(
+                self.model.block_embedding(
                     torch.cat(fp).to(self.device, dtype=torch.float32),
                     torch.cat(prop).to(self.device),
                     torch.cat(typ).to(self.device),
@@ -220,43 +208,43 @@ class SynthesisPolicy:
             blocks = blocks.index_copy(
                 0, torch.tensor(block_rows, device=self.device), values
             )
-        logits = embeddings.new_zeros(len(actions))
+        logits = graph_emb.new_zeros(len(actions))
         for name, rows in by_reaction.items():
             indices = torch.tensor(rows, device=self.device)
-            query = self.model.action_query(
-                embeddings[indices], name, temperatures[indices]
+            state_emb = self.model.forward_mdp(
+                graph_emb[indices], name, logit_scale[indices]
             )
             values = (
-                query.squeeze(1)
-                if actions[rows[0]].kind == ActionKind.UNI_REACTION
-                else (query * blocks[indices]).sum(1)
+                state_emb.squeeze(1)
+                if actions[rows[0]].action_type == ActionType.UNI_REACTION
+                else (state_emb * blocks[indices]).sum(1)
             )
             logits = logits.index_copy(0, indices, values)
         return logits
 
     @torch.no_grad()
-    def choose_actions(
+    def sample_actions(
         self,
-        states: list[MoleculeState],
-        temperature: float,
+        states: list[State],
+        sampling_temperature: float,
         random_action_prob: float,
         beta: Tensor,
         preferences: Tensor,
     ) -> list[Action | None]:
-        return self.candidate_batch(states, beta, preferences).sample(
-            temperature, random_action_prob, self.config.subsampling.importance_temp
+        return self.forward(states, beta, preferences).sample(
+            sampling_temperature, random_action_prob, self.config.subsampling.importance_temp
         )
 
-    def choose_action(
+    def sample_action(
         self,
-        state: MoleculeState,
-        temperature: float,
+        state: State,
+        sampling_temperature: float,
         random_action_prob: float,
         beta: Tensor,
         preferences: Tensor,
     ) -> Action:
-        action = self.choose_actions(
-            [state], temperature, random_action_prob, beta, preferences
+        action = self.sample_actions(
+            [state], sampling_temperature, random_action_prob, beta, preferences
         )[0]
         if action is None:
             raise NoValidActions(
@@ -264,27 +252,27 @@ class SynthesisPolicy:
             )
         return action
 
-    def action_log_probabilities(
+    def log_prob(
         self,
-        states: list[MoleculeState],
+        states: list[State],
         actions: list[Action],
         beta: Tensor,
         preferences: Tensor,
     ) -> Tensor:
-        categorical = self.candidate_batch(states, beta, preferences)
-        numerator = self.observed_logits(
-            categorical.embeddings, actions, categorical.temperatures
+        fwd_cat = self.forward(states, beta, preferences)
+        numerator = self.get_action_logits(
+            fwd_cat.graph_emb, actions, fwd_cat.logit_scale
         )
-        return (numerator - categorical.log_partition()).clamp(max=0.0)
+        return (numerator - fwd_cat.log_partition()).clamp(max=0.0)
 
-    def action_log_probability(
-        self, state: MoleculeState, action: Action, beta: Tensor, preferences: Tensor
+    def log_prob_single(
+        self, state: State, action: Action, beta: Tensor, preferences: Tensor
     ) -> Tensor:
-        return self.action_log_probabilities([state], [action], beta, preferences)[0]
+        return self.log_prob([state], [action], beta, preferences)[0]
 
     def rollout(
         self,
-        temperature: float = 1.0,
+        sampling_temperature: float = 1.0,
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
         *,
@@ -293,7 +281,7 @@ class SynthesisPolicy:
     ) -> Trajectory:
         return self.rollouts(
             1,
-            temperature,
+            sampling_temperature,
             random_action_prob,
             analyze_backward,
             beta=beta,
@@ -303,7 +291,7 @@ class SynthesisPolicy:
     def rollouts(
         self,
         count: int,
-        temperature: float = 1.0,
+        sampling_temperature: float = 1.0,
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
         *,
@@ -333,7 +321,7 @@ class SynthesisPolicy:
                 )
                 if value is None or tree is None:
                     raise RuntimeError("backward analysis lost the generated route")
-                transition.log_pb = value
+                transition.log_p_B = value
                 retro_trees[index] = tree
 
         # FirstBlock + at most max_reactions chemical transformations.
@@ -345,9 +333,9 @@ class SynthesisPolicy:
             ]
             if not active:
                 break
-            selected = self.choose_actions(
+            selected = self.sample_actions(
                 [states[index] for index in active],
-                temperature,
+                sampling_temperature,
                 random_action_prob,
                 beta[active],
                 preferences[active],

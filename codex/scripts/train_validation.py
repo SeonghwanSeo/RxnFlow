@@ -11,7 +11,7 @@ from rdkit.Chem import QED, Descriptors, Lipinski
 
 from rxnflow.config import Config
 from rxnflow.gflownet.policy import SynthesisPolicy
-from rxnflow.reward import QEDReward
+from examples.qed import QEDReward
 from rxnflow.trainer import RxnFlowTrainer
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 from pathlib import Path
 
 import torch
@@ -13,10 +12,11 @@ from rdkit import Chem
 from rxnflow import __version__
 from rxnflow.config import Config
 from rxnflow.envs.env import SynthesisEnv
+from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device
 from rxnflow.gflownet.types import SamplingResult, Trajectory
 from rxnflow.models import RxnFlowModel
-from rxnflow.reward import RewardFunction, SampleFilter, evaluate_rewards
+from rxnflow.reward import RewardFunction, evaluate_rewards
 
 
 class RxnFlowSampler:
@@ -25,7 +25,6 @@ class RxnFlowSampler:
         checkpoint: str | Path,
         reward: RewardFunction | None = None,
         device: str | None = None,
-        sample_filter: SampleFilter | None = None,
     ):
         # Load once on CPU: sampling needs only EMA weights, not the optimizer
         # and replay tensors copied to the GPU with the entire checkpoint.
@@ -43,7 +42,6 @@ class RxnFlowSampler:
         self.objectives = tuple(payload["objectives"])
         if reward is not None and tuple(reward.objectives) != self.objectives:
             raise ValueError("scoring reward objectives differ from the checkpoint")
-        self.sample_filter = sample_filter
         self.device = resolve_device(config.device)
         self.env = SynthesisEnv(
             config.data.env_dir,
@@ -92,34 +90,24 @@ class RxnFlowSampler:
     def sample(
         self,
         count: int,
-        temperature: float | None = None,
+        sampling_temperature: float = 1.0,
         seed: int | None = None,
         *,
-        beta: float,
-        preferences: list[float],
+        beta: tuple[str, list[float]],
+        preferences: tuple[str, list[float]] | None = None,
     ) -> list[SamplingResult]:
-        if not math.isfinite(beta) or beta <= 0:
-            raise ValueError("beta must be positive and finite")
-        if (
-            len(preferences) != len(self.objectives)
-            or any(not math.isfinite(w) or w < 0 for w in preferences)
-            or not math.isclose(sum(preferences), 1.0, abs_tol=1e-6)
-        ):
-            raise ValueError(
-                "preferences must match objectives, be non-negative and sum to 1"
-            )
+        conditions = ConditionSampler(
+            beta,
+            ("dirichlet", [1.0]) if preferences is None else preferences,
+            len(self.objectives),
+        )
         if count <= 0:
             raise ValueError("sample count must be positive")
         if seed is not None:
             self.generator.manual_seed(seed)
-            torch.manual_seed(seed)  # Device-side categorical draws.
-        sampling_temperature = (
-            self.config.training.sampling_temperature
-            if temperature is None
-            else temperature
-        )
+            torch.manual_seed(seed)  # CPU conditions and device-side categorical draws.
         if sampling_temperature <= 0:
-            raise ValueError("temperature must be positive")
+            raise ValueError("softmax temperature must be positive")
         trajectories: list[Trajectory] = []
         attempts = 0
         maximum_attempts = max(100, count * 100)
@@ -129,15 +117,14 @@ class RxnFlowSampler:
                 count - len(trajectories),
                 maximum_attempts - attempts,
             )
+            sampled_beta, weights = conditions.sample(batch_size)
             batch = self.policy.rollouts(
                 batch_size,
                 sampling_temperature,
                 0.0,
                 analyze_backward=False,
-                beta=torch.full((batch_size,), float(beta)),
-                preferences=torch.tensor(preferences, dtype=torch.float32).expand(
-                    batch_size, -1
-                ),
+                beta=sampled_beta,
+                preferences=weights,
             )
             attempts += batch_size
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
@@ -150,10 +137,12 @@ class RxnFlowSampler:
             values, metrics = evaluate_rewards(
                 self.reward,
                 [Chem.MolFromSmiles(value.final_smiles) for value in trajectories],
-                self.sample_filter,
             )
             scalar_rewards = (
-                (values * values.new_tensor(preferences)).sum(-1).cpu().tolist()
+                (values * values.new_tensor([t.preferences for t in trajectories]))
+                .sum(-1)
+                .cpu()
+                .tolist()
             )
             for result, value, scalar in zip(
                 results, values.cpu().tolist(), scalar_rewards, strict=True

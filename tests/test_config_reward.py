@@ -5,6 +5,7 @@ import torch
 import yaml
 from rdkit import Chem
 
+from examples.qed import QEDReward
 from rxnflow.config import (
     Config,
     DataConfig,
@@ -15,7 +16,7 @@ from rxnflow.config import (
 )
 from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.gflownet.types import Trajectory
-from rxnflow.reward import QEDReward, RewardFunction, evaluate_rewards
+from rxnflow.reward import RewardFunction, evaluate_rewards
 
 
 class AtomCountReward(RewardFunction):
@@ -60,7 +61,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert config.to_dict()["data"]["max_atoms"] == 50
     saved = yaml.safe_load(path.read_text())
     assert saved["run"]["output_dir"] == "runs/rxnflow"
-    assert saved["reward"]["exponent"] == 32.0
+    assert saved["reward"]["beta"] == "fixed(32.0)"
     assert saved["property_penalty"] == {"mw": 500.0}
     assert "property_limits" not in saved["data"]
     assert saved["training"]["learning_rate"] == 1e-4
@@ -70,7 +71,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     minimal.write_text(
         "data:\n  env_dir: example\n"
         "run:\n  output_dir: run\n"
-        "reward:\n  exponent: 8\n  settings:\n    scale: 2\n    options:\n      positive: true\n"
+        "reward:\n  beta: '8'\n  settings:\n    scale: 2\n    options:\n      positive: true\n"
         "property_penalty:\n  tpsa: 140\n"
         "training:\n  steps: 25\n"
     )
@@ -78,7 +79,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert loaded.training.steps == 25
     assert loaded.training.learning_rate == 1e-4
     assert loaded.output_dir == "run"
-    assert loaded.reward.exponent == 8
+    assert loaded.reward.beta == ("fixed", [8.0])
     assert loaded.property_penalty == {"tpsa": 140.0}
     reward = ScaledAtomCountReward(**loaded.reward.settings)
     assert evaluate_rewards(reward, [Chem.MolFromSmiles("CCO")])[0].tolist() == [[6.0]]
@@ -89,7 +90,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         SubsamplingConfig(importance_temp=-0.1).validate()
     with pytest.raises(ValueError):
-        RewardConfig(exponent=0).validate()
+        RewardConfig(beta=0).validate()
     with pytest.raises(ValueError):
         RewardConfig(floor=0).validate()
     with pytest.raises(ValueError, match="at least"):
@@ -125,8 +126,10 @@ def test_checked_in_minimal_and_complete_configs_load() -> None:
     root = Path(__file__).parents[1]
     minimal = Config.from_file(root / "configs" / "qed.yaml")
     complete = Config.from_file(root / "configs" / "template.yaml")
-    assert minimal.reward == RewardConfig(exponent=32.0)
-    assert complete.reward == RewardConfig(exponent=32.0, floor=1e-4, settings={})
+    assert minimal.reward == RewardConfig(beta=("fixed", [32.0]))
+    assert complete.reward == RewardConfig(
+        beta=("fixed", [32.0]), floor=1e-4, settings={}
+    )
     assert minimal.property_penalty == {"mw": 500.0}
     assert complete.property_penalty == {}
     assert minimal.training.batch_size == 64
@@ -173,10 +176,14 @@ def test_qed_and_custom_reward_alignment() -> None:
     assert values[1] == 0
     custom, _ = evaluate_rewards(AtomCountReward(), [Chem.MolFromSmiles("CCO")])
     assert custom.tolist() == [[3.0]]
+
+    class FilteredReward(AtomCountReward):
+        def filter_object(self, mol):
+            return mol.GetNumHeavyAtoms() <= 3
+
     filtered, _ = evaluate_rewards(
-        AtomCountReward(),
+        FilteredReward(),
         [Chem.MolFromSmiles("CCO"), Chem.MolFromSmiles("CCCC")],
-        sample_filter=lambda mol: mol.GetNumHeavyAtoms() <= 3,
     )
     assert filtered.tolist() == [[3.0], [0.0]]
     with pytest.raises(ValueError, match="non-negative"):
@@ -220,16 +227,16 @@ def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
     import json
     import random
 
-    from rxnflow.gflownet.types import Action, ActionKind, MoleculeState, Transition
+    from rxnflow.gflownet.types import Action, ActionType, State, Transition
 
-    state = MoleculeState.from_smiles("[1*]N[C@@H](C)C/C=C/C", reaction_count=1)
+    state = State.from_smiles("[1*]N[C@@H](C)C/C=C/C", reaction_count=1)
     trajectory = Trajectory(
         steps=[
             Transition(
                 state,
-                Action(ActionKind.UNI_REACTION, reaction="convert"),
+                Action(ActionType.UNI_REACTION, reaction="convert"),
                 product_smiles="CC",
-                log_pb=-0.7,
+                log_p_B=-0.7,
             ),
         ],
         final_smiles="CC",
@@ -245,7 +252,7 @@ def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
     saved = json.loads(json.dumps(buffer.state_dict()))
     assert saved["items"] == [expected]
     trajectory.reward = 0.1
-    trajectory.steps[0].log_pb = -5.0
+    trajectory.steps[0].log_p_B = -5.0
 
     restored = ReplayBuffer(2)
     restored.load_state_dict(saved)

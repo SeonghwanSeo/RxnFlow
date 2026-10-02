@@ -9,7 +9,7 @@ from rxnflow.envs.retrosynthesis import (
     RetrosynthesisTree,
     RetrosynthesisWorkers,
 )
-from rxnflow.gflownet.types import Action, ActionKind
+from rxnflow.gflownet.types import Action, ActionType
 
 
 class StaticAnalyzer:
@@ -36,8 +36,8 @@ class UnexpectedUnaryReaction:
 
 
 def test_depth_weighted_backward_probability() -> None:
-    selected = Action(ActionKind.UNI_REACTION, reaction="selected")
-    alternative = Action(ActionKind.UNI_REACTION, reaction="alternative")
+    selected = Action(ActionType.UNI_REACTION, reaction="selected")
+    alternative = Action(ActionType.UNI_REACTION, reaction="alternative")
     leaf = RetrosynthesisTree("")
     one_step = RetrosynthesisTree("one", [(selected, leaf)])
     two_step = RetrosynthesisTree("two", [(alternative, one_step)])
@@ -64,9 +64,9 @@ def test_known_branch_is_preserved_and_reaction_budget_bounds_dfs() -> None:
     analyzer = RetrosynthesisSearch(env)
     tree = analyzer.run(brick, max_reactions=0)
     assert tree is not None
-    assert [action.kind for action, _ in tree.branches] == [ActionKind.FIRST_BLOCK]
+    assert [action.action_type for action, _ in tree.branches] == [ActionType.FIRST_BLOCK]
 
-    generated = Action(ActionKind.UNI_REACTION, reaction="generated")
+    generated = Action(ActionType.UNI_REACTION, reaction="generated")
     child = RetrosynthesisTree(brick, tree.branches)
     empty_env = SimpleNamespace(
         uni_reactions={}, bi_reactions={}, blocks={}, brick_types=[]
@@ -82,13 +82,16 @@ def test_reverse_search_finds_catalog_match_after_second_decomposition() -> None
     # Five distinct cuts of hexane; only the third has both fragments in this
     # catalog. Truncating canonical products to two silently loses this route.
     reaction = BiReaction(
-        "join", "[#6:1]-[1*].[#6:2]-[2*]>>[#6:1]-[#6:2]",
-        "[#6:1]-[#6:2]>>[#6:1]-[1*].[#6:2]-[2*]", (1, 2),
+        "join",
+        "[#6:1]-[1*].[#6:2]-[2*]>>[#6:1]-[#6:2]",
+        "[#6:1]-[#6:2]>>[#6:1]-[1*].[#6:2]-[2*]",
+        (1, 2),
     )
     product = Chem.MolFromSmiles("CCCCCC")
     assert len(reaction.run_reverse(product)) == 5
     env = SimpleNamespace(
-        uni_reactions={}, bi_reactions={"join": reaction},
+        uni_reactions={},
+        bi_reactions={"join": reaction},
         blocks={name: SimpleNamespace(smiles=["*CCC"]) for name in ("1", "2")},
         brick_types=["1", "2"],
     )
@@ -97,19 +100,21 @@ def test_reverse_search_finds_catalog_match_after_second_decomposition() -> None
     assert len(tree.branches) == 1
     action, child = tree.branches[0]
     assert action.block_type == "2" and child.smiles == "[1*]CCC"
-    assert child.branches[0][0].kind == ActionKind.FIRST_BLOCK
+    assert child.branches[0][0].action_type == ActionType.FIRST_BLOCK
 
 
 def test_short_route_does_not_hide_longer_route_within_budget() -> None:
-    close = UniReaction(
-        "close", "[#6:1]-[1*]>>[#6:1]", "[#6:1]>>[#6:1]-[1*]", 1, None
-    )
+    close = UniReaction("close", "[#6:1]-[1*]>>[#6:1]", "[#6:1]>>[#6:1]-[1*]", 1, None)
     activate = UniReaction(
-        "activate", "[#6:1]-[33*]>>[#6:1]-[1*]",
-        "[#6:1]-[1*]>>[#6:1]-[33*]", 33, 1,
+        "activate",
+        "[#6:1]-[33*]>>[#6:1]-[1*]",
+        "[#6:1]-[1*]>>[#6:1]-[33*]",
+        33,
+        1,
     )
     env = SimpleNamespace(
-        uni_reactions={"close": close, "activate": activate}, bi_reactions={},
+        uni_reactions={"close": close, "activate": activate},
+        bi_reactions={},
         blocks={name: SimpleNamespace(smiles=["*CC"]) for name in ("1", "33")},
         brick_types=["1", "33"],
     )
@@ -120,7 +125,7 @@ def test_short_route_does_not_hide_longer_route_within_budget() -> None:
 
 def test_worker_queue_collects_multiple_submissions() -> None:
     analyzer = RetrosynthesisWorkers(EchoAnalyzer(), workers=2)
-    action = Action(ActionKind.FIRST_BLOCK, block_type="1", block_index=0)
+    action = Action(ActionType.FIRST_BLOCK, block_type="1", block_index=0)
     child = RetrosynthesisTree("")
     try:
         analyzer.submit(3, "first", 0, [(action, child)])
@@ -137,7 +142,7 @@ def test_worker_queue_collects_multiple_submissions() -> None:
 
 
 def test_same_action_from_different_parents_has_distinct_backward_probability() -> None:
-    action = Action(ActionKind.UNI_REACTION, reaction="conversion")
+    action = Action(ActionType.UNI_REACTION, reaction="conversion")
     leaf = RetrosynthesisTree("")
     first = RetrosynthesisTree("first", [(action, leaf)])
     second = RetrosynthesisTree("second", [(action, leaf)])

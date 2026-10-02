@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
 from functools import cached_property, lru_cache
 from pathlib import Path
 
@@ -19,20 +18,10 @@ from rxnflow.envs.chemistry.features import (
 )
 from rxnflow.envs.chemistry.reaction import BiReaction, UniReaction
 from rxnflow.envs.chemistry.synthon import load_synthon_specs, typed_dummy_isotopes
-from rxnflow.gflownet.types import Action, ActionKind, MoleculeState
+from rxnflow.errors import InvalidTransition
+from rxnflow.gflownet.types import Action, ActionSpace, ActionType, State
 
 from .library import load_block_libraries
-
-
-@dataclass(frozen=True)
-class ActionGroup:
-    kind: ActionKind
-    name: str
-    block_type: str | None = None
-
-
-class InvalidTransition(ValueError):
-    """A selected reaction has no structurally valid product within capacity."""
 
 
 class SynthesisEnv:
@@ -115,14 +104,42 @@ class SynthesisEnv:
                 for name in self._compatible_block_types(action.block_type)
             ),
         )
-        self._group_cache = {}
-        self.first_block_groups = [
-            ActionGroup(ActionKind.FIRST_BLOCK, "first_block", name)
-            for name in self.brick_types
-        ]
+        # The full static space depends only on the current handle (None at
+        # initialization). Specs contain no sampled block indices or tensors.
+        self.action_space: dict[int | None, ActionSpace] = {
+            None: [
+                (ActionType.FIRST_BLOCK, "first_block", name) for name in self.brick_types
+            ],
+            **{site_type: [] for site_type in self.synthon_types},
+        }
+        terminal_specs = set()
+        for name, reaction in self.uni_reactions.items():
+            spec = (ActionType.UNI_REACTION, name, None)
+            self.action_space[reaction.input_type].append(spec)
+            if reaction.output_type is None:
+                terminal_specs.add(spec)
+        for name, reaction in self.bi_reactions.items():
+            for block_type in self._compatible_block_types(reaction.block_type):
+                spec = (ActionType.BI_REACTION, name, block_type)
+                self.action_space[reaction.state_type].append(spec)
+                if self.blocks[block_type].is_brick:
+                    terminal_specs.add(spec)
+
+        # Step restrictions also depend only on static metadata. Build the
+        # four variants once; states reuse these lists without scanning libraries.
+        self._step_action_space: dict[tuple[int, bool, bool], ActionSpace] = {}
+        for site_type in self.synthon_types:
+            for last_step in (False, True):
+                for may_terminate in (False, True):
+                    self._step_action_space[site_type, last_step, may_terminate] = [
+                        spec
+                        for spec in self.action_space[site_type]
+                        if (not last_step or spec in terminal_specs)
+                        and (may_terminate or spec not in terminal_specs)
+                    ]
         self.signature = self._build_signature()
         # Chemistry is independent of trajectory length; replay can reuse it.
-        self._products = lru_cache(maxsize=8192)(self._reaction_products)
+        self._product = lru_cache(maxsize=8192)(self._reaction_product)
 
         self.retrosynthesis_workers = retrosynthesis_workers
 
@@ -190,11 +207,11 @@ class SynthesisEnv:
         }
 
     @staticmethod
-    def initial_state() -> MoleculeState:
-        return MoleculeState()
+    def initial_state() -> State:
+        return State()
 
     @staticmethod
-    def is_terminal(state: MoleculeState) -> bool:
+    def is_terminal(state: State) -> bool:
         return state.terminated
 
     @staticmethod
@@ -202,46 +219,20 @@ class SynthesisEnv:
         mol = parse_molecule(smiles)
         return () if mol is None else typed_dummy_isotopes(mol)
 
-    def available_groups(self, state: MoleculeState) -> list[ActionGroup]:
+    def get_action_space(self, state: State) -> ActionSpace:
+        """Look up type/step eligibility; property masks follow subsampling."""
         if state.terminated:
             return []
         if state.mol is None:
-            return self.first_block_groups
+            return self.action_space[None]
         if state.reaction_count >= self.max_reactions:
             return []
         signature = typed_dummy_isotopes(state.mol)
-        if len(signature) != 1:
+        if len(signature) != 1 or signature[0] not in self.synthon_types:
             return []
         last_step = state.reaction_count + 1 == self.max_reactions
         may_terminate = state.reaction_count + 1 >= self.min_reactions
-        return self._groups_for(signature[0], last_step, may_terminate)
-
-    def _groups_for(
-        self, site_type: int, last_step: bool, may_terminate: bool
-    ) -> list[ActionGroup]:
-        # Only type and termination eligibility affect this static catalog.
-        # Reuse groups across molecules instead of scanning libraries per state.
-        key = (site_type, last_step, may_terminate)
-        if key in self._group_cache:
-            return self._group_cache[key]
-        groups = []
-        for name, reaction in self.uni_reactions.items():
-            if site_type != reaction.input_type:
-                continue
-            terminal = reaction.output_type is None
-            if (last_step and not terminal) or (terminal and not may_terminate):
-                continue
-            groups.append(ActionGroup(ActionKind.UNI_REACTION, name))
-        for name, action in self.bi_reactions.items():
-            if site_type != action.state_type:
-                continue
-            for block_type in self._compatible_block_types(action.block_type):
-                terminal = self.blocks[block_type].is_brick
-                if (last_step and not terminal) or (terminal and not may_terminate):
-                    continue
-                groups.append(ActionGroup(ActionKind.BI_REACTION, name, block_type))
-        self._group_cache[key] = groups
-        return groups
+        return self._step_action_space[signature[0], last_step, may_terminate]
 
     def block_mask(
         self,
@@ -280,19 +271,19 @@ class SynthesisEnv:
                 mask &= estimate < limit + abs(limit) * 0.01
         return mask
 
-    def _reaction_products(
-        self, current: Chem.Mol | None, group: ActionGroup, block_index: int | None
-    ) -> tuple[Chem.Mol, ...]:
-        """Execute selected chemistry; enforce structural validity and graph capacity."""
-        if group.block_type is not None:
-            library = self.blocks[group.block_type]
-            if block_index is None or not 0 <= block_index < len(library):
+    def _reaction_product(
+        self, current: Chem.Mol | None, action: Action
+    ) -> Chem.Mol | None:
+        """Execute the selected action, including its concrete block index."""
+        if action.block_type is not None:
+            library = self.blocks[action.block_type]
+            if action.block_index is None or not 0 <= action.block_index < len(library):
                 raise ValueError("block_index is out of range")
-            block_smiles = library.smiles[block_index]
-        elif block_index is not None:
+            block_smiles = library.smiles[action.block_index]
+        elif action.block_index is not None:
             raise ValueError("unary actions do not take a block_index")
 
-        if group.kind == ActionKind.FIRST_BLOCK:
+        if action.action_type == ActionType.FIRST_BLOCK:
             # Catalog attachment markers are always 0. A first brick becomes a
             # state with its chemical synthon type restored from the library.
             first = parse_molecule(block_smiles)
@@ -304,56 +295,38 @@ class SynthesisEnv:
             expected = library.site_types
         else:
             assert current is not None
-            if group.kind == ActionKind.UNI_REACTION:
-                reaction = self.uni_reactions[group.name]
+            if action.action_type == ActionType.UNI_REACTION:
+                reaction = self.uni_reactions[action.reaction]
                 mol = reaction.run_forward(current)
                 expected = () if reaction.output_type is None else (reaction.output_type,)
             else:
-                bi = self.bi_reactions[group.name]
+                bi = self.bi_reactions[action.reaction]
                 block = parse_molecule(block_smiles)
                 assert block is not None
                 mol = bi.run_forward(current, block)
                 expected = library.site_types[1:]
         if mol is None or typed_dummy_isotopes(mol) != expected:
-            return ()
+            return None
         if heavy_atom_count(mol) > self.max_atoms:
-            return ()
+            return None
         # Canonical SMILES detect no-ops; retain the molecule itself so masking,
         # the selected transition, and model features share the same product.
         if current is not None and Chem.MolToSmiles(mol) == Chem.MolToSmiles(current):
-            return ()
-        return (mol,)
+            return None
+        return mol
 
-    def outcomes(
-        self, state: MoleculeState, group: ActionGroup, block_index: int | None = None
-    ) -> list[Action]:
-        """Execute one fixed-site action; return no outcome for invalid chemistry."""
-        if not self._products(state.mol, group, block_index):
-            return []
-        return [
-            Action(
-                group.kind,
-                reaction=None if group.kind == ActionKind.FIRST_BLOCK else group.name,
-                block_type=group.block_type,
-                block_index=block_index,
-            )
-        ]
-
-    def step(self, state: MoleculeState, action: Action) -> MoleculeState:
-        group = ActionGroup(
-            action.kind, action.reaction or "first_block", action.block_type
-        )
-        if group not in self.available_groups(state):
+    def step(self, state: State, action: Action) -> State:
+        spec = (action.action_type, action.reaction or "first_block", action.block_type)
+        if spec not in self.get_action_space(state):
             raise ValueError(f"action is not available for the current state: {action}")
-        products = self._products(state.mol, group, action.block_index)
-        if not products:
+        product = self._product(state.mol, action)
+        if product is None:
             raise InvalidTransition(
                 "the selected reaction failed structural or graph-capacity checks"
             )
-        product = products[0]
-        count = state.reaction_count + int(action.kind != ActionKind.FIRST_BLOCK)
+        count = state.reaction_count + int(action.action_type != ActionType.FIRST_BLOCK)
         terminal = not typed_dummy_isotopes(product)
-        return MoleculeState(product, count, terminal)
+        return State(product, count, terminal)
 
     def action_to_dict(self, action: Action) -> dict[str, object]:
         result = action.to_dict()
@@ -371,7 +344,7 @@ class SynthesisEnv:
         return result
 
     def backward_log_probability(
-        self, state: MoleculeState, action: Action, parent_smiles: str
+        self, state: State, action: Action, parent_smiles: str
     ) -> float | None:
         return self.retro_analyzer.log_probability(
             state.smiles,

@@ -8,19 +8,23 @@ from dataclasses import dataclass
 import torch
 from torch import Tensor
 
-from rxnflow.gflownet.types import Action, ActionKind
+from rxnflow.gflownet.types import Action, ActionType
 
 
 @dataclass
-class ActionLogits:
+class ActionSubspace:
+    """One reaction's sampled block columns and their masked policy logits.
+
+    The library/index mapping defines the subspace; only a selected column is
+    converted to an Action. Unary actions have a single column and no library.
+    """
+
     name: str
-    kind: ActionKind
-    # Columns retain the sampled library order even when their logits are -inf.
+    action_type: ActionType
     libraries: list[str]
     block_indices: list[Tensor]
     logits: Tensor  # [state, sampled block], or [state, 1] for UniReaction
     log_importance: Tensor  # [sampled block]
-    exploration_logits: Tensor  # CGFlow's -log(n_libraries * n_sampled_blocks)
 
     def action_at(self, column: int) -> Action:
         block_type = None
@@ -31,8 +35,8 @@ class ActionLogits:
                 break
             column -= len(indices)
         return Action(
-            self.kind,
-            reaction=None if self.kind == ActionKind.FIRST_BLOCK else self.name,
+            self.action_type,
+            reaction=None if self.action_type == ActionType.FIRST_BLOCK else self.name,
             block_type=block_type,
             block_index=block_index,
         )
@@ -40,42 +44,57 @@ class ActionLogits:
 
 @dataclass
 class ActionCategorical:
-    action_groups: list[ActionLogits]
-    embeddings: Tensor
-    temperatures: Tensor
+    action_subspaces: list[ActionSubspace]
+    graph_emb: Tensor
+    logit_scale: Tensor
 
     def log_partition(self) -> Tensor:
         # RxnFlow estimates the denominator from an independent subsample.
         # Unlike a fixed reference group mask, a budgeted subsample can be
         # entirely masked. A finite floor keeps observed-edge scoring defined;
         # the caller applies the reference nonpositive log P clamp.
-        if not self.action_groups:
-            return self.embeddings.new_full((len(self.embeddings),), math.log(1e-38))
-        weighted = [p.logits + p.log_importance for p in self.action_groups]
+        if not self.action_subspaces:
+            return self.graph_emb.new_full((len(self.graph_emb),), math.log(1e-38))
+        weighted = [p.logits + p.log_importance for p in self.action_subspaces]
         maxima = torch.stack([x.max(1).values for x in weighted]).max(0).values
         maxima = torch.where(torch.isfinite(maxima), maxima, 0).detach()
         totals = sum((x - maxima[:, None]).exp().sum(1) for x in weighted)
         return maxima + totals.clamp_min(1e-38).log()
 
     def sample(
-        self, temperature: float, random_action_prob: float, importance: float
+        self, sampling_temperature: float, random_action_prob: float, importance: float
     ) -> list[Action | None]:
         # Draw on the model device. Only chosen group/column indices cross
         # to Python, not millions of candidate logits.
-        if not self.action_groups:
-            return [None] * len(self.embeddings)
+        if not self.action_subspaces:
+            return [None] * len(self.graph_emb)
         random_rows = (
-            torch.rand(len(self.embeddings), device=self.embeddings.device)
+            torch.rand(len(self.graph_emb), device=self.graph_emb.device)
             < random_action_prob
         )
         best_values, best_columns = [], []
-        for group in self.action_groups:
+        for group in self.action_subspaces:
             values = group.logits + importance * group.log_importance
-            values = torch.where(random_rows[:, None], group.exploration_logits, values)
+            if random_action_prob > 0:
+                # This is the random policy, not a learned action logit. Balance
+                # libraries by their sampled sizes before applying state masks.
+                if group.block_indices:
+                    random_logits = torch.cat(
+                        [
+                            values.new_full(
+                                (len(indices),),
+                                -math.log(len(group.libraries) * len(indices)),
+                            )
+                            for indices in group.block_indices
+                        ]
+                    )
+                else:
+                    random_logits = values.new_zeros(1)
+                values = torch.where(random_rows[:, None], random_logits, values)
             values = values.masked_fill(~torch.isfinite(group.logits), -torch.inf)
             # Gumbel-max on retained matrices (RxnFlow/CGFlow categorical).
             noise = torch.rand_like(values).clamp_min(torch.finfo(values.dtype).tiny)
-            values = values / temperature - (-noise.log()).log()
+            values = values / sampling_temperature - (-noise.log()).log()
             best, columns = values.max(1)
             best_values.append(best)
             best_columns.append(columns)
@@ -87,6 +106,6 @@ class ActionCategorical:
             .tolist()
         )
         return [
-            self.action_groups[p].action_at(c) if valid else None
+            self.action_subspaces[p].action_at(c) if valid else None
             for p, c, valid in selected
         ]

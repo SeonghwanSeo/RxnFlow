@@ -10,14 +10,19 @@ from typing import Any
 from rdkit import Chem
 
 
-class ActionKind(IntEnum):
+class ActionType(IntEnum):
     FIRST_BLOCK = 0
     UNI_REACTION = 1
     BI_REACTION = 2
 
 
+# A static action specification: type, reaction name, optional block library.
+# FirstBlock uses the policy head name "first_block" rather than a reaction.
+ActionSpace = list[tuple[ActionType, str, str | None]]
+
+
 @dataclass(frozen=True)
-class MoleculeState:
+class State:
     """An RDKit molecular graph and trajectory metadata.
 
     Treat mol as read-only: reactions return new molecules, and edits such as
@@ -36,7 +41,7 @@ class MoleculeState:
     @classmethod
     def from_smiles(
         cls, smiles: str, reaction_count: int = 0, terminated: bool = False
-    ) -> MoleculeState:
+    ) -> State:
         mol = Chem.MolFromSmiles(smiles) if smiles else None
         if smiles and mol is None:
             raise ValueError(f"invalid state SMILES: {smiles}")
@@ -50,21 +55,21 @@ class MoleculeState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> MoleculeState:
+    def from_dict(cls, data: dict[str, Any]) -> State:
         return cls.from_smiles(**data)
 
 
 @dataclass(frozen=True)
 class Action:
     # A(s, a) -> s'
-    kind: ActionKind
+    action_type: ActionType
     reaction: str | None = None
     block_type: str | None = None
     block_index: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "kind": self.kind.name,
+            "action_type": self.action_type.name,
             "reaction": self.reaction,
             "block_type": self.block_type,
             "block_index": self.block_index,
@@ -73,33 +78,33 @@ class Action:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Action:
         data = data.copy()
-        data["kind"] = ActionKind[data.pop("kind")]
+        data["action_type"] = ActionType[data.pop("action_type")]
         return cls(**data)
 
 
 @dataclass
 class Transition:
     # T(s, a, s')
-    state: MoleculeState
+    state: State
     action: Action
     product_smiles: str
-    log_pb: float = 0.0
+    log_p_B: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "state": self.state.to_dict(),
             "action": self.action.to_dict(),
             "product_smiles": self.product_smiles,
-            "log_pb": self.log_pb,
+            "log_p_B": self.log_p_B,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Transition:
         return cls(
-            state=MoleculeState.from_dict(data["state"]),
+            state=State.from_dict(data["state"]),
             action=Action.from_dict(data["action"]),
             product_smiles=data["product_smiles"],
-            log_pb=data["log_pb"],
+            log_p_B=data["log_p_B"],
         )
 
 

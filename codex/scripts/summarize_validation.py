@@ -35,9 +35,9 @@ def sample_statistics(path):
     count = len(valid)
     result = {
         'attempts': len(rows), 'valid': count,
-        'valid_fraction': count / len(rows),
+        'online_valid_fraction': count / len(rows),
         'unique_molecules': len({row['smiles'] for row in valid}),
-        'unique_fraction': len({row['smiles'] for row in valid}) / max(count, 1),
+        'online_unique_fraction': len({row['smiles'] for row in valid}) / max(count, 1),
         'nonempty_murcko_scaffolds': len(scaffolds),
         'acyclic_fraction': acyclic / max(count, 1),
         'most_common_nonempty_scaffolds': scaffolds.most_common(5),
@@ -80,8 +80,8 @@ def main():
         results[run.name] = {
             'training_seconds': completed['training_seconds'],
             'peak_allocated_mib': completed['peak_allocated_mib'],
-            'step_seconds_median': statistics.median(row['step_seconds'] for row in logs),
-            'rollout_seconds_median': statistics.median(row['rollout_seconds'] for row in logs),
+            'time_median': statistics.median(row['iteration_time'] for row in logs),
+            'sample_time_median': statistics.median(row['sampling_time'] for row in logs),
             'before': sample_statistics(run / 'evaluation_before.jsonl'),
             'after': sample_statistics(run / 'evaluation_after.jsonl'),
             'final_replay': {

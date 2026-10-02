@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Callable
 
 import torch
 from rdkit import Chem
-from rdkit.Chem import QED
 from torch import Tensor
-
-SampleFilter = Callable[[Chem.Mol], bool]
 
 
 class RewardFunction(ABC):
@@ -30,25 +26,17 @@ class RewardFunction(ABC):
     def score(self, molecules: list[Chem.Mol]) -> Tensor:
         raise NotImplementedError
 
+    def filter_object(self, mol: Chem.Mol) -> bool:
+        """Return False to skip scoring and assign zero objective rewards."""
+        return True
+
     def metrics(self) -> dict[str, float]:
         return {}
-
-
-class QEDReward(RewardFunction):
-    """Example reward using RDKit's quantitative estimate of drug-likeness."""
-
-    objectives = ("qed",)
-
-    def score(self, molecules: list[Chem.Mol]) -> Tensor:
-        return torch.tensor(
-            [QED.qed(mol) for mol in molecules], dtype=torch.float32
-        ).reshape(-1, 1)
 
 
 def evaluate_rewards(
     reward: RewardFunction,
     molecules: list[Chem.Mol | None],
-    sample_filter: SampleFilter | None = None,
 ) -> tuple[Tensor, dict[str, float]]:
     """Filter molecules and align rewards; failed trajectories pass None."""
 
@@ -57,9 +45,9 @@ def evaluate_rewards(
     for index, mol in enumerate(molecules):
         if mol is None:
             continue
-        eligible = True if sample_filter is None else sample_filter(mol)
+        eligible = reward.filter_object(mol)
         if type(eligible) is not bool:
-            raise ValueError("sample_filter must return bool")
+            raise ValueError("RewardFunction.filter_object must return bool")
         if eligible:
             accepted.append(mol)
             accepted_indices.append(index)

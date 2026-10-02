@@ -19,13 +19,13 @@ def main():
     args = parser.parse_args()
     panels = [
         ('mean_qed_valid', 'QED among valid molecules'),
-        ('mean_reward', 'QED per rollout attempt'),
-        ('valid_fraction', 'Valid rollout fraction'),
-        ('unique_fraction', 'Unique fraction within valid batch'),
+        ('reward', 'QED per rollout attempt'),
+        ('online_valid_fraction', 'Valid rollout fraction'),
+        ('online_unique_fraction', 'Unique fraction within valid batch'),
         ('lipinski_fraction', 'Final MW / HBA / HBD pass fraction'),
         ('loss', 'Trajectory-balance loss'),
-        ('mean_reactions', 'Reaction count per attempt'),
-        ('step_seconds', 'Seconds per update (excludes checkpoint I/O)'),
+        ('traj_lens', 'Actions per attempt (including FirstBlock)'),
+        ('iteration_time', 'Seconds per update (excludes checkpoint I/O)'),
     ]
     figure, axes = plt.subplots(4, 2, figsize=(13, 14), sharex=True)
     colors = ['#2364aa', '#e07a21', '#2b9348']

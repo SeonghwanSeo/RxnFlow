@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import random
 import shutil
-from collections import Counter
 from pathlib import Path
 from time import perf_counter
 
@@ -16,11 +15,12 @@ from torch import Tensor
 from rxnflow import __version__
 from rxnflow.config import Config
 from rxnflow.envs.env import SynthesisEnv
+from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import SynthesisPolicy, resolve_device
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.types import ActionKind, Trajectory
+from rxnflow.gflownet.types import Trajectory
 from rxnflow.models import RxnFlowModel
-from rxnflow.reward import RewardFunction, SampleFilter, evaluate_rewards
+from rxnflow.reward import RewardFunction, evaluate_rewards
 
 
 def sum_by_trajectory(values: Tensor, indices: Tensor, count: int) -> Tensor:
@@ -36,7 +36,6 @@ class RxnFlowTrainer:
         config: Config,
         reward: RewardFunction,
         restart: str | Path | None = None,
-        sample_filter: SampleFilter | None = None,
     ):
         config.validate()
         self.config = config
@@ -44,11 +43,9 @@ class RxnFlowTrainer:
         self.objectives = tuple(reward.objectives)
         if not self.objectives or len(set(self.objectives)) != len(self.objectives):
             raise ValueError("reward.objectives must contain unique objective names")
-        if config.reward.preferences is not None and len(
-            config.reward.preferences
-        ) != len(self.objectives):
-            raise ValueError("reward.preferences must match reward.objectives")
-        self.sample_filter = sample_filter
+        self.condition_sampler = ConditionSampler(
+            config.reward.beta, config.reward.preferences, len(self.objectives)
+        )
         self.device = resolve_device(config.device)
         torch.manual_seed(config.seed)
         self.python_rng = random.Random(config.seed)
@@ -61,13 +58,9 @@ class RxnFlowTrainer:
             config.training.retrosynthesis_workers,
             config.property_penalty,
         )
-        self.model = RxnFlowModel(self.env, config.model, len(self.objectives)).to(
-            self.device
-        )
+        self.model = RxnFlowModel(self.env, config.model, len(self.objectives)).to(self.device)
         self.sampling_model = (
-            RxnFlowModel(self.env, config.model, len(self.objectives))
-            .to(self.device)
-            .eval()
+            RxnFlowModel(self.env, config.model, len(self.objectives)).to(self.device).eval()
         )
         self.sampling_model.load_state_dict(self.model.state_dict())
         # HSX main trains logZ at its own rate and excludes it from policy
@@ -75,9 +68,9 @@ class RxnFlowTrainer:
         self.policy_parameters = [
             parameter
             for name, parameter in self.model.named_parameters()
-            if not name.startswith("log_z.")
+            if not name.startswith("_logZ.")
         ]
-        self.log_z_parameters = list(self.model.log_z.parameters())
+        self.log_z_parameters = list(self.model._logZ.parameters())
         self.optimizer = torch.optim.AdamW(
             [
                 {"params": self.policy_parameters},
@@ -131,6 +124,7 @@ class RxnFlowTrainer:
                 "torch_generator": self.generator.get_state(),
                 # Library subsampling uses the CPU generator above. Gumbel
                 # sampling and dropout use the model-device global generator.
+                # Beta/preference draws use the CPU global generator.
                 "torch_rng": torch.get_rng_state(),
                 "cuda_rng": (
                     torch.cuda.get_rng_state(self.device)
@@ -194,7 +188,6 @@ class RxnFlowTrainer:
                 Chem.MolFromSmiles(value.final_smiles) if value.valid else None
                 for value in trajectories
             ],
-            self.sample_filter,
         )
         # Objective values are independent of the condition; retain them for
         # logging and replay. The scalar reward is the untempered weighted sum.
@@ -207,7 +200,7 @@ class RxnFlowTrainer:
             trajectory.reward = scalar if trajectory.valid else 0.0
         return metrics
 
-    def _loss(
+    def compute_batch_losses(
         self, trajectories: list[Trajectory], num_fresh: int
     ) -> tuple[Tensor, dict[str, Tensor]]:
         beta = torch.tensor(
@@ -216,74 +209,72 @@ class RxnFlowTrainer:
         preferences = torch.tensor(
             [t.preferences for t in trajectories], dtype=torch.float32, device=self.device
         )
-        condition = self.model.encode_condition(beta, preferences)
-        log_z = self.model.log_z(condition).squeeze(-1)
+        cond_info = self.model.encode_cond(beta, preferences)
+        log_Z = self.model.logZ(cond_info).squeeze(-1)
         transitions = []
-        trajectory_indices: list[int] = []
-        backward_flows = torch.tensor(
+        traj_indices: list[int] = []
+        traj_log_p_B = torch.tensor(
             [
-                sum(step.log_pb for step in trajectory.steps)
+                sum(step.log_p_B for step in trajectory.steps)
                 for trajectory in trajectories
             ],
             dtype=torch.float32,
             device=self.device,
         )
-        for trajectory_index, trajectory in enumerate(trajectories):
+        for traj_idx, trajectory in enumerate(trajectories):
             for transition in trajectory.steps:
                 transitions.append(transition)
-                trajectory_indices.append(trajectory_index)
+                traj_indices.append(traj_idx)
         if transitions:
-            indices = torch.tensor(
-                trajectory_indices, dtype=torch.long, device=self.device
-            )
-            values = self.policy.action_log_probabilities(
+            batch_idx = torch.tensor(traj_indices, dtype=torch.long, device=self.device)
+            log_p_F = self.policy.log_prob(
                 [step.state for step in transitions],
                 [step.action for step in transitions],
-                beta[indices],
-                preferences[indices],
+                beta[batch_idx],
+                preferences[batch_idx],
             )
-            forward_flow = sum_by_trajectory(values, indices, len(trajectories))
+            traj_log_p_F = sum_by_trajectory(log_p_F, batch_idx, len(trajectories))
         else:
-            forward_flow = torch.zeros(len(trajectories), device=self.device)
+            traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
         objective_rewards = torch.tensor(
             [t.objective_rewards for t in trajectories],
             dtype=torch.float32,
             device=self.device,
         )
         rewards = (objective_rewards * preferences).sum(-1)
-        log_reward = rewards.clamp_min(self.config.reward.floor).log() * beta
-        residual = log_z + forward_flow - backward_flows - log_reward
+        clip_log_R = rewards.clamp_min(self.config.reward.floor).log() * beta
+        tb_residual = log_Z + traj_log_p_F - traj_log_p_B - clip_log_R
         # Both HSX baselines default to the squared trajectory-balance residual.
-        trajectory_losses = residual.square()
-        loss = trajectory_losses.mean()
+        traj_losses = tb_residual.square()
+        loss = traj_losses.mean()
         # Reuse the TB terms already computed for optimization. Reference
         # "batch_entropy" is trajectory surprisal on this fresh+replay batch,
         # not categorical entropy or an unbiased on-policy entropy estimate.
         with torch.no_grad():
-            valid = torch.tensor(
+            is_valid = torch.tensor(
                 [value.valid for value in trajectories], device=self.device
             )
             info = {
                 "loss": loss.detach(),
-                "log_z": log_z.mean(),
-                "mean_beta": beta.mean(),
-                "mean_logit_temperature": self.model.temperature(condition).mean(),
-                "batch_entropy": -forward_flow.mean(),
-                "mean_log_pf": forward_flow.mean(),
-                "mean_log_pb": backward_flows.mean(),
-                "mean_log_reward": log_reward.mean(),
-                "mean_tb_residual": residual.mean(),
-                "fresh_loss": trajectory_losses[:num_fresh].mean(),
+                "logZ": log_Z.mean(),
+                "beta": beta.mean(),
+                "logit_scale": self.model.logit_scale(cond_info).mean(),
+                "batch_entropy": -traj_log_p_F.mean(),
+                "traj_log_p_F": traj_log_p_F.mean(),
+                "traj_log_p_B": traj_log_p_B.mean(),
+                "clip_log_R": clip_log_R.mean(),
+                "tb_residual": tb_residual.mean(),
+                "online_loss": traj_losses[:num_fresh].mean(),
                 # No replay on the first update (or when disabled).
-                "replay_loss": trajectory_losses[num_fresh:].sum()
+                "replay_loss": traj_losses[num_fresh:].sum()
                 / max(1, len(trajectories) - num_fresh),
-                "valid_loss": (trajectory_losses * valid).sum()
-                / valid.sum().clamp_min(1),
-                "invalid_loss": (trajectory_losses * ~valid).sum()
-                / (~valid).sum().clamp_min(1),
-                "invalid_logprob": (forward_flow * ~valid).sum()
-                / (~valid).sum().clamp_min(1),
-                "batch_invalid_fraction": (~valid).float().mean(),
+                "valid_losses": (traj_losses * is_valid).sum()
+                / is_valid.sum().clamp_min(1),
+                "invalid_losses": (traj_losses * ~is_valid).sum()
+                / (~is_valid).sum().clamp_min(1),
+                "invalid_logprob": (traj_log_p_F * ~is_valid).sum()
+                / (~is_valid).sum().clamp_min(1),
+                "invalid_trajectories": (~is_valid).float().mean(),
             }
         return loss, info
 
@@ -306,26 +297,7 @@ class RxnFlowTrainer:
             started = perf_counter()
             self.sampling_model.eval()
             count = self.config.training.batch_size
-            exponent = self.config.reward.exponent
-            if isinstance(exponent, list):
-                beta = torch.empty(count).uniform_(*exponent, generator=self.generator)
-            else:
-                beta = torch.full((count,), float(exponent))
-            fixed_preferences = self.config.reward.preferences
-            if fixed_preferences is not None:
-                preferences = torch.tensor(fixed_preferences, dtype=torch.float32).expand(
-                    count, -1
-                )
-            elif len(self.objectives) == 1:
-                preferences = torch.ones(count, 1)
-            else:
-                # Normalized independent Exp(1) samples give Dirichlet(1).
-                preferences = (
-                    -torch.rand(count, len(self.objectives), generator=self.generator)
-                    .clamp_min(torch.finfo(torch.float32).tiny)
-                    .log()
-                )
-                preferences = preferences / preferences.sum(-1, keepdim=True)
+            beta, preferences = self.condition_sampler.sample(count)
             fresh = self.sampling_policy.rollouts(
                 self.config.training.batch_size,
                 self.config.training.sampling_temperature,
@@ -333,7 +305,7 @@ class RxnFlowTrainer:
                 beta=beta,
                 preferences=preferences,
             )
-            rollout_seconds = perf_counter() - started
+            sample_time = perf_counter() - started
             reward_metrics = self._assign_rewards(fresh)
             # HSX main samples replay before inserting the new trajectories, so
             # a new sample is not duplicated immediately into the same update.
@@ -343,7 +315,7 @@ class RxnFlowTrainer:
             self.replay.add(fresh)
             self.model.train()
             self.optimizer.zero_grad(set_to_none=True)
-            loss, loss_info = self._loss(batch, len(fresh))
+            loss, loss_info = self.compute_batch_losses(batch, len(fresh))
             loss.backward()
             # clip_grad_norm_ already returns the pre-clip norm. No second
             # traversal of policy gradients is needed for diagnostics.
@@ -377,58 +349,36 @@ class RxnFlowTrainer:
                     strict=True,
                 )
             )
-            reactions = Counter(max(0, len(value.steps) - 1) for value in fresh)
-            failures = Counter(value.invalid_reason for value in fresh if not value.valid)
-            action_counts = Counter()
-            for trajectory in fresh:
-                for transition in trajectory.steps:
-                    action = transition.action
-                    if action.kind == ActionKind.FIRST_BLOCK:
-                        role = "first_block"
-                    elif action.kind == ActionKind.BI_REACTION:
-                        role = (
-                            "brick"
-                            if self.env.blocks[action.block_type].is_brick
-                            else "linker"
-                        )
-                    else:
-                        terminal = (
-                            self.env.uni_reactions[action.reaction].output_type is None
-                        )
-                        role = "uni_terminal" if terminal else "uni_continue"
-                    action_counts[role] += 1
             record = {
                 "step": self.step,
                 **loss_metrics,
-                "fresh_count": len(fresh),
-                "replay_count": len(batch) - len(fresh),
-                "batch_valid_count": sum(value.valid for value in batch),
-                "batch_invalid_count": sum(not value.valid for value in batch),
+                "num_online": len(fresh),
+                "num_replay": len(batch) - len(fresh),
+                "num_valid": sum(value.valid for value in batch),
+                "num_invalid": sum(not value.valid for value in batch),
                 "learning_rate": self.optimizer.param_groups[0]["lr"],
-                "mean_reward": sum(value.reward for value in fresh) / len(fresh),
-                "mean_objective_rewards": {
+                "reward": sum(value.reward for value in fresh) / len(fresh),
+                "objective_rewards": {
                     name: sum(t.objective_rewards[i] for t in fresh) / len(fresh)
                     for i, name in enumerate(self.objectives)
                 },
-                "mean_preferences": {
+                "preferences": {
                     name: sum(t.preferences[i] for t in fresh) / len(fresh)
                     for i, name in enumerate(self.objectives)
                 },
-                "valid_fraction": sum(value.valid for value in fresh) / len(fresh),
+                "online_valid_fraction": sum(value.valid for value in fresh) / len(fresh),
                 # These describe raw rollout attempts, before retry/filtering.
                 # In particular, uniqueness is among valid terminal molecules.
-                "unique_fraction": len(
+                "online_unique_fraction": len(
                     {value.final_smiles for value in fresh if value.valid}
                 )
                 / max(1, sum(value.valid for value in fresh)),
-                "mean_reactions": sum(max(0, len(value.steps) - 1) for value in fresh)
-                / len(fresh),
-                "reaction_counts": dict(reactions),
-                "action_counts": dict(action_counts),
-                "invalid_reasons": dict(failures),
+                # Selected actions per generated trajectory, including FirstBlock
+                # and a failed selected action. Empty action spaces add no step.
+                "traj_lens": sum(len(value.steps) for value in fresh) / len(fresh),
                 **reward_metrics,
-                "rollout_seconds": rollout_seconds,
-                "step_seconds": perf_counter() - started,
+                "sampling_time": sample_time,
+                "iteration_time": perf_counter() - started,
             }
             # Keep all fresh attempts, including invalid ones, independently
             # of replay eviction. Existing SMILES/action serialization suffices;
@@ -442,7 +392,7 @@ class RxnFlowTrainer:
                     + "\n"
                     for index, value in enumerate(fresh)
                 )
-            record["sample_log_seconds"] = perf_counter() - log_started
+            record["logging_time"] = perf_counter() - log_started
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")
             if self.step % self.config.training.log_every == 0:

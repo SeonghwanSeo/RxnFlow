@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from rdkit import Chem
 
 from rxnflow.envs.chemistry.synthon import typed_dummy_isotopes
-from rxnflow.gflownet.types import Action, ActionKind
+from rxnflow.gflownet.types import Action, ActionType
 
 
 @dataclass
@@ -91,7 +91,7 @@ class RetrosynthesisSearch:
                 block_index = self.block_search[block_type].get(brick_smiles)
                 if block_index is not None:
                     action = Action(
-                        ActionKind.FIRST_BLOCK,
+                        ActionType.FIRST_BLOCK,
                         block_type=block_type,
                         block_index=block_index,
                     )
@@ -111,7 +111,7 @@ class RetrosynthesisSearch:
                     if typed_dummy_isotopes(precursor) != (reaction.input_type,):
                         continue
                     parent_smiles = Chem.MolToSmiles(precursor)
-                    action = Action(ActionKind.UNI_REACTION, reaction=name)
+                    action = Action(ActionType.UNI_REACTION, reaction=name)
                     if (action, parent_smiles) in branch_keys:
                         continue
                     forward_product = reaction.run_forward(precursor)
@@ -145,7 +145,7 @@ class RetrosynthesisSearch:
                     if block_index is None:
                         continue
                     reverse_action = Action(
-                        ActionKind.BI_REACTION,
+                        ActionType.BI_REACTION,
                         reaction=name,
                         block_type=block_type,
                         block_index=block_index,

@@ -76,7 +76,7 @@ run:
 Then start local QED optimization:
 
 ```bash
-rxnflow-train --config configs/qed.yaml
+python -m examples.qed --config configs/qed.yaml
 ```
 
 A trajectory starts with a one-site brick and grows one intermediate. Each BiReaction consumes one site from the intermediate and one from a catalog block. A linker leaves one site; a brick leaves none and terminates the trajectory. UniReaction acts directly on the marked site and its required neighboring substructure, producing either one site (continue) or none (terminate). Termination is immediate; terminal molecules cannot reactivate. There is no Stop or terminal restoration.
@@ -91,15 +91,15 @@ Training follows RxnFlow master: the subsample estimates the denominator with `l
 
 The policy scores state/reaction embeddings and prepared block features without executing candidate reactions. Only the chosen action executes RDKit chemistry, checking the resulting site signature and actual `data.max_atoms` capacity. An invalid selected transition fails the trajectory without retry or unmasking. Unary actions use typed-handle and trajectory-length eligibility, without an additive block budget or exact product-property filter. The state holds the resulting RDKit `Mol`, shared with graph encoding; canonical SMILES identify and serialize states. Graph tensors reserve `max_atoms` RDKit heavy-atom slots plus one dummy slot, and molecules are never truncated.
 
-The graph encoder uses residual GINE message passing in native PyTorch with node-wise LayerNorm and bidirectional virtual-node edges. Each layer sums ReLU(source + bond), adds the normalized target once (fixed epsilon=0), and applies a two-Linear H→2H→H MLP before the residual update. Explicit self loops, attention and FiLM are absent. Atom features include chirality and bond features distinguish E/Z stereo. Molecular mean and virtual-node pooling give a `2 * hidden_dim` readout with separate LayerNorms. Block fingerprints and properties have separate Linear projections, then join a type embedding in the fusion MLP. Reactions condition the policy after the GNN, so one state/condition encoding serves all reactions. Defaults are `hidden_dim=128`, `num_layers=4`, `block_dim=128`, `mlp_layers=2`, and `block_mlp_layers=2`; Linear weights use Xavier initialization.
+The graph encoder uses residual GINE message passing in native PyTorch with node-wise LayerNorm and bidirectional virtual-node edges. Each layer sums ReLU(source + bond), adds the normalized target once (fixed epsilon=0), and applies a two-Linear H→2H→H MLP before the residual update. Explicit self loops, attention and FiLM are absent. Atom features include chirality and bond features distinguish E/Z stereo. Molecular mean and virtual-node pooling give a `2 * num_emb` readout with separate LayerNorms. Block fingerprints and properties have separate Linear projections, then join a type embedding in the fusion MLP. Reactions condition the policy after the GNN, so one state/condition encoding serves all reactions. Defaults are `num_emb=128`, `num_layers=4`, `num_block_emb=128`, `num_mlp_layers=2`, and `num_mlp_layers_block=2`; Linear weights use Xavier initialization.
 
-The model receives reward exponent beta and objective preferences as external conditions. Beta uses fixed Fourier features (`u=(beta-1)/63`, frequencies 1/2/4/8, plus u itself), followed by an MLP; preferences use another MLP. Their summed embedding conditions the initial virtual node, reaction-specific logit temperatures and logZ through separate projections/heads. Temperatures remain bounded to 0.01–10 and initialize at 0.2. The encoder does not clamp beta or depend on its sampling range. See [conditioning and replay](codex/docs/conditioning.md) for the reward contract and deferred replay experiments.
+The model receives reward exponent beta and objective preferences as external conditions. Beta uses fixed Fourier features (`u=(beta-1)/63`, frequencies 1/2/4/8, plus u itself), followed by an MLP; preferences use another MLP. Their summed embedding conditions the initial virtual node, a shared logit scale and logZ through separate projections/heads. Following HSX, `logit_scale(condition) = ELU(_logit_scale(condition)) + 1` multiplies logits for all reactions. There are no fixed minimum/maximum temperatures; the scalar initializes at 1. The encoder does not clamp beta or depend on its sampling range. See [conditioning and replay](codex/docs/conditioning.md) for the reward contract and deferred replay experiments.
 
 Training uses MSE trajectory balance, uniform FIFO replay, an EMA sampling model, and restartable checkpoints. Replay and checkpoints store trajectories as plain dictionaries with SMILES, beta, preferences and objective rewards; only sampled replay trajectories reconstruct RDKit molecules. Failed selected reactions retain their forward probability and receive zero raw reward with the configured training reward floor. Policy gradients use global norm clipping at 100, excluding logZ. Default random action probability is 0.05, reward floor is 1e-4, and weight decay remains 1e-8. `training.log_z_learning_rate` controls the conditional logZ head separately; `training.lr_decay_steps` is the learning-rate half-life. Optimizer, scheduler, library RNG and model-device RNG states are restored. Backward analysis preserves the generated route and adds forward-verified precursor routes within the reaction-depth bound. Its depth-weighted probabilities remain an approximation to the backward distribution. Reverse workers run alongside the next forward-policy computation; pending results are collected before extending their parent trees, including after the final reaction.
 
 ## Custom rewards
 
-Rewards are explicit local Python objects implementing `RewardFunction`. Both `score` and `sample_filter` receive RDKit molecules directly; use `Chem.MolToSmiles(mol)` when strings are needed:
+Rewards are explicit local Python objects implementing `RewardFunction`. Both `score` and `filter_object` receive RDKit molecules directly; use `Chem.MolToSmiles(mol)` when strings are needed:
 
 ```python
 import torch
@@ -124,7 +124,7 @@ trainer = RxnFlowTrainer(config, CarbonReward())
 trainer.run()
 ```
 
-`score` returns a finite, non-negative float32 tensor `[batch, num_objectives]`; objective names define the column order. Each objective must be scaled explicitly by the reward implementation. The trainer applies preferences by weighted sum, then floor and beta. `reward.exponent` accepts a scalar or `[low, high]` for uniform beta sampling. `reward.preferences: null` draws Dirichlet(1) preferences; a list fixes them. `reward.settings` is passed to the selected reward constructor. YAML does not import or choose a reward class.
+`score` returns a finite, non-negative float32 tensor `[batch, num_objectives]`; objective names define the column order. Each objective is scaled by the reward implementation. Override `RewardFunction.filter_object(mol)` to skip scoring and assign zero rewards to rejected molecules; the default accepts all molecules. This does not remove sampling outputs. The YAML `reward.beta` is a string specifying the reward exponent: `"32"` or `"uniform(1,64)"`. `reward.preferences` defaults to `"uniform"` (uniform on the simplex, exactly Dirichlet(1)); alternatives are `"dirichlet(0.5)"` for symmetric concentration or `"fixed(0.3,0.7)"` in objective order. CLI/YAML boundaries parse strings into `tuple[str, list[float]]`: beta `("fixed", [32.0])` or `("uniform", [1.0, 64.0])`, preferences `("dirichlet", [1.0])` or `("fixed", [0.3, 0.7])`. Python Config/Sampler/ConditionSampler consume these tuples, not strings. `sample_distribution()` supplies shared fixed/uniform/Dirichlet draws. Trajectories/replay store sampled numeric beta and weights. `reward.floor` applies before exponentiation. CLI sampling accepts the same strings: `--beta "uniform(1,64)" --preferences "fixed(0.3,0.7)"`. A single objective always has weight `[1]`. These are external settings, independent of the fixed model encoder coordinates. `reward.settings` contains constructor kwargs; reward selection stays explicit in Python.
 
 ## Sample
 
@@ -132,7 +132,7 @@ trainer.run()
 rxnflow-sample \
   --checkpoint runs/qed/checkpoint_latest.pt \
   --num-samples 100 \
-  --beta 32 --preferences 1 \
+  --beta 32 --preferences "fixed(1)" \
   --output samples.json
 ```
 
@@ -141,6 +141,8 @@ Structured results contain dummy-free `smiles`, `trajectory`, `intermediates`, o
 ## Reaction templates
 
 `reaction.yaml` contains 38 bimolecular rules and four synthon-level unary rules. Each unary definition declares `input_type`, `output_type` (`null` for terminal), and forward/reverse SMARTS. Reverse rules enumerate candidate precursors, not experimental reverse protocols.
+
+Template keys describe the transformation, for example `amide_coupling`, `reductive_amination_aldehyde`, and `suzuki_coupling`. Bimolecular action names append `_state_first` or `_block_first` to indicate which YAML reactant is the growing state or incoming block. These names appear in trajectories and identify reaction embeddings; renaming them changes the environment signature and requires a new checkpoint. Names describe the encoded synthon transformation, not a complete experimental protocol.
 
 | UniReaction | Input representation | Output representation | Terminal |
 | --- | --- | --- | --- |
@@ -179,3 +181,9 @@ Training writes per-update diagnostics to `training.jsonl` and every fresh traje
 Prepared environment loading trusts chemistry and values checked during preparation. It checks array schema/shape but does not reparse all SMILES, scan feature values, or decompress duplicate SMILES just to compare rows. Checkpoint environment identity still uses its content digest.
 
 For Python sampling, use `RxnFlowSampler(checkpoint, reward=..., device=...)`. Configuration comes from the checkpoint; it is loaded once on CPU and only model weights are moved to the requested device. Reverse-search indices are created only when backward analysis is requested.
+
+QED is an external example in `examples/qed.py`; the core package only defines the injectable reward interface. Sampling requires beta, while omitted preferences draw independent Dirichlet(1) weights per trajectory (single objective: `[1]`). `--sampling-temperature` defaults to 1 and controls an additional softmax temperature.
+
+See [GFlowNet naming alignment](codex/docs/naming.md) for architecture, trajectory-balance and policy names mapped to the references.
+
+The environment precomputes `action_space[None]` for initialization and `action_space[synthon_type]` for each handle as lists of `(ActionType, reaction_name, block_type)` tuples. `get_action_space(state)` retrieves the precomputed step-eligible list. Policy subsampling defines `ActionSubspace` matrices with sampled library indices, property masks and logits. Only selected columns become `Action`; reaction execution receives that complete action directly.

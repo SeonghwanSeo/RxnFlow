@@ -10,10 +10,10 @@ run:
   seed: 0
 
 reward:
-  # Fixed beta, or [low, high] for uniform sampling per fresh trajectory.
-  exponent: 32.0
-  # null: Dirichlet(1); otherwise fixed weights in reward.objectives order.
-  preferences: null
+  # Reward exponent: "32" or "uniform(1,64)" per fresh trajectory.
+  beta: "32"
+  # Simplex uniform, dirichlet(alpha), or fixed(w1,...) in objective order.
+  preferences: "uniform"
   floor: 0.0001
   settings: {}
 
@@ -32,11 +32,11 @@ generation:
   max_reactions: 3
 
 model:
-  hidden_dim: 128
+  num_emb: 128
   num_layers: 4
-  block_dim: 128
-  mlp_layers: 2  # Total Linear layers, including output.
-  block_mlp_layers: 2
+  num_block_emb: 128
+  num_mlp_layers: 2  # Total Linear layers, including output.
+  num_mlp_layers_block: 2
   dropout: 0.0
 
 training:
