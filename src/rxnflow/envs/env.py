@@ -196,6 +196,12 @@ class SynthesisEnv:
     def retro_analyzer(self) -> RetroSynthesisAnalyzer:
         return RetroSynthesisAnalyzer(self, self.retrosynthesis_workers)
 
+    def close(self) -> None:
+        """Release reverse-search workers without creating an unused analyzer."""
+        analyzer = self.__dict__.pop("retro_analyzer", None)
+        if analyzer is not None:
+            analyzer.close()
+
     @staticmethod
     def initial_state() -> State:
         return State()

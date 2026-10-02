@@ -112,16 +112,16 @@ def test_training_restart_sampling_and_output_formats(
         (2, 1),
     }
     for record in records:
-        fresh = [row for row in samples if row["step"] == record["step"]]
+        online_trajs = [row for row in samples if row["step"] == record["step"]]
         assert record["reward"] == pytest.approx(
-            sum(row["reward"] for row in fresh) / len(fresh)
+            sum(row["reward"] for row in online_trajs) / len(online_trajs)
         )
         # This fixture always selects FirstSynthon; the path log omits it while
         # the training length metric still counts all selected actions.
         assert record["traj_lens"] == pytest.approx(
-            sum(len(row["traj"]) + 1 for row in fresh) / len(fresh)
+            sum(len(row["traj"]) + 1 for row in online_trajs) / len(online_trajs)
         )
-        assert record["num_online"] == len(fresh)
+        assert record["num_online"] == len(online_trajs)
         assert (
             not {"num_reactionss", "action_counts", "mean_reactions", "invalid_reasons"}
             & record.keys()
@@ -205,11 +205,11 @@ def test_trajectory_balance_uses_backward_probability(
         preferences=[1.0],
         objective_rewards=[1.0],
     )
-    loss, _ = trainer.compute_batch_losses([trajectory], num_fresh=1)
+    loss, _ = trainer.compute_batch_losses([trajectory], num_online=1)
     assert torch.isclose(loss, torch.tensor(4.0))
 
 
-def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path):
+def test_tb_diagnostics_separate_online_replay_and_invalid(prepared_env, tmp_path):
     config = tiny_config(prepared_env, tmp_path / "diagnostics")
     config.reward.floor = math.exp(-4)
     trainer = RxnFlowTrainer(config, QEDReward())
@@ -233,7 +233,7 @@ def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path
             (-0.25, math.exp(-2), True),
         ]
     ]
-    loss, info = trainer.compute_batch_losses(batch, num_fresh=2)
+    loss, info = trainer.compute_batch_losses(batch, num_online=2)
     # Hand-calculated residuals: -0.5, 2, 1.25. The invalid reward uses the floor.
     expected = {
         "loss": 1.9375,
@@ -241,7 +241,7 @@ def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path
         "batch_entropy": 2.0,
         "traj_log_p_F": -2.0,
         "traj_log_p_B": -1.75 / 3,
-        "clip_log_R": -7 / 3,
+        "scaled_log_R": -7 / 3,
         "tb_residual": 2.75 / 3,
         "online_loss": 2.125,
         "replay_loss": 1.5625,
@@ -263,7 +263,7 @@ def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path
                 [], "", valid=False, beta=1.0, preferences=[1.0], objective_rewards=[0.0]
             )
         ],
-        num_fresh=1,
+        num_online=1,
     )
     assert loss.item() == pytest.approx(16.0)
     assert info["valid_losses"].item() == info["replay_loss"].item() == 0
@@ -414,7 +414,7 @@ def test_failed_selected_action_is_retained_for_tb(
         "sample_actions",
         lambda states, *args: [action] * len(states),
     )
-    trajectory = trainer.sampling_policy.rollout(
+    trajectory = trainer.sampling_policy.sample_from_model_single(
         analyze_backward=False, beta=torch.ones(1), preferences=torch.ones(1, 1)
     )
     assert not trajectory.valid
@@ -424,7 +424,7 @@ def test_failed_selected_action_is_retained_for_tb(
     assert trajectory.steps[0].product_smiles == ""
     trainer._assign_rewards([trajectory])
     assert trajectory.reward == 0
-    loss, _ = trainer.compute_batch_losses([trajectory], num_fresh=1)
+    loss, _ = trainer.compute_batch_losses([trajectory], num_online=1)
     assert torch.isfinite(loss)
     loss.backward()
     assert (
@@ -748,7 +748,9 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     monkeypatch.setattr(analyzer, "submit", submit)
     monkeypatch.setattr(analyzer, "result", result)
     monkeypatch.setattr(policy, "calc_bck_logprob", lambda *args: -0.5)
-    trajectories = policy.rollouts(1, beta=torch.ones(1), preferences=torch.ones(1, 1))
+    trajectories = policy.sample_from_model(
+        1, beta=torch.ones(1), preferences=torch.ones(1, 1)
+    )
     assert events == [
         "forward",
         "collect",
@@ -764,3 +766,27 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
 
 def _condition(model, count):
     return model.encode_cond(torch.ones(count), torch.ones(count, 1))
+
+
+def test_training_error_closes_analyzer_and_allows_reuse(
+    prepared_env, tmp_path, monkeypatch
+):
+    from unittest.mock import Mock
+
+    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path), CarbonReward())
+    analyzer = Mock()
+    trainer.env.__dict__["retro_analyzer"] = analyzer
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            trainer.condition_sampler,
+            "sample",
+            Mock(side_effect=RuntimeError("interrupted")),
+        )
+        with pytest.raises(RuntimeError, match="interrupted"):
+            trainer.run(1)
+    analyzer.close.assert_called_once()
+    assert "retro_analyzer" not in trainer.env.__dict__
+    trainer.close()
+    analyzer.close.assert_called_once()
+    trainer.run(1)
+    assert "retro_analyzer" not in trainer.env.__dict__

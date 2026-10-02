@@ -475,7 +475,7 @@ class RxnFlowPolicy:
             return None
         return float(numerator - denominator)
 
-    def rollout(
+    def sample_from_model_single(
         self,
         sampling_temperature: float = 1.0,
         random_action_prob: float = 0.0,
@@ -484,7 +484,7 @@ class RxnFlowPolicy:
         beta: torch.Tensor,
         preferences: torch.Tensor,
     ) -> Trajectory:
-        return self.rollouts(
+        return self.sample_from_model(
             1,
             sampling_temperature,
             random_action_prob,
@@ -493,7 +493,7 @@ class RxnFlowPolicy:
             preferences=preferences,
         )[0]
 
-    def rollouts(
+    def sample_from_model(
         self,
         count: int,
         sampling_temperature: float = 1.0,
@@ -506,7 +506,7 @@ class RxnFlowPolicy:
         """Grow a batch with fixed conditions and optional backward analysis."""
         # 1. Initialize trajectory state and keep conditions fixed for every step.
         if count <= 0:
-            raise ValueError("rollout count must be positive")
+            raise ValueError("sample count must be positive")
         assert beta.shape == (count,)
         assert preferences.shape == (count, self.model.num_objectives)
         # Transfer once; retain Python metadata for serialization at termination.

@@ -122,7 +122,7 @@ class RxnFlowSampler:
                 maximum_attempts - attempts,
             )
             sampled_beta, weights = conditions.sample(batch_size)
-            batch = self.policy.rollouts(
+            batch = self.policy.sample_from_model(
                 batch_size,
                 sampling_temperature,
                 0.0,

@@ -176,7 +176,7 @@ def test_tb_uses_stored_conditions_and_objective_vector(
         return torch.tensor([-1.0, -2.0, -3.0])
 
     monkeypatch.setattr(trainer.policy, "log_prob", probabilities)
-    loss, _ = trainer.compute_batch_losses(trajectories, num_fresh=1)
+    loss, _ = trainer.compute_batch_losses(trajectories, num_online=1)
     expected = (
         torch.tensor([-3.0, -3.0])
         - torch.tensor([-1.0, -0.5])

@@ -35,12 +35,8 @@ def main(argv: list[str] | None = None) -> None:
     config = Config.from_file(args.config)
     reward = QEDReward(**config.reward.settings)
     trainer = RxnFlowTrainer(config, reward, restart=args.restart)
-    try:
-        checkpoint = trainer.run(args.steps)
-        print(checkpoint)
-    finally:
-        if "retro_analyzer" in trainer.env.__dict__:
-            trainer.env.retro_analyzer.close()
+    checkpoint = trainer.run(args.steps)
+    print(checkpoint)
 
 
 if __name__ == "__main__":
