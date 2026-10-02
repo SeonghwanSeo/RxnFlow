@@ -79,12 +79,12 @@ python examples/qed.py --config configs/qed.yaml
 
 `device: auto` selects CUDA when available. `max_reactions` counts chemical reactions after the initial building block. `property_penalty` limits additive state-plus-block property estimates during action selection; it does not guarantee exact final-product property bounds. Add `hba: 10` and `hbd: 5` alongside `mw: 500` for those additional constraints.
 
-The output directory contains checkpoints, `training.jsonl` metrics, and generated trajectories in `samples.jsonl`. Resume with the same configuration and prepared environment:
+The output directory contains `checkpoints/`, per-update metrics in `training.jsonl`, and fresh trajectories in `samples/step_XXXXXX.jsonl` (one file per update and one trajectory per line, including invalid attempts). Each sample contains final SMILES, rewards, conditions, validity, and a compact `traj`: each entry records the pre-action state SMILES, reaction template name, and oriented block SMILES (`null` for unary reactions). FirstBlock is omitted; the first reaction's state contains the initial brick. Resume with the same configuration and prepared environment:
 
 ```bash
 python examples/qed.py \
   --config configs/qed.yaml \
-  --restart runs/qed/checkpoint_latest.pt \
+  --restart runs/qed/checkpoints/latest.ckpt \
   --steps 1000
 ```
 
@@ -136,7 +136,7 @@ Generate molecules from a trained checkpoint:
 
 ```bash
 python scripts/sample.py \
-  --checkpoint runs/qed/checkpoint_latest.pt \
+  --checkpoint runs/qed/checkpoints/latest.ckpt \
   --num-samples 100 \
   --beta 32 \
   --seed 0 \
@@ -153,7 +153,7 @@ Python sampling is available through `RxnFlowSampler`. Pass a reward implementat
 from examples.qed import QEDReward
 from rxnflow.sampler import RxnFlowSampler
 
-sampler = RxnFlowSampler("runs/qed/checkpoint_latest.pt", reward=QEDReward())
+sampler = RxnFlowSampler("runs/qed/checkpoints/latest.ckpt", reward=QEDReward())
 results = sampler.sample(100, beta=("fixed", [32.0]), seed=0)
 sampler.write(results, "scored_samples.json")
 ```

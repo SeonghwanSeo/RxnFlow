@@ -74,6 +74,8 @@ def test_training_restart_sampling_and_output_formats(
     config = tiny_config(prepared_env, tmp_path / "run")
     checkpoint = RxnFlowTrainer(config, QEDReward()).run()
     assert checkpoint.is_file()
+    assert checkpoint.parent == Path(config.output_dir) / "checkpoints"
+    assert checkpoint.name == "step_000001.ckpt"
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     assert payload["rxnflow_version"] == __version__
 
@@ -89,9 +91,15 @@ def test_training_restart_sampling_and_output_formats(
         json.loads(line)
         for line in (Path(config.output_dir) / "training.jsonl").read_text().splitlines()
     ]
+    sample_paths = sorted((Path(config.output_dir) / "samples").glob("*.jsonl"))
+    assert [path.name for path in sample_paths] == [
+        "step_000001.jsonl",
+        "step_000002.jsonl",
+    ]
     samples = [
         json.loads(line)
-        for line in (Path(config.output_dir) / "samples.jsonl").read_text().splitlines()
+        for path in sample_paths
+        for line in path.read_text().splitlines()
     ]
     assert [row["step"] for row in records] == [1, 2]
     assert [row["num_replay"] for row in records] == [0, 1]
@@ -107,8 +115,10 @@ def test_training_restart_sampling_and_output_formats(
         assert record["reward"] == pytest.approx(
             sum(row["reward"] for row in fresh) / len(fresh)
         )
+        # This fixture always selects FirstBlock; the path log omits it while
+        # the training length metric still counts all selected actions.
         assert record["traj_lens"] == pytest.approx(
-            sum(len(row["steps"]) for row in fresh) / len(fresh)
+            sum(len(row["traj"]) + 1 for row in fresh) / len(fresh)
         )
         assert record["num_online"] == len(fresh)
         assert (
@@ -120,10 +130,24 @@ def test_training_restart_sampling_and_output_formats(
         assert record["grad_norm"] >= record["policy_grad_norm"]
         assert record["policy_grad_clipped"] == float(record["policy_grad_norm"] > 100)
         assert record["batch_entropy"] == -record["traj_log_p_F"]
-    # Log serialization remains usable after replay eviction/restart.
+    # Sample logs contain readable paths; full replay serialization stays in
+    # checkpoints. The parent state is a SMILES string, not a state dictionary.
     for row in samples:
-        value = {key: val for key, val in row.items() if key not in ("step", "sample")}
-        assert Trajectory.from_dict(value).to_dict() == value
+        assert "steps" not in row
+        for transition in row["traj"]:
+            assert set(transition) == {"state", "reaction", "block_smiles"}
+            assert isinstance(transition["state"], str) and transition["state"]
+            assert transition["reaction"] != "FIRST_BLOCK"
+            if transition["reaction"] in restarted.env.uni_reactions:
+                assert transition["block_smiles"] is None
+            else:
+                assert transition["reaction"] in restarted.env.bi_reactions
+                assert transition["block_smiles"]
+            if transition["block_smiles"] is not None:
+                assert any(
+                    transition["block_smiles"] in library.smiles
+                    for library in restarted.env.blocks.values()
+                )
 
     sampler = RxnFlowSampler(restarted_checkpoint, reward=QEDReward())
     results = sampler.sample(3, seed=11, beta=("fixed", [1.0]))
@@ -393,7 +417,7 @@ def test_failed_selected_action_is_retained_for_tb(
         analyze_backward=False, beta=torch.ones(1), preferences=torch.ones(1, 1)
     )
     assert not trajectory.valid
-    assert "graph-capacity" in trajectory.invalid_reason
+    assert trajectory.invalid_reason == "invalid_transition"
     assert len(trajectory.steps) == 1
     assert trajectory.steps[0].action == action
     assert trajectory.steps[0].product_smiles == ""
@@ -648,7 +672,7 @@ def test_sampler_loads_checkpoint_once_on_cpu(prepared_env, tmp_path, monkeypatc
     checkpoint = trainer.save_checkpoint()
     assert (
         checkpoint.read_bytes()
-        == (trainer.output_dir / "checkpoint_latest.pt").read_bytes()
+        == (trainer.checkpoint_dir / "latest.ckpt").read_bytes()
     )
     original = torch.load
     calls = []

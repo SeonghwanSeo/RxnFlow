@@ -17,6 +17,7 @@ from rxnflow.core.types import (
     ActionSubspace,
     ActionType,
     BackwardTrajectory,
+    InvalidReason,
     State,
     Trajectory,
     Transition,
@@ -505,7 +506,7 @@ class RxnFlowPolicy:
         beta, preferences = beta.to(self.device), preferences.to(self.device)
         states = [self.env.initial_state() for _ in range(count)]
         steps: list[list[Transition]] = [[] for _ in range(count)]
-        reasons: list[str | None] = [None] * count
+        reasons: list[InvalidReason | None] = [None] * count
         # The empty state has one zero-action path. Every selected forward edge
         # prepends to its parent's paths before submitting the next reverse search.
         backward_trajectories: list[list[BackwardTrajectory]] = [
@@ -547,18 +548,16 @@ class RxnFlowPolicy:
             for index, action in zip(active, selected, strict=True):
                 state = states[index]
                 if action is None:
-                    reasons[index] = (
-                        "the sampled action space has no budget-feasible continuation"
-                    )
+                    reasons[index] = "no_valid_action"
                     continue
                 # Preserve the sampled action even when chemistry fails. Its
                 # forward probability must receive the invalid-reward TB signal;
                 # dropping it would train only the prefix that reached this state.
                 try:
                     next_state = self.env.step(state, action)
-                except InvalidTransition as error:
+                except InvalidTransition:
                     steps[index].append(Transition(state, action, ""))
-                    reasons[index] = str(error)
+                    reasons[index] = "invalid_transition"
                     continue
                 # Unexpected RDKit/model errors still surface to the caller.
                 steps[index].append(Transition(state, action, next_state.smiles))
@@ -581,7 +580,7 @@ class RxnFlowPolicy:
         trajectories = []
         for index, state in enumerate(states):
             if not state.terminated and reasons[index] is None:
-                reasons[index] = "reaction limit reached with an open handle"
+                reasons[index] = "max_reactions"
             trajectories.append(
                 Trajectory(
                     steps=steps[index],

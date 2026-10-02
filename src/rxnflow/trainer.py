@@ -14,7 +14,7 @@ from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
-from rxnflow.core.types import Trajectory
+from rxnflow.core.types import ActionType, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
@@ -97,6 +97,10 @@ class RxnFlowTrainer:
         self.step = 0
         self.output_dir = Path(config.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoint_dir = self.output_dir / "checkpoints"
+        self.sample_dir = self.output_dir / "samples"
+        self.checkpoint_dir.mkdir(exist_ok=True)
+        self.sample_dir.mkdir(exist_ok=True)
         self.config.save(self.output_dir / "config.yaml")
         self.policy = RxnFlowPolicy(self.env, self.model, config, self.device, self.rng)
         self.sampling_policy = RxnFlowPolicy(
@@ -113,7 +117,7 @@ class RxnFlowTrainer:
         destination = (
             Path(path)
             if path is not None
-            else self.output_dir / f"checkpoint_{self.step:08d}.pt"
+            else self.checkpoint_dir / f"step_{self.step:06d}.ckpt"
         )
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(".tmp")
@@ -145,7 +149,7 @@ class RxnFlowTrainer:
             temporary,
         )
         temporary.replace(destination)
-        latest = self.output_dir / "checkpoint_latest.pt"
+        latest = self.checkpoint_dir / "latest.ckpt"
         latest_temporary = latest.with_suffix(".tmp")
         # Copy serialized bytes; do not deserialize the replay and optimizer
         # just to serialize the identical checkpoint again.
@@ -397,18 +401,45 @@ class RxnFlowTrainer:
                 "sampling_time": sample_time,
                 "iteration_time": perf_counter() - started,
             }
-            # Keep all fresh attempts, including invalid ones, independently
-            # of replay eviction. Existing SMILES/action serialization suffices;
-            # no graph tensors, molecule descriptors or fingerprints are added.
+            # Keep all fresh attempts, including invalid ones. This readable
+            # path log omits replay-only state flags and backward probabilities;
+            # checkpoints retain the complete training trajectories.
             log_started = perf_counter()
-            with (self.output_dir / "samples.jsonl").open(
-                "a", encoding="utf-8"
-            ) as handle:
-                handle.writelines(
-                    json.dumps({"step": self.step, "sample": index, **value.to_dict()})
-                    + "\n"
-                    for index, value in enumerate(fresh)
-                )
+            sample_path = self.sample_dir / f"step_{self.step:06d}.jsonl"
+            with sample_path.open("w", encoding="utf-8") as handle:
+                for index, value in enumerate(fresh):
+                    traj = []
+                    for transition in value.steps:
+                        action = transition.action
+                        # The first reaction's state already contains the initial brick.
+                        if action.action_type == ActionType.FIRST_BLOCK:
+                            continue
+                        block_smiles = None
+                        if action.block_type is not None:
+                            assert action.block_index is not None
+                            block_smiles = self.env.blocks[action.block_type].smiles[
+                                action.block_index
+                            ]
+                        traj.append(
+                            {
+                                "state": transition.state.smiles,
+                                "reaction": action.reaction,
+                                "block_smiles": block_smiles,
+                            }
+                        )
+                    sample = {
+                        "step": self.step,
+                        "sample": index,
+                        "final_smiles": value.final_smiles,
+                        "reward": value.reward,
+                        "objective_rewards": value.objective_rewards,
+                        "beta": value.beta,
+                        "preferences": value.preferences,
+                        "valid": value.valid,
+                        "invalid_reason": value.invalid_reason,
+                        "traj": traj,
+                    }
+                    handle.write(json.dumps(sample) + "\n")
             record["logging_time"] = perf_counter() - log_started
             with log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, sort_keys=True) + "\n")

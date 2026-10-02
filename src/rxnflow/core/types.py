@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import IntEnum
 from functools import cached_property
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from rdkit import Chem
@@ -145,6 +145,9 @@ class Transition:
         )
 
 
+InvalidReason = Literal["no_valid_action", "invalid_transition", "max_reactions"]
+
+
 @dataclass
 class Trajectory:
     steps: list[Transition]
@@ -155,7 +158,7 @@ class Trajectory:
     objective_rewards: list[float] = field(default_factory=list)
     reward: float = 0.0
     valid: bool = True
-    invalid_reason: str | None = None
+    invalid_reason: InvalidReason | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
