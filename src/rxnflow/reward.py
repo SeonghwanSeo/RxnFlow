@@ -6,6 +6,7 @@ import math
 from abc import ABC, abstractmethod
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 from rdkit import Chem
 
@@ -69,3 +70,16 @@ def evaluate_rewards(
     if any(not math.isfinite(value) for value in metrics.values()):
         raise ValueError("reward metrics must be finite")
     return result, metrics
+
+
+def scalarize_log_rewards(
+    values: torch.Tensor, preferences: torch.Tensor, method: str, floor: float
+) -> torch.Tensor:
+    """Combine objectives before beta: weighted sum or weighted geometric mean.
+
+    Floor each objective for mul, so zero rewards and zero preference weights
+    remain finite. For sum, floor only the combined reward.
+    """
+    if method == "mul":
+        return (values.clamp_min(floor).log() * preferences).sum(-1)
+    return (values * preferences).sum(-1).clamp_min(floor).log()

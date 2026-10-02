@@ -132,8 +132,11 @@ For multiple objectives, return one column per name in `objectives`. The trainer
 reward:
   beta: "uniform(8,64)"
   preferences: "uniform"
+  scalarization: mul
   floor: 0.0001
 ```
+
+`scalarization: mul` (default) uses the weighted geometric mean: `log R = sum(w_i * log(max(r_i, floor)))`. `scalarization: sum` uses `log R = log(max(sum(w_i * r_i), floor))`. Training applies `beta * log R` in both cases; reported scalar rewards are before beta. Scale objectives in the reward function.
 
 `beta` controls reward sharpening; it can be fixed, such as `"32"`, or sampled uniformly. `preferences: "uniform"` draws weights uniformly on the simplex. Use `"fixed(0.3,0.7)"` for fixed weights in a two-objective task, or `"dirichlet(0.5)"` for a different preference distribution.
 

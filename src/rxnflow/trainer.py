@@ -20,7 +20,7 @@ from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
 from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.models import RxnFlowModel
-from rxnflow.reward import RewardFunction, evaluate_rewards
+from rxnflow.reward import RewardFunction, evaluate_rewards, scalarize_log_rewards
 
 
 def sum_by_trajectory(
@@ -206,9 +206,18 @@ class RxnFlowTrainer:
             ],
         )
         # Objective values are independent of the condition; retain them for
-        # logging and replay. The scalar reward is the untempered weighted sum.
+        # logging and replay. The scalar reward has not been raised to beta.
         preferences = np.array([t.preferences for t in trajectories], dtype=np.float32)
-        scalar_rewards = (values * preferences).sum(-1).tolist()
+        scalar_rewards = (
+            scalarize_log_rewards(
+                torch.from_numpy(values),
+                torch.from_numpy(preferences),
+                self.config.reward.scalarization,
+                self.config.reward.floor,
+            )
+            .exp()
+            .tolist()
+        )
         for trajectory, objectives, scalar in zip(
             trajectories, values.tolist(), scalar_rewards, strict=True
         ):
@@ -261,8 +270,15 @@ class RxnFlowTrainer:
             dtype=torch.float32,
             device=self.device,
         )
-        rewards = (objective_rewards * preferences).sum(-1)
-        clip_log_R = rewards.clamp_min(self.config.reward.floor).log() * beta
+        clip_log_R = (
+            scalarize_log_rewards(
+                objective_rewards,
+                preferences,
+                self.config.reward.scalarization,
+                self.config.reward.floor,
+            )
+            * beta
+        )
         tb_residual = log_Z + traj_log_p_F - traj_log_p_B - clip_log_R
         # Penalize the squared mismatch between forward and backward log flow.
         traj_losses = tb_residual.square()

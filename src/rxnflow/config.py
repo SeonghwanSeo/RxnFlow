@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from omegaconf import OmegaConf
 
@@ -64,6 +64,7 @@ class RewardConfig:
     preferences: tuple[str, list[float]] = field(
         default_factory=lambda: ("dirichlet", [1.0])
     )
+    scalarization: Literal["sum", "mul"] = "mul"
     floor: float = 1e-4
     settings: dict[str, Any] = field(default_factory=dict)
 
@@ -78,6 +79,8 @@ class RewardConfig:
                 raise ValueError(
                     "internal conditions must be (distribution, parameters) tuples"
                 )
+        if self.scalarization not in ("sum", "mul"):
+            raise ValueError("reward.scalarization must be sum or mul")
         if self.floor <= 0:
             raise ValueError("reward.floor must be positive")
         if not isinstance(self.settings, dict):

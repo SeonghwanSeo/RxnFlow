@@ -17,7 +17,7 @@ from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
 from rxnflow.models import RxnFlowModel
-from rxnflow.reward import RewardFunction, evaluate_rewards
+from rxnflow.reward import RewardFunction, evaluate_rewards, scalarize_log_rewards
 
 
 class RxnFlowSampler:
@@ -146,7 +146,16 @@ class RxnFlowSampler:
             preferences = np.array(
                 [t.preferences for t in trajectories], dtype=np.float32
             )
-            scalar_rewards = (values * preferences).sum(-1).tolist()
+            scalar_rewards = (
+                scalarize_log_rewards(
+                    torch.from_numpy(values),
+                    torch.from_numpy(preferences),
+                    self.config.reward.scalarization,
+                    self.config.reward.floor,
+                )
+                .exp()
+                .tolist()
+            )
             for result, value, scalar in zip(
                 results, values.tolist(), scalar_rewards, strict=True
             ):

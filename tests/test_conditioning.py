@@ -1,6 +1,7 @@
 """Conditional TB, replay snapshots and restart use the same trajectory labels."""
 
 import json
+import math
 import random
 
 import numpy as np
@@ -184,10 +185,12 @@ def test_tb_uses_stored_conditions_and_objective_vector(
     torch.testing.assert_close(loss, expected.square().mean())
 
 
+@pytest.mark.parametrize("method", ["sum", "mul"])
 def test_multiobjective_training_restart_and_fixed_condition_sampling(
-    prepared_env, tmp_path
+    prepared_env, tmp_path, method
 ):
     config = config_for(prepared_env, tmp_path / "training")
+    config.reward.scalarization = method
     trainer = RxnFlowTrainer(config, TwoObjectiveReward())
     checkpoint = trainer.run(2)
     before = trainer.replay.state_dict()
@@ -204,14 +207,18 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
         assert 4 <= trajectory.beta <= 128
         assert sum(trajectory.preferences) == pytest.approx(1)
         assert len(trajectory.objective_rewards) == 2
+        scores = trajectory.objective_rewards
+        weights = trajectory.preferences
+        expected = (
+            sum(w * r for w, r in zip(weights, scores, strict=True))
+            if method == "sum"
+            else math.prod(
+                max(r, config.reward.floor) ** w
+                for w, r in zip(weights, scores, strict=True)
+            )
+        )
         assert trajectory.reward == pytest.approx(
-            sum(
-                w * r
-                for w, r in zip(
-                    trajectory.preferences, trajectory.objective_rewards, strict=True
-                )
-            ),
-            abs=1e-6,
+            max(expected, config.reward.floor) if trajectory.valid else 0.0, abs=1e-6
         )
     sampler = RxnFlowSampler(restarted_checkpoint, reward=TwoObjectiveReward())
     results = sampler.sample(
@@ -222,7 +229,10 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
         assert result.metadata["preferences"] == [0.25, 0.75]
         scores = result.metadata["objective_rewards"]
         assert result.reward == pytest.approx(
-            0.25 * scores["qed"] + 0.75 * scores["size"]
+            max(0.25 * scores["qed"] + 0.75 * scores["size"], config.reward.floor)
+            if method == "sum"
+            else max(scores["qed"], config.reward.floor) ** 0.25
+            * max(scores["size"], config.reward.floor) ** 0.75
         )
     with pytest.raises(ValueError, match="preferences"):
         sampler.sample(1, beta=("fixed", [32.0]), preferences=("fixed", [1.0]))
@@ -241,7 +251,7 @@ def test_sampling_draws_preferences_when_omitted(prepared_env, tmp_path):
         assert sum(w) == pytest.approx(1)
         scores = result.metadata["objective_rewards"]
         assert result.reward == pytest.approx(
-            w[0] * scores["qed"] + w[1] * scores["size"]
+            max(scores["qed"], 1e-4) ** w[0] * max(scores["size"], 1e-4) ** w[1]
         )
     repeated = sampler.sample(4, beta=("fixed", [32.0]), seed=17)
     assert [r.metadata["preferences"] for r in repeated] == weights
@@ -299,3 +309,16 @@ def test_condition_distributions():
     ).sample(2)
     assert fixed_beta.tolist() == [2.5, 2.5]
     torch.testing.assert_close(fixed_weights, torch.tensor([[0.3, 0.7], [0.3, 0.7]]))
+
+
+def test_reward_scalarization_zero_weights_and_floor():
+    from rxnflow.reward import scalarize_log_rewards
+
+    values = torch.tensor([[0.25, 1.0], [0.0, 0.5], [0.0, 0.0]])
+    weights = torch.tensor([[0.5, 0.5], [0.0, 1.0], [0.5, 0.5]])
+    for method, expected in (("sum", [0.625, 0.5, 1e-4]), ("mul", [0.5, 0.5, 1e-4])):
+        log_rewards = scalarize_log_rewards(values, weights, method, 1e-4)
+        torch.testing.assert_close(log_rewards.exp(), torch.tensor(expected))
+    assert RewardConfig().scalarization == "mul"
+    with pytest.raises(ValueError, match="scalarization"):
+        RewardConfig(scalarization="unknown").validate()
