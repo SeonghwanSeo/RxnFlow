@@ -26,8 +26,8 @@ from rxnflow.envs.chemistry.features import (
 # which is more than enough for most practical applications.
 ATOM_TYPES = tuple(range(100))
 SYNTHON_TYPES = tuple(range(100))
-# Atom/type one-hots, degree, charge and four continuous/boolean features.
-NODE_FEATURE_DIM = len(ATOM_TYPES) + 1 + 7 + 6 + 4 + len(SYNTHON_TYPES) + 1
+# Atom/type one-hots, degree, charge, four scalar features and chirality.
+NODE_FEATURE_DIM = len(ATOM_TYPES) + 1 + 7 + 6 + 4 + len(SYNTHON_TYPES) + 1 + 3
 BOND_FEATURE_DIM = 7
 
 
@@ -111,6 +111,11 @@ def molecule_to_graph_data(
         charge_start = degree_start + 7
         scalar_start = charge_start + 6
         synthon_start = scalar_start + 4
+        chiral_types = (
+            Chem.ChiralType.CHI_UNSPECIFIED,
+            Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+            Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+        )
         for index, atom in enumerate(atoms):
             number = atom.GetAtomicNum()
             isotope = atom.GetIsotope() if number == 0 else 0
@@ -126,6 +131,12 @@ def molecule_to_graph_data(
                 min(int(atom.GetHybridization()) / 8.0, 1.0),
             )
             node_features[index, synthon_start + min(isotope, len(SYNTHON_TYPES))] = 1
+            # HSX/RxnFlow categorical atom chirality; dummy isotopes remain
+            # a separate feature. Do not collapse enantiomers in the state GNN.
+            tag = atom.GetChiralTag()
+            node_features[
+                index, -3 + (chiral_types.index(tag) if tag in chiral_types else 0)
+            ] = 1
             node_mask[index] = True
         for bond in mol.GetBonds():
             # Explicit isotopic H atoms can survive RDKit's RemoveHs, but the

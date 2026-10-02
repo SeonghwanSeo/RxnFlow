@@ -79,6 +79,7 @@ class RxnFlowSampler:
             raise ValueError("sample count must be positive")
         if seed is not None:
             self.generator.manual_seed(seed)
+            torch.manual_seed(seed)  # Device-side categorical draws.
         sampling_temperature = (
             self.config.training.sampling_temperature
             if temperature is None

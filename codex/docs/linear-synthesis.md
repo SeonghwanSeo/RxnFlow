@@ -87,24 +87,24 @@ Descriptor는 현재 synthon에 대해 계산하며 dummy isotope가 가짜 원�
 
 `property_penalty`의 상한은 유한한 수를 받는다. `rings: 0`, `hbd: 0`처럼 특정 count를 금지하거나 음수 logP 상한을 지정할 수 있다. 제한하지 않을 property는 mapping에서 생략한다.
 
-Graph는 `max_atoms + 1`개의 고정 node slot을 사용한다. RDKit heavy atom에는 dummy가 포함되지 않으므로 마지막 slot을 예약한다. Atom/type one-hot, degree, charge, aromaticity, mass, H count, hybridization을 사용하며 bond feature는 7개다. 전역 입력은 property 9개, 남은 heavy-atom capacity, 반응 횟수다. Block은 Morgan count 512 + MACCS 166, property 9개와 library type embedding을 사용한다. Fingerprint는 count를 255에서 포화시킨 뒤 MACCS와 함께 uint8로 저장하고 CPU library에서도 그대로 유지한다. 모델에서 선택된 행만 float32로 변환한다. 기본 Morgan이 dummy isotope를 구분하지 않으므로 typed dummy의 atom invariant를 명시적으로 지정한다. 현재 state의 graph embedding과 reaction embedding으로 UniReaction 점수를 계산하고, FirstBlock/BiReaction에서는 준비된 block fingerprint/property와 library type embedding을 추가로 사용한다. 생성물 fingerprint encoder와 추가 scoring은 사용하지 않는다. 현재 state와 준비된 block의 property 합을 budget masking에 사용한다.
+Graph는 `max_atoms + 1`개의 고정 node slot을 사용한다. RDKit heavy atom에는 dummy가 포함되지 않으므로 마지막 slot을 예약한다. Atom/type one-hot, degree, charge, aromaticity, mass, H count, hybridization, chirality(CW/CCW/unspecified)를 사용하며 bond feature는 7개다. 전역 입력은 property 9개, 남은 heavy-atom capacity, 반응 횟수다. Block은 Morgan count 512 + MACCS 166, property 9개와 library type embedding을 사용한다. Fingerprint는 count를 255에서 포화시킨 뒤 MACCS와 함께 uint8로 저장하고 CPU library에서도 그대로 유지한다. 모델에서 선택된 행만 float32로 변환한다. 기본 Morgan이 dummy isotope를 구분하지 않으므로 typed dummy의 atom invariant를 명시적으로 지정한다. 현재 state의 graph embedding과 reaction embedding으로 UniReaction 점수를 계산하고, FirstBlock/BiReaction에서는 준비된 block fingerprint/property와 library type embedding을 추가로 사용한다. 생성물 fingerprint encoder와 추가 scoring은 사용하지 않는다. 현재 state와 준비된 block의 property 합을 budget masking에 사용한다.
 
 ## 학습과 검증 범위
 
 Backward는 생성된 parent branch를 보존하고, 각 reverse rule의 중복 제거된 canonical precursor set을 모두 탐색한다. 후보는 catalog 존재 여부와 forward 재실행으로 확인한다. 반응 횟수 상한까지만 탐색하며, 짧은 경로를 먼저 찾았다는 이유로 다른 경로를 제거하지 않는다. 동일 action이 서로 다른 parent에서 나온 경우 backward 확률을 구분한다. 깊이 가중 확률은 실용적인 근사로 유지하며, 모든 역경로에 대해 state별 property budget/반응 횟수의 정확한 MDP 역전이를 증명하는 구현은 아니다.
 
-TB/replay는 관측 action의 block을 반드시 포함한다. 그 외 block은 uniform sampling을 적용하고 conditional inclusion probability로 분모를 보정한다. 나머지 모집단이 있으면 최소 한 개를 샘플링한다. 방향이 고정된 block row 하나가 해당 block action의 sampling 단위다. Sampling temperature·random exploration·importance temperature는 생성 정책에 적용한다.
+TB/replay는 관측 action과 독립적으로 library를 uniform sampling해 분모를 추정한다. Weight는 `log(library_size / sampled_count)`이며 관측 action은 별도로 scoring한다. RxnFlow master처럼 `logP = min(observed_logit - logZ, 0)`를 사용한다. 방향이 고정된 block row 하나가 sampling 단위다. Sampling temperature·importance temperature는 생성 정책에 적용하고 random exploration은 CGFlow의 `-log(n_libraries * n_sampled)` 가중치와 동일한 mask를 사용한다.
 
 Invalid trajectory는 raw reward 0으로 기록하고 학습에서 reward floor를 적용한다. 화학적으로 후보가 없는 경우만 이 경로로 처리하며, 예상하지 못한 모델/runtime 오류는 감추지 않는다. 종료 분자만 reward와 public samples로 반환한다.
 
 Synthetic quick 검증은 선형 경로의 전이·mask·site 선택·backward·학습 연결을 확인한다. Production template의 실험적 적용 범위, 전체 Enamine catalog의 성능 및 분포 품질은 별도 검토 대상이다. hsx 방식 multi-step workflow library는 이번 구현에 포함하지 않는다.
 
-TB loss는 MSE이며, logZ는 policy와 별도 learning rate를 사용한다. Replay는 fresh trajectory를 넣기 전에 기존 buffer에서 균일 비복원 추출한다. Learning rate는 지정한 half-life에 따라 감소하고, optimizer/scheduler 상태를 함께 복원한다. 모델은 FP/property별 projection, additive reaction conditioning, block 정규화 dot score 및 학습 temperature를 사용한다. UniReaction scalar score도 같은 temperature convention을 따른다. Graph readout은 molecular mean과 virtual node를 concat한 뒤 projection한다. 상세 출처와 차이는 [HSX 이식 기록](hsx-port.md)을 참고한다.
+TB loss는 MSE이며, logZ는 policy와 별도 learning rate를 사용한다. Replay는 fresh trajectory를 넣기 전에 기존 buffer에서 균일 비복원 추출한다. Learning rate는 지정한 half-life에 따라 감소하고, optimizer/scheduler 상태를 함께 복원한다. 모델은 FP/property별 projection, additive reaction conditioning, block 정규화 dot score 및 학습 temperature를 사용한다. UniReaction scalar score도 같은 temperature convention을 따른다. Graph encoder는 native Torch의 GENConv(add)·TransformerConv 수식, graph-mode normalization과 conditional scale/shift를 사용한다. Readout은 molecular mean과 virtual node를 concat한 2H에 LayerNorm을 적용한다. 상세 출처와 차이는 [HSX 이식 기록](hsx-port.md)을 참고한다.
 
-Checkpoint에는 action/subsampling용 CPU generator와 dropout용 전역 CPU·CUDA RNG 상태를 함께 보관한다. 복원 시 checkpoint를 CPU로 읽고 model/optimizer loader가 parameter를 해당 device로 옮긴다. RNG 상태가 없는 이전 checkpoint의 호환 복원은 제공하지 않는다.
+Checkpoint에는 library subsampling용 CPU generator와 Gumbel sampling·dropout용 전역 CPU·CUDA RNG 상태를 함께 보관한다. 복원 시 checkpoint를 CPU로 읽고 model/optimizer loader가 parameter를 해당 device로 옮긴다. RNG 상태가 없는 이전 checkpoint의 호환 복원은 제공하지 않는다.
 
-RDKit 상태의 입체화학 보존과 모델의 입체화학 구분 능력은 다르다. 현재 atom feature에는 명시적인 chirality feature가 없고 bond stereo는 유무만 표현한다. Block fingerprint도 현재 achiral 설정이며, 유한한 fingerprint와 property가 같은 서로 다른 block에는 같은 embedding을 부여한다. 이번 검토에서는 이 feature 정의를 유지했다.
+State graph에는 기준 구현의 atom chirality feature를 복원했다. Bond stereo는 유무만 표현하며 block fingerprint도 achiral 설정이다. 따라서 state chirality 복원이 block encoder의 모든 stereoisomer 구분을 보장하지는 않는다. 유한한 fingerprint와 property가 같은 서로 다른 block에는 같은 embedding을 부여한다.
 
-Library subsampling은 policy batch마다 library별로 한 번만 수행하고 모든 state가 공유한다. Budget mask는 state별로 적용하며 동일 state는 결과를 재사용한다. TB/replay에서는 library별 관측 row의 합집합을 반드시 포함하고, 나머지 population에서 uniform sampling하여 inclusion probability를 보정한다. 다음 policy 호출에서는 새로 sampling한다.
+Library subsampling은 policy batch마다 library별로 한 번만 수행하고 모든 state와 reaction이 공유한다. Budget mask는 state별로 broadcast 연산한다. 관측 action의 존재 여부는 sampling에 영향을 주지 않는다. 다음 policy 호출에서는 새로 sampling하며, full set을 쓰는 작은 library는 index tensor를 그대로 재사용하고 RNG를 소비하지 않는다.
 
-후보 전체를 RxnAction 객체로 만들지 않는다. Reaction/library group과 block index tensor로 점수를 계산하고, rollout에서 선택된 row만 action 객체로 변환한다. TB/replay는 group 및 정렬된 row index에서 관측 action의 위치를 직접 찾는다.
+Reaction마다 compatible library를 concat하여 `[state, sampled block]` score matrix를 계산한다. Mask된 column은 `-inf`로 남기며 valid-index 압축은 하지 않는다. Device에서 Gumbel sampling한 뒤 선택된 좌표만 CPU로 옮겨 RxnAction으로 변환한다. TB/replay는 관측 action의 logit을 별도로 계산한다. Reverse worker는 다음 forward 계산과 겹쳐 실행하고, 다음 parent tree를 사용하기 전과 마지막 iteration 이후 결과를 수거한다.

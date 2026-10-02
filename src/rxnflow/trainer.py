@@ -110,8 +110,8 @@ class RxnFlowTrainer:
                 "lr_scheduler": self.lr_scheduler.state_dict(),
                 "replay": self.replay.state_dict(),
                 "torch_generator": self.generator.get_state(),
-                # Subsampling/exploration use the CPU generator above; dropout
-                # uses the global generator on the model's device.
+                # Library subsampling uses the CPU generator above. Gumbel
+                # sampling and dropout use the model-device global generator.
                 "torch_rng": torch.get_rng_state(),
                 "cuda_rng": (
                     torch.cuda.get_rng_state(self.device)

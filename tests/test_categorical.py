@@ -1,0 +1,68 @@
+import math
+from collections import Counter
+
+import torch
+
+from rxnflow.gflownet.categorical import ActionCategorical, ProtocolLogits
+from rxnflow.gflownet.types import ActionKind
+
+
+def test_device_sampling_balances_libraries_and_keeps_property_masks():
+    torch.manual_seed(11)
+    n = 6000
+    # Protocol one has libraries of unequal size, protocol two is a unary.
+    # At temperature 1 the random policy gives each protocol mass 1/2 and
+    # each of the two block libraries mass 1/4, irrespective of library size.
+    blocks = ProtocolLogits(
+        "couple",
+        ActionKind.BI_REACTION,
+        ["small", "large"],
+        [torch.arange(1), torch.arange(9)],
+        torch.full((n, 10), 100.0),
+        torch.full((10,), 5.0),
+        torch.tensor([-math.log(2)] + [-math.log(18)] * 9),
+    )
+    unary = ProtocolLogits(
+        "convert",
+        ActionKind.UNI_REACTION,
+        [],
+        [],
+        torch.full((n, 1), -100.0),
+        torch.zeros(1),
+        torch.zeros(1),
+    )
+    policy = ActionCategorical([blocks, unary], torch.zeros(n, 2))
+    counts = Counter(action.block_type for action in policy.sample(1.0, 1.0, 1.0))
+    for name, expected in (("small", 0.25), ("large", 0.25), (None, 0.5)):
+        assert abs(counts[name] / n - expected) < 0.03
+    # Retained but masked columns must stay impossible even under random policy.
+    blocks.logits.fill_(-torch.inf)
+    unary.logits[0] = -torch.inf
+    actions = policy.sample(1.0, 1.0, 1.0)
+    assert actions[0] is None
+    assert all(action.kind == ActionKind.UNI_REACTION for action in actions[1:])
+
+
+def test_policy_sampling_matches_temperature_and_importance_weights():
+    torch.manual_seed(23)
+    n = 6000
+    logits = torch.tensor([0.0, 0.5, -torch.inf])
+    weights = torch.tensor([math.log(4), 0.0, 0.0])
+    protocol = ProtocolLogits(
+        "couple",
+        ActionKind.BI_REACTION,
+        ["a"],
+        [torch.arange(3)],
+        logits.repeat(n, 1),
+        weights,
+        torch.zeros(3),
+    )
+    policy = ActionCategorical([protocol], torch.zeros(n, 2))
+    actions = policy.sample(0.7, 0.0, 0.5)
+    counts = Counter(action.block_index for action in actions)
+    expected = ((logits + 0.5 * weights) / 0.7).softmax(0)
+    assert counts[2] == 0
+    assert abs(counts[0] / n - expected[0]) < 0.03
+    torch.testing.assert_close(
+        policy.log_partition(), torch.logsumexp(logits + weights, 0).expand(n)
+    )

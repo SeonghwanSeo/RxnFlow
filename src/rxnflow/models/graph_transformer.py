@@ -1,6 +1,13 @@
-"""Native PyTorch edge-aware transformer for fixed-size molecular graphs."""
+"""RxnFlow/HSX graph-transformer equations using native Torch operations.
+
+Graph inputs remain padded. Message passing uses molecular edges, virtual-node
+edges and self loops; it never builds a dense [node, node, head, hidden] tensor.
+The baseline is pre-norm GENConv(add) + TransformerConv(concat heads, root skip).
+"""
 
 from __future__ import annotations
+
+import math
 
 import torch
 from torch import Tensor, nn
@@ -9,133 +16,156 @@ from torch.nn import functional as F
 from rxnflow.envs.graph import GraphBatch
 
 
-class EdgeAwareAttention(nn.Module):
-    def __init__(self, hidden_dim: int, num_heads: int, edge_dim: int, dropout: float):
+def graph_mlp(n_in: int, hidden: int, n_out: int, layers: int) -> nn.Sequential:
+    sizes = [n_in] + [hidden] * layers + [n_out]
+    modules = []
+    for i in range(len(sizes) - 1):
+        linear = nn.Linear(sizes[i], sizes[i + 1])
+        # Reference GraphTransformer.reset_parameters applies this to its MLPs.
+        nn.init.kaiming_uniform_(linear.weight, a=0.01, nonlinearity="leaky_relu")
+        nn.init.zeros_(linear.bias)
+        modules.append(linear)
+        if i < len(sizes) - 2:
+            modules.append(nn.LeakyReLU())
+    return nn.Sequential(*modules)
+
+
+def graph_layer_norm(x: Tensor, valid: Tensor) -> Tensor:
+    """Reference graph-mode LayerNorm: normalize all valid node/channel values.
+
+    Tokenwise nn.LayerNorm is a different operation. Virtual nodes count in
+    this normalization, whereas padding does not; the reference uses no affine.
+    """
+    count = valid.sum(1, keepdim=True).clamp_min(1) * x.shape[-1]
+    mean = (x * valid[..., None]).sum((1, 2)) / count.squeeze(1)
+    centered = (x - mean[:, None, None]) * valid[..., None]
+    variance = centered.square().sum((1, 2)) / count.squeeze(1)
+    return centered / (variance[:, None, None] + 1e-5).sqrt()
+
+
+class GraphTransformerLayer(nn.Module):
+    def __init__(self, hidden: int, heads: int):
         super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = hidden_dim // num_heads
-        self.norm = nn.LayerNorm(hidden_dim)
-        self.qkv = nn.Linear(hidden_dim, hidden_dim * 3)
-        self.edge_bias = nn.Linear(edge_dim, num_heads, bias=False)
-        self.output = nn.Linear(hidden_dim, hidden_dim)
-        self.dropout = nn.Dropout(dropout)
+        self.heads = heads
+        # Reference GENConv(num_layers=1, norm=None, bias=False) is one linear
+        # after sum(ReLU(x_j + edge) + 1e-7) + x_i.
+        self.gen = nn.Linear(hidden, hidden, bias=False)
+        # concat_heads=True: EACH head has H channels, not H / heads.
+        self.query = nn.Linear(2 * hidden, heads * hidden)
+        self.key = nn.Linear(2 * hidden, heads * hidden)
+        self.value = nn.Linear(2 * hidden, heads * hidden)
+        self.edge = nn.Linear(hidden, heads * hidden, bias=False)
+        self.skip = nn.Linear(2 * hidden, heads * hidden)
+        self.output = nn.Linear(heads * hidden, hidden)
+        self.condition_scale = nn.Linear(hidden, 2 * hidden)
+        # The reference conv/linear modules use their default Kaiming-uniform
+        # initialization; only the graph MLPs use the explicit LeakyReLU rule.
+        self.ff = graph_mlp(hidden, 4 * hidden, hidden, 1)
 
     def forward(
-        self, x: Tensor, valid: Tensor, allowed: Tensor, edge_features: Tensor
+        self,
+        x: Tensor,
+        condition: Tensor,
+        valid: Tensor,
+        source: Tensor,
+        target: Tensor,
+        edges: Tensor,
     ) -> Tensor:
         batch, length, hidden = x.shape
-        normalized = self.norm(x)
-        qkv = self.qkv(normalized).view(batch, length, 3, self.num_heads, self.head_dim)
-        query, key, value = qkv.unbind(dim=2)
-        query = query.transpose(1, 2)
-        key = key.transpose(1, 2)
-        value = value.transpose(1, 2)
-        bias = self.edge_bias(edge_features).permute(0, 3, 1, 2)
-        bias = bias.masked_fill(~allowed.unsqueeze(1), torch.finfo(x.dtype).min)
-        attended = F.scaled_dot_product_attention(
-            query,
-            key,
-            value,
-            attn_mask=bias,
-            dropout_p=self.dropout.p if self.training else 0.0,
+        normalized = graph_layer_norm(x, valid).reshape(-1, hidden)
+        messages = F.relu(normalized[source] + edges) + 1e-7
+        aggregate = torch.zeros_like(normalized).index_add(0, target, messages)
+        aggregate = self.gen(aggregate + normalized)
+        joined = torch.cat([normalized, aggregate], -1)
+        q = self.query(joined).view(-1, self.heads, hidden)
+        k = self.key(joined).view(-1, self.heads, hidden)
+        v = self.value(joined).view(-1, self.heads, hidden)
+        edge = self.edge(edges).view(-1, self.heads, hidden)
+        scores = (q[target] * (k[source] + edge)).sum(-1) / math.sqrt(hidden)
+        # Native grouped softmax on incoming molecular edges. Detaching the
+        # stabilizing maximum matches the reference and avoids max gradients.
+        indices = target[:, None].expand(-1, self.heads)
+        maxima = scores.new_full((batch * length, self.heads), -torch.inf)
+        maxima.scatter_reduce_(
+            0, indices, scores.detach(), reduce="amax", include_self=True
         )
-        attended = attended.transpose(1, 2).reshape(batch, length, hidden)
-        attended = self.output(attended) * valid.unsqueeze(-1)
-        return x + self.dropout(attended)
-
-
-class TransformerBlock(nn.Module):
-    def __init__(self, hidden_dim: int, num_heads: int, edge_dim: int, dropout: float):
-        super().__init__()
-        self.attention = EdgeAwareAttention(hidden_dim, num_heads, edge_dim, dropout)
-        self.ff_norm = nn.LayerNorm(hidden_dim)
-        self.feed_forward = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim * 4),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 4, hidden_dim),
-        )
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(
-        self, x: Tensor, valid: Tensor, allowed: Tensor, edge_features: Tensor
-    ) -> Tensor:
-        x = self.attention(x, valid, allowed, edge_features)
-        update = self.feed_forward(self.ff_norm(x)) * valid.unsqueeze(-1)
-        return x + self.dropout(update)
+        exponent = (scores - maxima[target]).exp()
+        totals = torch.zeros_like(maxima).index_add(0, target, exponent)
+        alpha = exponent / (totals[target] + 1e-16)
+        values = (v[source] + edge) * alpha[..., None]
+        attended = v.new_zeros(v.shape).index_add(0, target, values).flatten(1)
+        update = self.output(attended + self.skip(joined)).view(batch, length, hidden)
+        scale, shift = self.condition_scale(condition).chunk(2, -1)
+        x = x + update * scale[:, None] + shift[:, None]
+        return x + self.ff(graph_layer_norm(x, valid))
 
 
 class GraphTransformer(nn.Module):
     def __init__(
         self,
-        node_dim: int,
-        edge_dim: int,
-        mol_feature_dim: int,
-        hidden_dim: int,
-        num_heads: int,
-        num_layers: int,
-        dropout: float,
-        max_reactions: int,
+        node_dim,
+        edge_dim,
+        mol_feature_dim,
+        hidden_dim,
+        num_heads,
+        num_layers,
+        max_reactions,
     ):
         super().__init__()
-        self.edge_dim = edge_dim
-        self.node_projection = nn.Linear(node_dim, hidden_dim)
-        self.mol_projection = nn.Sequential(
-            nn.Linear(mol_feature_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, hidden_dim),
+        self.max_reactions = max_reactions
+        self.x2h = graph_mlp(node_dim, hidden_dim, hidden_dim, 2)
+        self.e2h = graph_mlp(edge_dim, hidden_dim, hidden_dim, 2)
+        # Environment-specific graph condition: properties, remaining capacity,
+        # reaction count. Its projection/virtual-node use follows the reference.
+        self.c2h = graph_mlp(
+            mol_feature_dim + 1 + max_reactions + 1, hidden_dim, hidden_dim, 2
         )
-        self.capacity_projection = nn.Linear(1, hidden_dim)
-        self.reaction_count_embedding = nn.Embedding(max_reactions + 1, hidden_dim)
-        self.condition_norm = nn.LayerNorm(hidden_dim)
         self.layers = nn.ModuleList(
-            [
-                TransformerBlock(hidden_dim, num_heads, edge_dim, dropout)
-                for _ in range(num_layers)
-            ]
-        )
-        self.output_norm = nn.LayerNorm(hidden_dim)
-        # HSX readout: concatenate the molecular mean with the virtual node,
-        # then project. A learned pooling gate would change that aggregation.
-        self.readout = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim), nn.LayerNorm(hidden_dim)
+            [GraphTransformerLayer(hidden_dim, num_heads) for _ in range(num_layers)]
         )
 
     def forward(self, batch: GraphBatch) -> Tensor:
-        nodes = self.node_projection(batch.node_features) * batch.node_mask.unsqueeze(-1)
-        reaction_count = self.reaction_count_embedding(batch.reaction_count)
-        mol_condition = self.mol_projection(batch.mol_features)
-        capacity = self.capacity_projection(batch.remaining_capacity.unsqueeze(-1))
-        condition = self.condition_norm(mol_condition + capacity + reaction_count)
-        x = torch.cat([nodes, condition.unsqueeze(1)], dim=1)
-
-        batch_size, node_count = batch.node_mask.shape
-        valid = torch.cat(
-            [
-                batch.node_mask,
-                torch.ones((batch_size, 1), dtype=torch.bool, device=x.device),
-            ],
-            dim=1,
+        nodes = self.x2h(batch.node_features)
+        condition = self.c2h(
+            torch.cat(
+                [
+                    batch.mol_features,
+                    batch.remaining_capacity[:, None],
+                    F.one_hot(batch.reaction_count, self.max_reactions + 1).to(
+                        nodes.dtype
+                    ),
+                ],
+                -1,
+            )
         )
-        length = node_count + 1
-        allowed = torch.zeros(
-            (batch_size, length, length), dtype=torch.bool, device=x.device
+        x = torch.cat([nodes, condition[:, None]], 1)
+        valid = torch.cat([batch.node_mask, torch.ones_like(batch.node_mask[:, :1])], 1)
+        n_batch, length, hidden = x.shape
+        # Preserve directed bond order source -> target. Virtual edges have
+        # embedded feature [1, 0, ...], as in the original implementation.
+        graph, src, dst = batch.adjacency.nonzero(as_tuple=True)
+        source, target = graph * length + src, graph * length + dst
+        edges = self.e2h(batch.bond_features[graph, src, dst])
+        graph, atom = batch.node_mask.nonzero(as_tuple=True)
+        atom_indices = graph * length + atom
+        virtual_indices = graph * length + length - 1
+        virtual_edges = edges.new_zeros((2 * len(atom), hidden))
+        virtual_edges[:, 0] = 1
+        source = torch.cat([source, atom_indices, virtual_indices])
+        target = torch.cat([target, virtual_indices, atom_indices])
+        edges = torch.cat([edges, virtual_edges])
+        # add_self_loops(fill_value='mean'): mean of incoming edge embeddings,
+        # including virtual edges. Isolated virtual nodes receive zero.
+        sums = edges.new_zeros((n_batch * length, hidden)).index_add(0, target, edges)
+        counts = edges.new_zeros(n_batch * length).index_add(
+            0, target, edges.new_ones(len(target))
         )
-        allowed[:, :node_count, :node_count] = batch.adjacency
-        allowed[:, :node_count, node_count] = batch.node_mask
-        allowed[:, node_count, :node_count] = batch.node_mask
-        # GraphBatch has no padding edges. Every query gets one self edge,
-        # including padded queries whose updates are zeroed by valid.
-        allowed.diagonal(dim1=-2, dim2=-1).fill_(True)
-
-        edges = torch.zeros(
-            (batch_size, length, length, self.edge_dim), dtype=x.dtype, device=x.device
-        )
-        edges[:, :node_count, :node_count] = batch.bond_features
+        loops = valid.flatten().nonzero().flatten()
+        edges = torch.cat([edges, sums[loops] / counts[loops, None].clamp_min(1)])
+        source, target = torch.cat([source, loops]), torch.cat([target, loops])
         for layer in self.layers:
-            x = layer(x, valid, allowed, edges)
-        x = self.output_norm(x)
-        node_values = x[:, :node_count]
-        node_count = batch.node_mask.sum(dim=-1, keepdim=True).clamp_min(1)
-        pooled = (node_values * batch.node_mask.unsqueeze(-1)).sum(dim=1) / node_count
-        return self.readout(torch.cat([pooled, x[:, -1]], dim=-1))
+            x = layer(x, condition, valid, source, target, edges)
+        count = batch.node_mask.sum(1, keepdim=True).clamp_min(1)
+        mean = (x[:, :-1] * batch.node_mask[..., None]).sum(1) / count
+        # Keep the original 2H readout. No extra learned compression to H.
+        return torch.cat([mean, x[:, -1]], -1)

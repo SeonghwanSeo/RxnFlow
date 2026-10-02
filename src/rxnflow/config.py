@@ -60,16 +60,21 @@ class RewardConfig:
 
 @dataclass
 class ModelConfig:
+    # Each graph attention head has hidden_dim channels; readout has 2H.
     hidden_dim: int = 128
     num_heads: int = 4
     num_layers: int = 3
+    # HSX explore block embedding size and numbers of hidden MLP layers.
+    block_dim: int = 64
+    mlp_layers: int = 2
+    block_mlp_layers: int = 1
     dropout: float = 0.0
 
     def validate(self) -> None:
         if self.hidden_dim <= 0 or self.num_heads <= 0 or self.num_layers <= 0:
             raise ValueError("model dimensions must be positive")
-        if self.hidden_dim % self.num_heads:
-            raise ValueError("model.hidden_dim must be divisible by model.num_heads")
+        if self.block_dim <= 0 or self.mlp_layers < 0 or self.block_mlp_layers < 0:
+            raise ValueError("invalid block dimension or MLP depth")
         if not 0 <= self.dropout < 1:
             raise ValueError("model.dropout must be in [0, 1)")
 

@@ -1,5 +1,7 @@
 # HSX 선택적 이식과 검토 기록
 
+2026-10-02 기준 구현 복원 내용과 검증은 [변경점 검토](implementation-deviations.md#restoration-implemented--2026-10-02)에 기록했다. 아래 과거 실험 수치는 당시 source snapshot의 결과다.
+
 ## 기준과 범위
 
 현재 목표는 hsx의 공개 가능한 모델·학습 로직을 현재 선형 Enamine synthon 환경에 이식하는 것이다. `source/rxnflow_hits`의 작업 트리를 변경하지 않고, `explore_250509` (`2d472443806ac107b9cdc8a65d03866302394d84`)와 로컬 `main` (`e999c3d1b2f911d1b33fb8245c0a66a2946f14b0`)을 비교했다. Backward는 공개 RxnFlow 로컬 `origin/master` (`a39c7ae`)를 기준으로 한다. 전체 production env, 추가 수기 template, workflow library, tier/clustering은 포함하지 않는다.
@@ -12,15 +14,15 @@
 | Reaction conditioning | explore의 `hook_firstblock`, `hook_birxn` | State + reaction embedding에 SiLU를 적용하고 FirstBlock/BiReaction별 MLP. Workflow/order 대신 reaction name으로 식별. Graph를 reaction마다 다시 계산하지 않음. |
 | Action similarity | main의 `models/layers.py:SimilarityMDP(dot)` | Block embedding만 L2 정규화하고 query와 dot product. Reaction별 bounded temperature 0.01–10, 초기 1. 별도 클래스/선택 옵션 없이 현재 모델에 직접 구현. |
 | UniReaction | 현재 합의한 동적 MDP | State + reaction embedding의 scalar head. 동일한 bounded temperature convention을 적용하고 BiReaction/block과 하나의 categorical에서 경쟁. 두 hsx 버전의 workflow-determined placeholder와 다름. |
-| Graph readout | 두 hsx 버전의 molecular mean + virtual node, main의 output projection | Gated pooling을 제거하고 mean/virtual-node concat → Linear/LayerNorm 사용. |
-| Attention 구현 | 현재 native PyTorch 경로 유지 | 고정 크기 padding, bond attention bias, virtual node를 사용하는 edge-aware attention. PyG GENConv/TransformerConv의 수치적으로 동일한 포팅은 아니며, native PyTorch 제약과 가독성을 위한 구현 차이로 명시. |
+| Graph readout | explore의 molecular mean + virtual node | 2H concat → LayerNorm. 추가 2H→H compression 제거. |
+| Attention 구현 | RxnFlow master/CGFlow/HSX explore | GENConv(add), TransformerConv, graph-mode normalization, conditional scale/shift를 native Torch로 구현. Fixed padding과 virtual node 유지. 출력·gradient를 독립 수식으로 비교. |
 | Mask | explore의 state + block property level | 가능한 type의 library를 먼저 uniform subsampling한 뒤, 선택된 row에 적용. Positive bound는 `< limit × 1.001`; negative bound는 `< limit + abs(limit) × 0.001`; zero bound는 `<= 0`. Heavy-atom capacity는 항상 strict. |
 | Synple property 보정 | explore의 `envs/building_block.py` | At isotope 차감 및 linker MW +29는 사용하지 않음. 기존 dummy-aware Enamine descriptor 유지. |
 | TB loss/reward | main의 `gflownet/algo/trajectory_balance.py` | `mean((logZ + ΣlogPF - ΣlogPB - exponent × log(max(raw_reward, floor)))²)`. Invalid raw reward는 0. Local injectable reward 유지. |
 | Optimizer | main의 `gflownet/online_trainer.py` | AdamW 두 parameter group. Policy와 logZ learning rate 분리, 공통 `2^(-step/lr_decay_steps)` decay. Policy gradient만 norm 10으로 clip. Gradient clip/weight decay의 기존 설정값은 유지. |
 | Replay | main의 FIFO buffer와 data source 순서 | 균일 비복원 추출. 기존 buffer에서 추출한 다음 fresh trajectory 추가. Warmup service/data-source abstraction은 도입하지 않음. |
 | Sampling model | explore의 EMA | `target = decay × target + (1-decay) × model`. Checkpoint에 model과 EMA 모두 보관. |
-| Subsampling probability | public RxnFlow의 importance correction + 현재 관측 action 포함 방식 | 전체 library를 모집단으로 관측 block 포함 확률은 1, 나머지는 조건부 포함 확률로 보정. 이후 mask로 탈락한 row는 제거하되 sampling weight는 변경하지 않음. 관측 block도 분모에 포함하므로 과거 구현의 positive logP clamp가 필요 없음. |
+| Subsampling probability | RxnFlow master의 별도 numerator scoring | 관측 action과 독립인 library draw로 분모 추정. 관측 action은 별도 scoring하며 logP≤0 clamp. Mask된 column은 -inf로 유지. |
 | Backward | public RxnFlow | Known branch 보존, template reverse search, depth-weighted probability. HSX의 `logPB=0`은 이식하지 않음. |
 
 ## Action과 실패 처리

@@ -38,36 +38,38 @@ class ValidationQEDReward(QEDReward):
 
 
 def evaluate(trainer, label, count):
-    # A separate RNG leaves the training draw/optimizer trajectory unchanged.
+    # Isolate both CPU library draws and device-side Gumbel draws from training.
     policy = SynthesisPolicy(
         trainer.env, trainer.sampling_model, trainer.config, trainer.device,
         torch.Generator().manual_seed(1729),
     )
     rows = []
-    for start in range(0, count, trainer.config.training.batch_size):
-        batch = policy.rollouts(
-            min(trainer.config.training.batch_size, count - start),
-            1.0, 0.0, analyze_backward=False,
-        )
-        for trajectory in batch:
-            row = {
-                "smiles": trajectory.final_smiles, "valid": trajectory.valid,
-                "reason": trajectory.invalid_reason,
-                "reactions": max(0, len(trajectory.steps) - 1),
-            }
-            if trajectory.valid:
-                # Replay the full forward path to check that its recorded states
-                # and terminal molecule match actual reaction execution.
-                state = trainer.env.initial_state()
-                for step in trajectory.steps:
-                    assert state.smiles == step.state.smiles
-                    state = trainer.env.step(state, step.action)
-                    assert state.smiles == step.product_smiles
-                assert state.terminated and state.smiles == trajectory.final_smiles
-                mol = state.mol
-                row.update(qed=QED.qed(mol), mw=Descriptors.MolWt(mol),
-                           hba=Lipinski.NumHAcceptors(mol), hbd=Lipinski.NumHDonors(mol))
-            rows.append(row)
+    with torch.random.fork_rng():
+        torch.manual_seed(1729)
+        for start in range(0, count, trainer.config.training.batch_size):
+            batch = policy.rollouts(
+                min(trainer.config.training.batch_size, count - start),
+                1.0, 0.0, analyze_backward=False,
+            )
+            for trajectory in batch:
+                row = {
+                    "smiles": trajectory.final_smiles, "valid": trajectory.valid,
+                    "reason": trajectory.invalid_reason,
+                    "reactions": max(0, len(trajectory.steps) - 1),
+                }
+                if trajectory.valid:
+                    # Replay the full forward path to check that its recorded states
+                    # and terminal molecule match actual reaction execution.
+                    state = trainer.env.initial_state()
+                    for step in trajectory.steps:
+                        assert state.smiles == step.state.smiles
+                        state = trainer.env.step(state, step.action)
+                        assert state.smiles == step.product_smiles
+                    assert state.terminated and state.smiles == trajectory.final_smiles
+                    mol = state.mol
+                    row.update(qed=QED.qed(mol), mw=Descriptors.MolWt(mol),
+                               hba=Lipinski.NumHAcceptors(mol), hbd=Lipinski.NumHDonors(mol))
+                rows.append(row)
     valid = [r for r in rows if r['valid']]
     summary = {
         'attempts': len(rows), 'valid': len(valid),

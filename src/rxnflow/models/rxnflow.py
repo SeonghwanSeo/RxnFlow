@@ -20,6 +20,22 @@ from rxnflow.envs.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
 from .graph_transformer import GraphTransformer
 
 
+def policy_mlp(
+    n_in: int, hidden: int, n_out: int, layers: int, dropout: float
+) -> nn.Sequential:
+    """HSX explore MLP: normalized SiLU hidden layers, linear output."""
+    sizes = [n_in] + [hidden] * layers + [n_out]
+    modules = []
+    for index in range(len(sizes) - 1):
+        linear = nn.Linear(sizes[index], sizes[index + 1])
+        nn.init.kaiming_uniform_(linear.weight, nonlinearity="relu")
+        nn.init.zeros_(linear.bias)
+        modules.append(linear)
+        if index < len(sizes) - 2:
+            modules.extend([nn.LayerNorm(hidden), nn.SiLU(), nn.Dropout(dropout)])
+    return nn.Sequential(*modules)
+
+
 class RxnFlowModel(nn.Module):
     def __init__(self, env: SynthesisEnv, config: ModelConfig):
         super().__init__()
@@ -35,54 +51,50 @@ class RxnFlowModel(nn.Module):
             hidden_dim=hidden,
             num_heads=config.num_heads,
             num_layers=config.num_layers,
-            dropout=config.dropout,
             max_reactions=env.max_reactions,
         )
-        self.action_embedding = nn.Embedding(len(env.action_names), hidden)
-        self.block_type_embedding = nn.Embedding(len(env.block_types), hidden)
+        self.state_norm = nn.LayerNorm(2 * hidden)
+        self.action_embedding = nn.Embedding(len(env.action_names), 2 * hidden)
+        self.block_type_embedding = nn.Embedding(len(env.block_types), config.block_dim)
         # explore_250509: keep fingerprint and physical-property projections
         # separate before fusing them with the categorical block type. Price
         # tiers are deliberately absent from the public Enamine environment.
         self.fingerprint_encoder = nn.Sequential(
-            nn.Linear(FINGERPRINT_DIM, hidden),
+            nn.Linear(FINGERPRINT_DIM, config.block_dim),
             nn.SiLU(),
-            nn.Linear(hidden, hidden),
-            nn.LayerNorm(hidden),
+            nn.Linear(config.block_dim, config.block_dim),
+            nn.LayerNorm(config.block_dim),
             nn.SiLU(),
         )
         self.property_encoder = nn.Sequential(
-            nn.Linear(PROPERTY_DIM, hidden),
+            nn.Linear(PROPERTY_DIM, config.block_dim),
             nn.SiLU(),
-            nn.Linear(hidden, hidden),
-            nn.LayerNorm(hidden),
+            nn.Linear(config.block_dim, config.block_dim),
+            nn.LayerNorm(config.block_dim),
             nn.SiLU(),
         )
-        self.block_encoder = nn.Sequential(
-            nn.Linear(hidden * 3, hidden),
-            nn.LayerNorm(hidden),
-            nn.SiLU(),
-            nn.Linear(hidden, hidden),
+        self.block_encoder = policy_mlp(
+            config.block_dim * 3,
+            config.block_dim,
+            config.block_dim,
+            config.block_mlp_layers,
+            0.0,
         )
-        # Reaction conditioning follows the old HSX additive protocol embedding.
-        # The graph is encoded once; competing reactions use these cheap heads.
-        self.first_block_head = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.LayerNorm(hidden),
-            nn.SiLU(),
-            nn.Linear(hidden, hidden),
+        self.first_block_head = policy_mlp(
+            2 * hidden, hidden, config.block_dim, config.mlp_layers, config.dropout
         )
-        self.bi_reaction_head = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.LayerNorm(hidden),
-            nn.SiLU(),
-            nn.Linear(hidden, hidden),
+        self.bi_reaction_head = policy_mlp(
+            2 * hidden, hidden, config.block_dim, config.mlp_layers, config.dropout
         )
-        self.uni_reaction_head = nn.Sequential(
-            nn.Linear(hidden, hidden),
-            nn.LayerNorm(hidden),
-            nn.SiLU(),
-            nn.Linear(hidden, 1),
+        self.uni_reaction_head = policy_mlp(
+            2 * hidden, hidden, 1, config.mlp_layers, config.dropout
         )
+        # HSX explore initializes the separate fp/property MLPs for SiLU.
+        for encoder in (self.fingerprint_encoder, self.property_encoder):
+            for layer in encoder.modules():
+                if isinstance(layer, nn.Linear):
+                    nn.init.kaiming_uniform_(layer.weight, nonlinearity="relu")
+                    nn.init.zeros_(layer.bias)
         # HSX main SimilarityMDP(dot): normalize only block embeddings and learn
         # a bounded temperature per reaction. Unary logits use the same scale
         # convention because all Uni/Bi choices share one categorical policy.
@@ -94,12 +106,12 @@ class RxnFlowModel(nn.Module):
         self.logit_temperature = nn.Parameter(
             torch.full((len(env.action_names),), math.log(initial / (1.0 - initial)))
         )
-        nn.init.uniform_(self.action_embedding.weight, -1.0, 1.0)
+        nn.init.normal_(self.action_embedding.weight)
         nn.init.uniform_(self.block_type_embedding.weight, -1.0, 1.0)
         self.log_z = nn.Parameter(torch.tensor(0.0))
 
     def encode_graphs(self, batch: GraphBatch) -> Tensor:
-        return self.graph_encoder(batch)
+        return self.state_norm(self.graph_encoder(batch))
 
     @property
     def temperature(self) -> Tensor:
@@ -110,9 +122,7 @@ class RxnFlowModel(nn.Module):
         )
 
     def score_scalar(self, state_embedding: Tensor, action_name: str) -> Tensor:
-        index = self.env.action_to_index[action_name]
-        conditioned = F.silu(state_embedding + self.action_embedding.weight[index])
-        return self.uni_reaction_head(conditioned)[0, 0] / self.temperature[index]
+        return self.action_query(state_embedding, action_name)[0, 0]
 
     def _encode_blocks(
         self, block_type: str, indices: Tensor, device: torch.device
@@ -140,32 +150,16 @@ class RxnFlowModel(nn.Module):
             )
         )
 
-    def action_queries(
-        self, states: Tensor, action_indices: Tensor, positions: list[Tensor]
-    ) -> tuple[Tensor, Tensor]:
-        """One head call per action kind, across all states and reactions.
-
-        positions follows ActionKind order: FirstBlock, UniReaction, BiReaction.
-        Temperatures divide queries before their dot product with block vectors.
-        """
-        conditioned = F.silu(states + self.action_embedding(action_indices))
-        scale = self.temperature[action_indices]
-        queries = torch.zeros_like(states)
-        unary = states.new_zeros(len(states))
-        first, uni, bi = positions
-        for head, indices in (
-            (self.first_block_head, first),
-            (self.bi_reaction_head, bi),
-        ):
-            if len(indices):
-                queries = queries.index_copy(
-                    0, indices, head(conditioned[indices]) / scale[indices, None]
-                )
-        if len(uni):
-            unary = unary.index_copy(
-                0, uni, self.uni_reaction_head(conditioned[uni]).squeeze(-1) / scale[uni]
-            )
-        return queries, unary
+    def action_query(self, states: Tensor, action_name: str) -> Tensor:
+        index = self.env.action_to_index[action_name]
+        conditioned = F.silu(states + self.action_embedding.weight[index])
+        if action_name == "first_block":
+            head = self.first_block_head
+        elif action_name in self.env.uni_reactions:
+            head = self.uni_reaction_head
+        else:
+            head = self.bi_reaction_head
+        return head(conditioned) / self.temperature[index]
 
     def score_blocks(
         self,
@@ -175,13 +169,6 @@ class RxnFlowModel(nn.Module):
         indices: Tensor,
     ) -> Tensor:
         assert indices.ndim == 1 and state_embedding.shape[0] == 1
-        index = self.env.action_to_index[action_name]
-        conditioned = F.silu(state_embedding + self.action_embedding.weight[index])
-        head = (
-            self.first_block_head
-            if action_name == "first_block"
-            else self.bi_reaction_head
-        )
-        query = head(conditioned)
+        query = self.action_query(state_embedding, action_name)
         blocks = self._encode_blocks(block_type, indices, state_embedding.device)
-        return F.normalize(blocks, dim=-1) @ query.squeeze(0) / self.temperature[index]
+        return F.normalize(blocks, dim=-1) @ query.squeeze(0)

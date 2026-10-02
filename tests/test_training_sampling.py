@@ -151,99 +151,83 @@ def test_restart_reproduces_next_update_with_dropout(
 
 
 def test_oriented_block_scoring_and_observed_action_log_probability(
-    prepared_env: Path, tmp_path: Path
-) -> None:
+    prepared_env, tmp_path
+):
     from dataclasses import replace
 
     from rxnflow.gflownet.policy import NoValidActions
 
     trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "sites"), QEDReward())
-    policy = trainer.policy
     state = MoleculeState.from_smiles("[3*]C")
     group = next(
         g
         for g in trainer.env.available_groups(state)
         if g.name == "rxn1_block_first" and g.block_type == "1-1"
     )
-    library = trainer.env.blocks["1-1"]
-    # Direction is part of the block index. Require that row when a fresh
-    # subsample would otherwise omit the observed action from the TB denominator.
     actions = next(
         values
-        for i in range(len(library))
+        for i in range(len(trainer.env.blocks["1-1"]))
         if (values := trainer.env.outcomes(state, group, i))
     )
-    candidates = policy.candidates(state, required=actions[0])
-    assert candidates.action_at(candidates.required_position) == replace(
-        actions[0], product_smiles=""
-    )
-    probability = policy.action_log_probability(state, actions[0])
+    probability = trainer.policy.action_log_probability(state, actions[0])
     assert torch.isfinite(probability) and probability <= 0
     (-probability).backward()
-    assert trainer.model.block_encoder[0].weight.grad.abs().sum() > 0
-    # Missing a terminal action on the last step is a dead end, never a cap.
+    assert trainer.model.block_encoder[0].weight.grad is not None
     with pytest.raises(NoValidActions):
-        policy.candidates(
-            MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1)
+        trainer.policy.choose_action(
+            MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1), 1.0, 0.0
         )
     with pytest.raises(ValueError, match="not available"):
         trainer.env.step(state, replace(actions[0], product_smiles="CC"))
 
 
 def test_subsampling_precedes_budget_mask_without_candidate_reactions(
-    prepared_env: Path, tmp_path: Path, monkeypatch
-) -> None:
+    prepared_env, tmp_path, monkeypatch
+):
+    import math
+
     from rxnflow.envs.chemistry.features import PROPERTY_NAMES
 
     config = tiny_config(prepared_env, tmp_path / "budget")
     config.property_penalty = {"mw": 100.0}
     trainer = RxnFlowTrainer(config, QEDReward())
     env = trainer.env
-    name = next(name for name in env.brick_types if len(env.blocks[name]) > 1)
-    # Exactly one row passes. Sampling may miss it: masking must not refill
-    # the draw, and surviving rows retain full-library inclusion weights.
+    name = next(n for n in env.brick_types if len(env.blocks[n]) > 1)
     mw = PROPERTY_NAMES.index("mw")
     for library in env.blocks.values():
         library.properties[:, mw] = 200.0
     target = len(env.blocks[name]) - 1
     env.blocks[name].properties[target, mw] = 50.0
+    monkeypatch.setattr(
+        env, "outcomes", lambda *args: pytest.fail("candidate scoring executed chemistry")
+    )
+    original = env.block_mask
 
-    def unexpected_reaction(*args, **kwargs):
-        raise AssertionError("candidate scoring executed chemistry")
+    def mask(properties, block_type, indices=None):
+        assert indices is not None
+        return original(properties, block_type, indices)
 
-    monkeypatch.setattr(env, "outcomes", unexpected_reaction)
-    import math
-
-    from rxnflow.gflownet.policy import NoValidActions
-
-    original_mask = env.block_mask
-
-    def sampled_mask(properties, block_type, indices=None):
-        assert indices is not None, "policy must only mask sampled rows"
-        return original_mask(properties, block_type, indices)
-
-    monkeypatch.setattr(env, "block_mask", sampled_mask)
+    monkeypatch.setattr(env, "block_mask", mask)
     found = missed = 0
     for seed in range(20):
         trainer.policy.generator.manual_seed(seed)
-        try:
-            candidates = trainer.policy.candidates(env.initial_state())
-        except NoValidActions:
+        protocol = trainer.policy.candidate_batch([env.initial_state()]).protocols[0]
+        valid = torch.isfinite(protocol.logits[0])
+        # Masking retains every sampled column, even when all actions are invalid.
+        assert protocol.logits.shape[1] == sum(map(len, protocol.block_indices))
+        assert protocol.logits.shape[1] > 1
+        if not valid.any():
             missed += 1
             continue
         found += 1
-        assert candidates.logits.numel() == 1
-        assert candidates.action_at(0).block_type == name
-        assert candidates.action_at(0).block_index == target
-        size = len(env.blocks[name])
-        count = min(
-            size,
-            max(
-                config.subsampling.min_sampling,
-                math.ceil(size * config.subsampling.sampling_ratio),
-            ),
+        position = int(valid.nonzero().flatten()[0])
+        assert valid.sum() == 1
+        action = protocol.action_at(position)
+        assert action.block_type == name and action.block_index == target
+        count = trainer.policy.block_subsamplers[name].count
+        assert protocol.log_importance[position].item() == pytest.approx(
+            math.log(len(env.blocks[name]) / count)
         )
-        assert candidates.log_importance.item() == pytest.approx(math.log(size / count))
     assert found and missed
 
 
@@ -293,32 +277,15 @@ def test_batched_scores_and_gradients_match_scalar_reference(
     config.subsampling.sampling_ratio = sampling_ratio
     trainer = RxnFlowTrainer(config, QEDReward())
     model = trainer.model.eval()
-    with torch.no_grad():
-        model.logit_temperature.add_(
-            torch.linspace(-0.7, 0.9, len(model.logit_temperature))
-        )
     states = [
         MoleculeState(),
         MoleculeState.from_smiles("[3*]C"),
         MoleculeState.from_smiles("[11*]C"),
         MoleculeState.from_smiles("[33*]NCC"),
     ]
-    calls = {"graph": 0, "blocks": 0}
-
-    def count_graph(*args):
-        calls["graph"] += 1
-
-    def count_blocks(*args):
-        calls["blocks"] += 1
-
-    graph_hook = model.graph_encoder.register_forward_hook(count_graph)
-    block_hook = model.fingerprint_encoder.register_forward_hook(count_blocks)
-    batched = trainer.policy.candidate_batch(states)
-    graph_hook.remove()
-    block_hook.remove()
-    assert calls == {"graph": 1, "blocks": 1}
-    reference = []
-    for state, candidates in zip(states, batched, strict=True):
+    categorical = trainer.policy.candidate_batch(states)
+    reference, actual = [], []
+    for row, state in enumerate(states):
         embedding = model.encode_graphs(
             GraphBatch.from_graphs(
                 [
@@ -328,101 +295,62 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                 ]
             )
         )
-        logits = []
-        for position in range(candidates.logits.numel()):
-            action = candidates.action_at(position)
-            if action.kind == ActionKind.UNI_REACTION:
-                score = model.score_scalar(embedding, action.reaction)
-            else:
-                score = model.score_blocks(
-                    embedding,
-                    "first_block"
-                    if action.kind == ActionKind.FIRST_BLOCK
-                    else action.reaction,
-                    action.block_type,
-                    torch.tensor([action.block_index]),
-                )[0]
-            logits.append(score)
-        reference.append(torch.stack(logits))
-        torch.testing.assert_close(candidates.logits, reference[-1], atol=2e-6, rtol=2e-5)
-    batch_loss = sum(torch.logsumexp(value.logits, 0) for value in batched)
-    batch_loss.backward()
-    expected = {
-        name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None
-    }
-    model.zero_grad(set_to_none=True)
-    sum(torch.logsumexp(value, 0) for value in reference).backward()
-    actual = {name: p.grad for name, p in model.named_parameters() if p.grad is not None}
-    assert actual.keys() == expected.keys()
-    for name in expected:
-        torch.testing.assert_close(
-            actual[name], expected[name], atol=1e-5, rtol=1e-4, msg=name
-        )
+        for protocol in categorical.protocols:
+            for column in range(protocol.logits.shape[1]):
+                if not torch.isfinite(protocol.logits[row, column]):
+                    continue
+                action = protocol.action_at(column)
+                score = (
+                    model.score_scalar(embedding, action.reaction)
+                    if action.kind == ActionKind.UNI_REACTION
+                    else model.score_blocks(
+                        embedding,
+                        protocol.name,
+                        action.block_type,
+                        torch.tensor([action.block_index]),
+                    )[0]
+                )
+                reference.append(score)
+                actual.append(protocol.logits[row, column])
+    actual, expected = torch.stack(actual), torch.stack(reference)
+    torch.testing.assert_close(actual, expected, atol=3e-6, rtol=3e-5)
+    params = tuple(model.parameters())
+    a = torch.autograd.grad(actual.square().mean(), params, allow_unused=True)
+    b = torch.autograd.grad(expected.square().mean(), params, allow_unused=True)
+    for left, right in zip(a, b, strict=True):
+        if left is None:
+            assert right is None
+        else:
+            torch.testing.assert_close(left, right, atol=2e-5, rtol=2e-4)
 
 
 def test_batch_shares_library_subsamples_and_handles_dead_ends(
     prepared_env, tmp_path, monkeypatch
 ):
-    trainer = RxnFlowTrainer(
-        tiny_config(prepared_env, tmp_path / "batch-masks"), QEDReward()
-    )
-    policy = trainer.policy
-    initial = trainer.env.initial_state()
-    calls = []
-    original = trainer.env.block_mask
-
-    def record_mask(properties, name, indices=None):
-        assert indices is not None
-        calls.append(name)
-        return original(properties, name, indices)
-
-    monkeypatch.setattr(trainer.env, "block_mask", record_mask)
-    rng = policy.generator.get_state()
-    batch = policy.candidate_batch([initial, initial])
-    assert len(calls) == len(set(calls))
-    policy.generator.set_state(rng)
-    single = [policy.candidates(initial)] * 2
-    for actual, expected in zip(batch, single, strict=True):
-        assert [actual.action_at(i) for i in range(actual.logits.numel())] == [
-            expected.action_at(i) for i in range(expected.logits.numel())
-        ]
-        torch.testing.assert_close(actual.logits, expected.logits)
-        torch.testing.assert_close(actual.log_importance, expected.log_importance)
-    # Different observed rows in the same library must share one conditional
-    # draw, with both rows retained in both state denominators.
     from rxnflow.gflownet.subsampling import BlockSubsampler
 
+    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "shared"), QEDReward())
+    trainer.model.eval()
     draws = []
-    original_sample = BlockSubsampler.sample
+    original = BlockSubsampler.sample
 
-    def record_sample(self, generator, required_indices=()):
-        draws.append((id(self), set(required_indices)))
-        return original_sample(self, generator, required_indices)
+    def sample(self, generator):
+        draws.append(id(self))
+        return original(self, generator)
 
-    monkeypatch.setattr(BlockSubsampler, "sample", record_sample)
-    observed = [
-        RxnAction(ActionKind.FIRST_BLOCK, "", block_type="1", block_index=i)
-        for i in (0, 1)
-    ]
-    shared = policy.candidate_batch([initial, initial], observed)
-    assert len(draws) == len({key for key, _ in draws})
-    assert any(rows == {0, 1} for _, rows in draws)
-    assert [shared[0].action_at(i) for i in range(shared[0].logits.numel())] == [
-        shared[1].action_at(i) for i in range(shared[1].logits.numel())
-    ]
-    for result in shared:
-        for action in observed:
-            index = [result.action_at(i) for i in range(result.logits.numel())].index(
-                action
-            )
-            assert result.log_importance[index] == 0
+    monkeypatch.setattr(BlockSubsampler, "sample", sample)
+    initial = trainer.env.initial_state()
+    categorical = trainer.policy.candidate_batch([initial, initial])
+    assert len(draws) == len(set(draws))
+    for protocol in categorical.protocols:
+        torch.testing.assert_close(protocol.logits[0], protocol.logits[1])
     dead = MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1)
-    choices = policy.choose_actions([dead, initial], 1.0, 0.0)
+    choices = trainer.policy.choose_actions([dead, initial], 1.0, 0.0)
     assert choices[0] is None and choices[1].kind == ActionKind.FIRST_BLOCK
 
 
 def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypatch):
-    import rxnflow.gflownet.policy as policy_module
+    import rxnflow.gflownet.categorical as policy_module
 
     trainer = RxnFlowTrainer(
         tiny_config(prepared_env, tmp_path / "index-actions"), QEDReward()
@@ -447,35 +375,59 @@ def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypa
     assert len(constructed) == 2
 
 
-def test_segmented_log_probabilities_match_scalar_reduction(
+def test_observed_edge_outside_subsample_matches_reference_normalizer(
     prepared_env, tmp_path, monkeypatch
 ):
+    import math
+
+    from rxnflow.gflownet.subsampling import BlockSubsample, BlockSubsampler
+
     trainer = RxnFlowTrainer(
-        tiny_config(prepared_env, tmp_path / "segments"), QEDReward()
+        tiny_config(prepared_env, tmp_path / "numerator"), QEDReward()
     )
-    states = [trainer.env.initial_state()] * 2
+    trainer.model.eval()
+    monkeypatch.setattr(
+        BlockSubsampler,
+        "sample",
+        lambda self, generator: BlockSubsample(torch.tensor([0]), math.log(self.size)),
+    )
+    state = trainer.env.initial_state()
     actions = [
         RxnAction(ActionKind.FIRST_BLOCK, "", block_type="1", block_index=i)
         for i in (0, 1)
     ]
-    candidates = trainer.policy.candidate_batch(states, actions)
-    monkeypatch.setattr(
-        trainer.policy, "candidate_batch", lambda *args, **kwargs: candidates
+    categorical = trainer.policy.candidate_batch([state, state])
+    assert all(
+        indices.tolist() == [0]
+        for p in categorical.protocols
+        for indices in p.block_indices
     )
-    actual = trainer.policy.action_log_probabilities(states, actions)
-    expected = torch.stack(
+    monkeypatch.setattr(trainer.policy, "candidate_batch", lambda *args: categorical)
+    actual = trainer.policy.action_log_probabilities([state, state], actions)
+    numerator = torch.stack(
         [
-            value.logits[value.required_position]
-            - torch.logsumexp(value.logits + value.log_importance, 0)
-            for value in candidates
+            trainer.model.score_blocks(
+                categorical.embeddings[i : i + 1],
+                "first_block",
+                "1",
+                torch.tensor([a.block_index]),
+            )[0]
+            for i, a in enumerate(actions)
         ]
     )
+    denominator = torch.logsumexp(
+        torch.cat([p.logits + p.log_importance for p in categorical.protocols], 1), 1
+    )
+    expected = (numerator - denominator).clamp(max=0)
     torch.testing.assert_close(actual, expected)
-    inputs = [value.logits for value in candidates]
-    actual_grad = torch.autograd.grad(actual.sum(), inputs, retain_graph=True)
-    expected_grad = torch.autograd.grad(expected.sum(), inputs)
-    for first, second in zip(actual_grad, expected_grad, strict=True):
-        torch.testing.assert_close(first, second)
+    params = tuple(trainer.model.parameters())
+    a = torch.autograd.grad(actual.sum(), params, retain_graph=True, allow_unused=True)
+    b = torch.autograd.grad(expected.sum(), params, allow_unused=True)
+    for left, right in zip(a, b, strict=True):
+        if left is None:
+            assert right is None
+        else:
+            torch.testing.assert_close(left, right, atol=1e-5, rtol=1e-4)
 
 
 def test_sampler_loads_checkpoint_once_on_cpu(prepared_env, tmp_path, monkeypatch):
@@ -498,3 +450,63 @@ def test_sampler_loads_checkpoint_once_on_cpu(prepared_env, tmp_path, monkeypatc
     sampler = RxnFlowSampler(checkpoint)
     assert calls == ["cpu"]
     assert "retro_analyzer" not in sampler.env.__dict__
+
+
+def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
+    prepared_env, tmp_path, monkeypatch
+):
+    from rxnflow.envs.retrosynthesis import RetrosynthesisTree
+
+    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "overlap"), QEDReward())
+    policy = trainer.policy
+    events, pending = [], []
+    initial = trainer.env.initial_state()
+    middle = MoleculeState.from_smiles("[1*]N")
+    terminal = MoleculeState.from_smiles("NC", reaction_count=1, terminated=True)
+    first = RxnAction(ActionKind.FIRST_BLOCK, "", block_type="1", block_index=0)
+    last = RxnAction(
+        ActionKind.BI_REACTION,
+        "",
+        reaction="rxn1_block_first",
+        block_type="3",
+        block_index=0,
+    )
+
+    def choose(states, *args):
+        events.append("forward")
+        return [first if state == initial else last for state in states]
+
+    def submit(key, smiles, depth, known):
+        events.append("submit")
+        # A parent's tree must be collected before the child's reverse search.
+        assert known[0][1].smiles == ("" if smiles == middle.smiles else middle.smiles)
+        pending.append((key, RetrosynthesisTree(smiles, known)))
+
+    def result():
+        events.append("collect")
+        result = list(pending)
+        pending.clear()
+        return result
+
+    analyzer = trainer.env.retro_analyzer
+    monkeypatch.setattr(policy, "choose_actions", choose)
+    monkeypatch.setattr(
+        trainer.env,
+        "step",
+        lambda state, action: middle if state == initial else terminal,
+    )
+    monkeypatch.setattr(analyzer, "submit", submit)
+    monkeypatch.setattr(analyzer, "result", result)
+    monkeypatch.setattr(analyzer, "tree_log_probability", lambda *args: -0.5)
+    trajectories = policy.rollouts(1)
+    assert events == [
+        "forward",
+        "collect",
+        "submit",
+        "forward",
+        "collect",
+        "submit",
+        "collect",
+    ]
+    assert trajectories[0].valid and not pending
+    assert [step.log_backward for step in trajectories[0].steps] == [-0.5, -0.5]

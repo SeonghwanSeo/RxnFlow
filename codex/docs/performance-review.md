@@ -1,5 +1,8 @@
 # 구현·성능 검토 — 2026-10-02
 
+후속 수정: [기준 구현 복원 기록](implementation-deviations.md#restoration-implemented--2026-10-02)을 참고한다. 이 문서의 기존 실행 수치와 이전 구현 설명은 당시 snapshot에 해당한다. 후보 압축·관측 action 강제 포함·기존 attention 구조는 이후 제거했으며, 이 수치로 새 구현의 속도나 품질을 판단하지 않는다.
+
+
 ## 현재 milestone
 
 Env·library, MDP·masking/backward, 모델·학습 구현과 1차 runtime 최적화를 완료했다. 사용자 코드 검토와 현재 full catalog의 장기·다중 seed 학습 및 품질 평가는 남아 있다. 학습은 중단 상태이며, 이전 전체 학습의 마지막 기록은 step318/checkpoint300이다. 짧은 pilot과 runtime 측정은 수렴·성능 우위 검증으로 간주하지 않는다.

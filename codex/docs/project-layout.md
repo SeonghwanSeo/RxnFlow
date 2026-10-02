@@ -20,7 +20,7 @@ src/rxnflow/
 ├── gflownet/
 │   ├── policy.py            # SynthesisPolicy: action probabilities and trajectories
 │   ├── types.py             # States, actions, trajectories, molecular samples
-│   ├── categorical.py       # Categorical sampling and probability correction
+│   ├── categorical.py       # Masked protocol logits, denominator, device sampling
 │   ├── subsampling.py       # Uniform per-library subsampling
 │   └── replay.py            # Trajectory replay
 ├── cli/                    # prepare, train, sample entry points

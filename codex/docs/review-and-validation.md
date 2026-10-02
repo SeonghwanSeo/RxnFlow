@@ -1,5 +1,8 @@
 # 최종 검토와 QED 실험 — 2026-10-02
 
+후속 수정: [기준 구현 복원 기록](implementation-deviations.md#restoration-implemented--2026-10-02)을 참고한다. 이 문서의 기존 실행 수치와 이전 구현 설명은 당시 snapshot에 해당한다. 후보 압축·관측 action 강제 포함·기존 attention 구조는 이후 제거했으며, 이 수치로 새 구현의 속도나 품질을 판단하지 않는다.
+
+
 ## 범위와 현재 상태
 
 Source 전체 검토, 가독성 정리, 역합성 탐색 누락 수정과 full catalog의 두5,000-step 실험을 완료했다. 두 실험 모두 최종1,024회 평가에서 전부 유효·고유 분자를 생성했고 모든 forward 경로가 재현됐다. QED+Lipinski는 QED reward를 그대로 두고 MW500/HBA10/HBD5 action masking을 적용한 실험이며 logP는 제외한다. QED 단독은 기존 MW500/max_atoms50 설정을 유지했다. 사용자 코드 검토와 추가 production chemistry 수기 검토는 별도로 남는다.
@@ -123,3 +126,55 @@ Checkpoint500→1000의 replay action 분포도 바뀌었다. Lipinski의 첫 br
 이후에는 경로 길이 변화도 나타났다. Lipinski step2001–2500의 평균 QED0.819/반응 수1.137에서 step3001–3242의0.736/1.755로 바뀌었고, 평균 update 시간은3.59→4.76초였다. 같은 구간의 QED 단독 실험은 주로1-reaction 경로와 평균 QED약0.82를 유지했다. 초기 상승만으로 안정적인 수렴을 선언할 수 없으며, 최종 평가는 길이별 QED와 reaction 사용 분포를 함께 기록한다. 한 seed의 두 run만으로 masking 자체나 backward 근사가 하락의 원인이라고 단정하지 않는다.
 
 Lipinski checkpoint3500의 유효 replay9,848개 중7,618개가2-reaction 경로였다. 가장 흔한 경로들은 rxn3→rxn3, rxn3→rxn1처럼 linker를 거치는 두 BiReaction이었다. 단순 탈보호 횟수 증가만으로 생긴 현상은 아니다. 그 replay의 길이별 QED는1회0.794/2회0.713/3회0.470이고, QED checkpoint4000은1회0.844/2회0.657/3회0.571이었다. 시점과 표본 분포가 달라 실험 우열 판단에는 사용하지 않으며, 평균 reward와 경로별 품질을 구분해야 한다는 근거다. 원시 집계는 runs/qed_validation_20261002/late_path_audit.json이다.
+
+## 2026-10-02 — Actual CUDA update profiling
+
+User requested an actual GPU profile to separate host overhead from GPU computation. Ran QED and QED+Lipinski checkpoints500/5000 serially on gnode7 physical GPU0,CPU0–3,Torch/BLAS1thread,four reverse workers,using the frozen baa4ca0 experiment source. Each case restores model/EMA/optimizer/scheduler/replay/RNG,then executes three warmup updates,five ordinary timed updates,and one separate CPU/CUDA profiler update. These are complete64fresh+64replay updates including chemistry,reverse analysis,reward,TB forward/backward,optimizer and EMA. Only diagnostic in-memory models change;original run artifacts are untouched. Environment load and profiler export/analysis are excluded from update timing.
+
+| Checkpoint | Ordinary update median (5 samples) | Profiled update wall time | GPU active time within that trace | Active fraction of traced wall time |
+| --- | ---: | ---: | ---: | ---: |
+| QED500 |1.577s|2.483s|130.4ms|5.3%|
+| QED5000 |3.525s|3.866s|165.0ms|4.3%|
+| QED+Lipinski500 |1.703s|2.765s|146.4ms|5.3%|
+| QED+Lipinski5000 |4.887s|5.650s|175.5ms|3.1%|
+
+GPU active time is the union of CUDA kernel/memcpy/memset intervals within the CPU UPDATE range,not a sum of nested operator times or an SM occupancy estimate. Profiler overhead inflates wall time,so these fractions describe traced updates only;do not report the remaining95–97% as pure Python time or as an exact fraction of the historical training runs. Nevertheless,the small GPU active durations relative to both traced and ordinary updates establish that these workloads are host-bound rather than dominated by GPU compute. Host work includes Python candidate/group/index construction,CPU tensor operations and dispatch,CUDA launches,chemistry/reward and reverse-worker waits.
+
+For QED500→5000,the profiled train.candidates CPU wall time grows0.952→1.720s,while associated CUDA operator time grows32.2→39.7ms. Across the update,aten::index calls increase26,502→71,396 and aten::arange calls41,054→88,046. The corresponding train.candidates self CPU time grows356→594ms and train.block_scoring self CPU136→293ms. These self times exclude nested recorded operations but still include uninstrumented host work;they are not a pure Python interpreter measurement. This supports prioritizing tensorized/grouped candidate indexing and fewer small operations/kernel launches over GPU model compute optimization. Retrosynthesis wait also contributes:0.215→0.336s in these QED traces.
+
+A bounded1Hz nvidia-smi record is saved as gpu_profile/hardware.csv;thermal slowdown flags were inactive in observed samples. Idle trace-export/analysis periods can have0MHz and clock reason0x1(idle),which is not thermal throttling. This short diagnostic cannot establish thermal history during the earlier full training runs.
+
+Reproduction script,CPU/CUDA traces,operator tables,ordinary timing samples,hardware log and interpretation notes are under runs/qed_validation_20261002/gpu_profile/. See README.md for the exact gnode7 command. summarize_traces.py uses CPU user_annotation ranges only;GPU annotation ranges repeat names and must not be added to CPU phase durations. The final results.json is the authoritative corrected phase summary.
+
+## 2026-10-02 — Synchronous CPU section breakdown
+
+User requested CPU-only section timing to remove asynchronous attribution. Ran the same frozen source/full catalog/checkpoints on gnode7 with CUDA disabled,Torch/BLAS1thread and reverse workers0. Each case restores checkpoint model/EMA/optimizer/scheduler/replay/RNG,warms up3updates,and measures5complete64fresh+64replay updates with lightweight perf_counter scopes. Two policy methods are instrumented only in memory,without changing statement order or expressions. Candidate logits/importance/required positions match the original candidate method on replay states. Source and original artifacts remain unchanged.
+
+The table reports mean seconds/update aggregated across rollout and training. Rows are exclusive and partition the full update;parent times are not added again. Neural-network work now executes on CPU,and reverse search is serial,so these totals must not be treated as a decomposition of historical CUDA times.
+
+| Section | QED500 | QED5000 | Lipinski500 | Lipinski5000 |
+| --- | ---: | ---: | ---: | ---: |
+| Library sampling | 0.166 | 0.280 | 0.196 | 0.293 |
+| Property budget comparison | 0.082 | 0.143 | 0.148 | 0.233 |
+| Mask to valid indices/weights | 0.166 | 0.755 | 0.157 | 0.892 |
+| Action/query/replay index packing | 0.037 | 0.210 | 0.132 | 0.270 |
+| Block features and scoring indices | 0.317 | 0.568 | 0.228 | 1.043 |
+| State properties/graph features/groups/batching | 0.156 | 0.209 | 0.153 | 0.332 |
+| Graph/block/query neural forward | 0.551 | 0.731 | 0.563 | 0.861 |
+| Score matrix products and gather | 0.052 | 0.087 | 0.056 | 0.099 |
+| Autograd backward | 1.309 | 2.751 | 1.615 | 2.503 |
+| Serial retrosynthesis | 0.615 | 1.359 | 0.444 | 2.263 |
+| Forward chemistry and reward | 0.135 | 0.150 | 0.129 | 0.185 |
+| Optimizer/EMA and replay | 0.012 | 0.013 | 0.012 | 0.014 |
+| Other control, log-probability/TB loss and outputs | 0.090 | 0.216 | 0.082 | 0.307 |
+| Total | 3.689 | 7.472 | 3.914 | 9.296 |
+
+The host-side increase is concentrated in mask-result/index construction and block feature/scoring-index packing,not property comparisons alone. For Lipinski,mask-to-index work grows0.157→0.892s,block feature/scoring-index work0.228→1.043s,and action/query/replay index packing0.132→0.270s. These three parts total0.516→2.205s. Property comparison grows0.148→0.233s,and library sampling0.196→0.293s. Pure score matrix/gather work remains0.056→0.099s even on CPU. The subsequent reference audit supersedes the proposed compression optimization: remove valid-index packing and restore masked protocol matrices (see implementation-deviations.md).
+
+Serial reverse search also grows0.444→2.264s for Lipinski. It is a separate CPU-compute contributor;the actual CUDA training uses four workers,so this is not its observed worker-wait time. CPU backward takes1.615→2.503s and includes CPU neural/autograd computation;the earlier CUDA trace is the appropriate evidence for GPU backward compute. No optimization was applied during this measurement.
+
+All individual updates,full inclusive/exclusive section paths and means are saved in runs/qed_validation_20261002/cpu_sections/results.json,summary.json and sections.md. README.md documents section definitions and the exact reproduction command. Every measured update asserts that exclusive section times sum to update time. Validation:GPU-disabled profiling and summary both exit0;OMP_NUM_THREADS=1 ./test.sh quick exits0 with51passed/1deselected in11.20s.
+
+## Reference-fidelity correction
+
+The later source audit found that the earlier “reference-aligned” description was incomplete. Candidate compression was introduced locally,and other differences affect normalizer estimation,exploration,sampling placement,reverse/model overlap and graph architecture. See [implementation-deviations.md](implementation-deviations.md) for confirmed source comparisons,agreed exceptions and correction order. Successful5k runs and passing tests establish execution,not equivalence to RxnFlow master/CGFlow/HSX. Existing profiling results remain measurements of the current implementation,not those reference implementations.
