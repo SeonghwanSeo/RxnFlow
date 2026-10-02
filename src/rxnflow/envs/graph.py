@@ -22,13 +22,13 @@ from rxnflow.envs.features import (
     normalize_molecular_properties,
 )
 
-# NOTE: For general/common usage, we allocate 100 atom & synthon types,
-# which is more than enough for most practical applications.
+# Atomic numbers and synthon labels 0..99 have dedicated slots; each
+# vocabulary gets one overflow slot in NODE_FEATURE_DIM.
 ATOM_TYPES = tuple(range(100))
 SYNTHON_TYPES = tuple(range(100))
 # Atom/type one-hots, degree, charge, four scalar features and chirality.
 NODE_FEATURE_DIM = len(ATOM_TYPES) + 1 + 7 + 6 + 4 + len(SYNTHON_TYPES) + 1 + 3
-# HSX main: keep E/Z identity, rather than only whether stereo is specified.
+# Distinct categories retain E/Z and cis/trans bond stereochemistry.
 BOND_STEREO_TYPES = (
     Chem.BondStereo.STEREONONE,
     Chem.BondStereo.STEREOANY,
@@ -99,6 +99,8 @@ def molecule_to_graph_data(
     reaction_count: int,
     properties: np.ndarray | None = None,
 ) -> GraphData:
+    """Encode one state without truncating atoms or including explicit hydrogens."""
+    # 1. Check graph capacity and allocate fixed-size CPU feature arrays.
     atom_count = heavy_atom_count(mol)
     if atom_count > max_atoms:
         raise ValueError(
@@ -115,8 +117,7 @@ def molecule_to_graph_data(
     if mol is not None:
         atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() != 1]
         index_map = {atom.GetIdx(): index for index, atom in enumerate(atoms)}
-        # Fill plain arrays; creating/assigning a tiny Torch tensor per atom
-        # and bond is substantially more work than wrapping each finished array.
+        # 2. Fill atom categories/scalars in NumPy; wrap completed arrays once.
         degree_start = len(ATOM_TYPES) + 1
         charge_start = degree_start + 7
         scalar_start = charge_start + 6
@@ -141,13 +142,13 @@ def molecule_to_graph_data(
                 min(int(atom.GetHybridization()) / 8.0, 1.0),
             )
             node_features[index, synthon_start + min(isotope, len(SYNTHON_TYPES))] = 1
-            # HSX/RxnFlow categorical atom chirality; dummy isotopes remain
-            # a separate feature. Do not collapse enantiomers in the state GNN.
+            # Chirality distinguishes enantiomers independently of synthon type.
             tag = atom.GetChiralTag()
             node_features[
                 index, -3 + (chiral_types.index(tag) if tag in chiral_types else 0)
             ] = 1
             node_mask[index] = True
+        # 3. Store each bond in both directions, with shared chemistry features.
         for bond in mol.GetBonds():
             # Explicit isotopic H atoms can survive RDKit's RemoveHs, but the
             # model representation only allocates heavy-atom and dummy slots.
@@ -176,6 +177,7 @@ def molecule_to_graph_data(
             feature[-2:] = bond.GetIsConjugated(), bond.IsInRing()
             bond_features[end, begin] = feature
 
+    # 4. Attach normalized molecular descriptors and remaining reaction context.
     return GraphData(
         node_features=torch.from_numpy(node_features),
         node_mask=torch.from_numpy(node_mask),

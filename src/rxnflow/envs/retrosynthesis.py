@@ -36,10 +36,10 @@ class RetrosynthesisTree:
 class Worker:
     """Enumerate catalog-supported routes within the supplied reaction budget.
 
-    A shorter route must not prune another branch: that made the result depend
-    on template traversal order. Depth alone bounds search (including cycles).
-    This is exhaustive over the supplied SMARTS within that bound, not over
-    all possible chemistry. Backward weights remain the depth-based heuristic.
+    Depth bounds the search, including cycles; finding a shorter route does
+    not prune other branches. Candidates must match a catalog entry and reproduce
+    the product in the forward direction. Search covers the supplied SMARTS,
+    while the backward distribution uses approximate depth-based weights.
     """
 
     def __init__(self, env: SynthesisEnv):
@@ -73,6 +73,7 @@ class Worker:
         depth: int,
         known_branches: list[tuple[Action, RetrosynthesisTree]] | None = None,
     ) -> RetrosynthesisTree | None:
+        # 1. Reuse this search's depth-specific results and preserve the known route.
         if depth > self._max_depth:
             return None
         key = (canonical, depth)
@@ -83,6 +84,7 @@ class Worker:
         # precursors. Backward choices identify both the action and its parent.
         branch_keys = {(action, child.smiles) for action, child in branches}
 
+        # 2. Look for a direct FirstBlock origin by restoring the catalog marker.
         signature = typed_dummy_isotopes(mol)
         if len(signature) == 1:
             site_type = signature[0]
@@ -104,6 +106,7 @@ class Worker:
                         branches.append((action, RetrosynthesisTree("")))
                         branch_keys.add((action, ""))
 
+        # 3. Reverse unary transformations and verify each precursor forward.
         if depth < self._max_depth:
             for name, reaction in self.uni_reactions.items():
                 expected = () if reaction.output_type is None else (reaction.output_type,)
@@ -130,6 +133,7 @@ class Worker:
                         branches.append((action, child))
                         branch_keys.add((action, parent_smiles))
 
+            # 4. Reverse couplings, recover the oriented block, and find its row.
             for name, action in self.bi_reactions.items():
                 for child_mol, block_mol in action.run_reverse(mol):
                     child_canonical = Chem.MolToSmiles(child_mol)
@@ -168,6 +172,7 @@ class Worker:
                         branches.append((reverse_action, child))
                         branch_keys.add((reverse_action, child_canonical))
 
+        # 5. Cache only unseeded searches; known branches are specific to a rollout.
         result = RetrosynthesisTree(canonical, branches) if branches else None
         if known_branches is None:
             self._memo[key] = result
@@ -192,6 +197,8 @@ def _worker_run(
 
 
 class RetroSynthesisAnalyzer:
+    """Run reverse searches locally or in workers and normalize branch weights."""
+
     def __init__(self, env: SynthesisEnv, workers: int):
         self.worker = Worker(env)
         self.pool = (
@@ -239,6 +246,7 @@ class RetroSynthesisAnalyzer:
             self.futures.append((key, future))
 
     def result(self) -> list[tuple[int, RetrosynthesisTree | None]]:
+        """Wait for pending searches and drain their results in submission order."""
         if self.pool is None:
             results = self.results
             self.results = []
@@ -254,8 +262,11 @@ class RetroSynthesisAnalyzer:
         total_actions: int,
         parent_smiles: str,
     ) -> float | None:
+        """Normalize route-depth weights for a specific action and parent state."""
         if tree is None:
             return None
+        # Each descendant leaf contributes N**(-depth); shorter continuations
+        # carry more mass. An action can have distinct parents, so match both.
         numerator = 0.0
         denominator = 0.0
         for branch_action, child in tree.branches:

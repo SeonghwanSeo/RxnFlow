@@ -39,6 +39,7 @@ class RxnFlowTrainer:
         reward: RewardFunction,
         restart: str | Path | None = None,
     ):
+        # 1. Resolve reward conditions and independent random-number streams.
         config.validate()
         self.config = config
         self.reward = reward
@@ -52,6 +53,7 @@ class RxnFlowTrainer:
         torch.manual_seed(config.seed)
         self.python_rng = random.Random(config.seed)
         self.rng = np.random.default_rng(config.seed)
+        # 2. Load the environment and initialize training/EMA sampling models.
         self.env = SynthesisEnv(
             config.data.env_dir,
             config.data.max_atoms,
@@ -68,8 +70,8 @@ class RxnFlowTrainer:
             .eval()
         )
         self.sampling_model.load_state_dict(self.model.state_dict())
-        # HSX main trains logZ at its own rate and excludes it from policy
-        # gradient clipping. One optimizer with two groups keeps restart simple.
+        # 3. Give the logZ head its own learning rate and exclude its parameters
+        # from policy gradient clipping. The condition encoder stays in policy.
         self.policy_parameters = [
             parameter
             for name, parameter in self.model.named_parameters()
@@ -90,6 +92,7 @@ class RxnFlowTrainer:
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, lambda step: 2 ** (-step / config.training.lr_decay_steps)
         )
+        # 4. Initialize replay/output, then restore saved state for a restart.
         self.replay = ReplayBuffer(config.training.replay_capacity)
         self.step = 0
         self.output_dir = Path(config.output_dir)
@@ -106,6 +109,7 @@ class RxnFlowTrainer:
         return f"{type(self.reward).__module__}.{type(self.reward).__qualname__}"
 
     def save_checkpoint(self, path: str | Path | None = None) -> Path:
+        """Save model, optimizer, replay, and RNG state for an exact restart."""
         destination = (
             Path(path)
             if path is not None
@@ -172,6 +176,7 @@ class RxnFlowTrainer:
             )
         if checkpoint["objectives"] != self.objectives:
             raise ValueError("reward objectives differ from the checkpoint")
+        # Restore training state only after config, catalog, and reward match.
         self.model.load_state_dict(checkpoint["model"])
         self.sampling_model.load_state_dict(checkpoint["sampling_model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -185,6 +190,7 @@ class RxnFlowTrainer:
         self.step = int(checkpoint["step"])
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> dict[str, float]:
+        """Attach raw objective values and preference-weighted scalar rewards."""
         values, metrics = evaluate_rewards(
             self.reward,
             [
@@ -206,6 +212,8 @@ class RxnFlowTrainer:
     def compute_batch_losses(
         self, trajectories: list[Trajectory], num_fresh: int
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Compute conditional TB loss for fresh trajectories followed by replay."""
+        # 1. Encode each trajectory's stored condition and predict logZ.
         beta = torch.tensor(
             [t.beta for t in trajectories], dtype=torch.float32, device=self.device
         )
@@ -214,6 +222,7 @@ class RxnFlowTrainer:
         )
         cond_info = self.model.encode_cond(beta, preferences)
         log_Z = self.model.logZ(cond_info).squeeze(-1)
+        # 2. Score all observed transitions together, then sum by trajectory.
         transitions = []
         traj_indices: list[int] = []
         traj_log_p_B = torch.tensor(
@@ -239,6 +248,7 @@ class RxnFlowTrainer:
             traj_log_p_F = sum_by_trajectory(log_p_F, batch_idx, len(trajectories))
         else:
             traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
+        # 3. Scalarize objectives, floor before log, and apply the reward exponent.
         objective_rewards = torch.tensor(
             [t.objective_rewards for t in trajectories],
             dtype=torch.float32,
@@ -247,10 +257,10 @@ class RxnFlowTrainer:
         rewards = (objective_rewards * preferences).sum(-1)
         clip_log_R = rewards.clamp_min(self.config.reward.floor).log() * beta
         tb_residual = log_Z + traj_log_p_F - traj_log_p_B - clip_log_R
-        # Both HSX baselines default to the squared trajectory-balance residual.
+        # Penalize the squared mismatch between forward and backward log flow.
         traj_losses = tb_residual.square()
         loss = traj_losses.mean()
-        # Reuse the TB terms already computed for optimization. Reference
+        # 4. Derive diagnostics from the same pre-update values without gradients.
         # "batch_entropy" is trajectory surprisal on this fresh+replay batch,
         # not categorical entropy or an unbiased on-policy entropy estimate.
         with torch.no_grad():
@@ -290,6 +300,7 @@ class RxnFlowTrainer:
             target.mul_(decay).add_(source, alpha=1 - decay)
 
     def run(self, steps: int | None = None) -> Path:
+        """Run additional optimization steps and return the final checkpoint."""
         final_step = self.step + (
             steps if steps is not None else self.config.training.steps
         )
@@ -297,6 +308,7 @@ class RxnFlowTrainer:
         last_saved_step = -1
         checkpoint = None
         while self.step < final_step:
+            # 1. Generate fresh trajectories with the EMA model and score rewards.
             started = perf_counter()
             self.sampling_model.eval()
             count = self.config.training.batch_size
@@ -310,12 +322,13 @@ class RxnFlowTrainer:
             )
             sample_time = perf_counter() - started
             reward_metrics = self._assign_rewards(fresh)
-            # HSX main samples replay before inserting the new trajectories, so
-            # a new sample is not duplicated immediately into the same update.
+            # 2. Sample replay before insertion so fresh trajectories cannot be
+            # duplicated as replay entries in this same optimization batch.
             batch = fresh + self.replay.sample(
                 self.config.training.replay_batch_size, self.python_rng
             )
             self.replay.add(fresh)
+            # 3. Update the policy/logZ, learning rates, and EMA sampling weights.
             self.model.train()
             self.optimizer.zero_grad(set_to_none=True)
             loss, loss_info = self.compute_batch_losses(batch, len(fresh))
@@ -327,7 +340,7 @@ class RxnFlowTrainer:
             )
             loss_info.update(
                 policy_grad_norm=policy_grad_norm,
-                # HSX main's grad_norm includes logZ, which is not clipped.
+                # Total pre-clip norm includes the unclipped logZ head.
                 grad_norm=(
                     policy_grad_norm.square()
                     + sum(
@@ -343,6 +356,7 @@ class RxnFlowTrainer:
             self._update_ema()
             self.step += 1
 
+            # 4. Collect scalar diagnostics, persist fresh attempts, and checkpoint.
             # Transfer scalar diagnostics together rather than synchronizing
             # CUDA separately for every metric. TB values are pre-update.
             loss_metrics = dict(
@@ -370,8 +384,8 @@ class RxnFlowTrainer:
                     for i, name in enumerate(self.objectives)
                 },
                 "online_valid_fraction": sum(value.valid for value in fresh) / len(fresh),
-                # These describe raw rollout attempts, before retry/filtering.
-                # In particular, uniqueness is among valid terminal molecules.
+                # Unique fraction uses chemically valid fresh terminal molecules;
+                # reward filtering does not change their validity.
                 "online_unique_fraction": len(
                     {value.final_smiles for value in fresh if value.valid}
                 )

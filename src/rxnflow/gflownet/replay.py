@@ -14,8 +14,7 @@ class ReplayBuffer:
         self.capacity = capacity
         # Store plain trajectory data, including beta, preferences and objective
         # rewards. Sampling preserves these conditions; no relabeling.
-        # TODO: benchmark beta/preference relabeling and prioritized replay
-        # separately (see docs/conditioning.md).
+        # TODO: benchmark beta/preference relabeling and prioritized replay separately.
         self._items: list[dict[str, Any]] = []
         self._next = 0
 

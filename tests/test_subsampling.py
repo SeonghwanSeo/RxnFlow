@@ -24,7 +24,7 @@ def test_independent_uniform_draw_and_reference_weights() -> None:
         19, 0.25, 2, np.random.default_rng(9)
     ).sample()
     np.testing.assert_array_equal(first, second)
-    assert len(first) == 4  # Reference floor, not ceil or observed-count quota.
+    assert len(first) == 4  # floor(19 * 0.25); the minimum of 2 is inactive.
     assert np.all(first[:-1] < first[1:])
     assert weight == math.log(19 / 4)
     assert weight == other_weight

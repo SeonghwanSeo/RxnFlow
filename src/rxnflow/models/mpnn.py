@@ -64,6 +64,7 @@ class MPNN(nn.Module):
         self.layers = nn.ModuleList([GINELayer(num_emb) for _ in range(num_layers)])
 
     def forward(self, batch: GraphBatch, cond_info: torch.Tensor) -> torch.Tensor:
+        # 1. Initialize molecular nodes and the graph/condition virtual node.
         node_emb = self.x2h(batch.node_features)
         virtual_emb = self.c2h(
             torch.cat(
@@ -81,8 +82,8 @@ class MPNN(nn.Module):
         virtual_emb = virtual_emb + cond_info
         x = torch.cat([node_emb, virtual_emb[:, None]], 1)
         _, length, num_emb = x.shape
-        # Preserve directed bond order source -> target. Virtual edges have
-        # embedded feature [1, 0, ...], as in the original implementation.
+        # 2. Build directed bond edges and bidirectional atom/virtual-node edges.
+        # Virtual edges use the fixed embedded feature [1, 0, ...].
         graph, src, dst = batch.adjacency.nonzero(as_tuple=True)
         src_idx, dst_idx = graph * length + src, graph * length + dst
         edge_emb = self.e2h(batch.bond_features[graph, src, dst])
@@ -94,10 +95,11 @@ class MPNN(nn.Module):
         src_idx = torch.cat([src_idx, atom_indices, virtual_indices])
         dst_idx = torch.cat([dst_idx, virtual_indices, atom_indices])
         edge_emb = torch.cat([edge_emb, virtual_edges])
-        # GINE includes its own self term; use only bond and virtual edges.
+        # 3. Propagate only over real edges; GINE adds each node's self term.
         for layer in self.layers:
             x = layer(x, src_idx, dst_idx, edge_emb)
+        # 4. Pool real molecular nodes, excluding padding; retain the virtual node.
         count = batch.node_mask.sum(1, keepdim=True).clamp_min(1)
         mean_emb = (x[:, :-1] * batch.node_mask[..., None]).sum(1) / count
-        # Keep the original 2H readout. No extra learned compression to H.
+        # Empty states have zero molecular mean and a learned virtual embedding.
         return torch.cat([mean_emb, x[:, -1]], -1)

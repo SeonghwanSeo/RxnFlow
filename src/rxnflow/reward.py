@@ -40,6 +40,7 @@ def evaluate_rewards(
 ) -> tuple[NDArray[np.float32], dict[str, float]]:
     """Filter molecules and align rewards; failed trajectories pass None."""
 
+    # 1. Filter valid molecules, retaining positions in the original batch.
     accepted: list[Chem.Mol] = []
     accepted_indices: list[int] = []
     for index, mol in enumerate(molecules):
@@ -52,6 +53,7 @@ def evaluate_rewards(
             accepted.append(mol)
             accepted_indices.append(index)
 
+    # 2. Score accepted molecules once, including an empty accepted batch.
     scores = reward.score(accepted)
     if scores.shape != (len(accepted), len(reward.objectives)):
         raise ValueError("RewardFunction.score must return [batch, num_objectives]")
@@ -59,6 +61,7 @@ def evaluate_rewards(
         raise ValueError("RewardFunction.score must return float32")
     if not np.isfinite(scores).all() or (scores < 0).any():
         raise ValueError("rewards must be finite and non-negative")
+    # 3. Scatter objectives back; invalid and filtered molecules keep zero reward.
     result = np.zeros((len(molecules), len(reward.objectives)), dtype=np.float32)
     result[accepted_indices] = scores
 

@@ -57,7 +57,7 @@ class State:
 
 @dataclass(frozen=True)
 class Action:
-    # A(s, a) -> s'
+    """A selected reaction and optional oriented catalog row."""
     action_type: ActionType
     reaction: str | None = None
     block_type: str | None = None
@@ -114,7 +114,7 @@ ActionSpace = list[ActionSubspace]
 
 @dataclass
 class Transition:
-    # T(s, a, s')
+    """One observed action, its product, and the estimated backward log probability."""
     state: State
     action: Action
     product_smiles: str

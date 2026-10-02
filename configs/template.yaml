@@ -17,7 +17,7 @@ reward:
   floor: 0.0001
   settings: {}
 
-# Optional hard molecular-property upper bounds.
+# Optional upper bounds on additive state + block property estimates.
 property_penalty: {}
 
 # Uniform sampling within each compatible synthon block library.

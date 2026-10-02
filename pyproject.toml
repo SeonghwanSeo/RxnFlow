@@ -27,10 +27,6 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["build>=1", "pytest>=8", "ruff>=0.5", "wheel>=0.45"]
 
-[project.scripts]
-rxnflow-prepare = "rxnflow.cli.prepare:main"
-rxnflow-sample = "rxnflow.cli.sample:main"
-
 [tool.setuptools.dynamic]
 version = { attr = "rxnflow.__version__" }
 

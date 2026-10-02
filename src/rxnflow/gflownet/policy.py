@@ -1,4 +1,4 @@
-"""Reference-style masked policy matrices over the synthon environment."""
+"""Masked action distributions, shared library subsampling, and trajectory generation."""
 
 from __future__ import annotations
 
@@ -70,7 +70,7 @@ class SubsamplingPolicy:
             # Full ranges, including unary [0], consume no RNG or new allocation.
             return self.full_indices, self.log_importance
         indices = self.rng.choice(self.num_actions, self.num_sampling, replace=False)
-        # HSX sorts selected rows. Sorting does not alter uniform inclusion.
+        # Keep catalog row order without changing which actions were sampled.
         indices.sort()
         return indices, self.log_importance
 
@@ -82,12 +82,12 @@ class ActionCategorical:
     logit_scale: torch.Tensor
 
     def log_partition(self) -> torch.Tensor:
-        # RxnFlow estimates the denominator from an independent subsample.
-        # Unlike a fixed reference group mask, a budgeted subsample can be
-        # entirely masked. A finite floor keeps observed-edge scoring defined;
-        # the caller applies the reference nonpositive log P clamp.
+        """Estimate log sum(exp(logit)) with library inclusion weights."""
+        # A sampled space may be entirely masked. Floor its total mass so an
+        # observed action can still be scored; log_prob caps the result at zero.
         if not self.action_logits:
             return self.graph_emb.new_full((len(self.graph_emb),), math.log(1e-38))
+        # Subtract one maximum per state across all subspaces for stability.
         weighted = [p.logits + p.log_importance for p in self.action_logits]
         maxima = torch.stack([x.max(1).values for x in weighted]).max(0).values
         maxima = torch.where(torch.isfinite(maxima), maxima, 0).detach()
@@ -97,14 +97,15 @@ class ActionCategorical:
     def sample(
         self, sampling_temperature: float, random_action_prob: float, importance: float
     ) -> list[Action | None]:
-        # Draw on the model device. Only chosen group/column indices cross
-        # to Python, not millions of candidate logits.
+        """Draw one action per state; return None where every action is masked."""
+        # 1. Choose which state rows use the random exploration distribution.
         if not self.action_logits:
             return [None] * len(self.graph_emb)
         random_rows = (
             torch.rand(len(self.graph_emb), device=self.graph_emb.device)
             < random_action_prob
         )
+        # 2. Apply exploration/importance weights and sample within each subspace.
         best_values, best_columns = [], []
         for group in self.action_logits:
             values = group.logits + importance * group.log_importance
@@ -117,12 +118,13 @@ class ActionCategorical:
                 )
                 values = torch.where(random_rows[:, None], random_logits, values)
             values = values.masked_fill(~torch.isfinite(group.logits), -torch.inf)
-            # Gumbel-max on retained matrices (RxnFlow/CGFlow categorical).
+            # Gumbel-max samples from softmax without materializing probabilities.
             noise = torch.rand_like(values).clamp_min(torch.finfo(values.dtype).tiny)
             values = values / sampling_temperature - (-noise.log()).log()
             best, columns = values.max(1)
             best_values.append(best)
             best_columns.append(columns)
+        # 3. Compare subspace winners; transfer only selected indices to Python.
         best, group_ids = torch.stack(best_values, 1).max(1)
         columns = torch.stack(best_columns, 1).gather(1, group_ids[:, None]).squeeze(1)
         selected = (
@@ -168,12 +170,13 @@ class RxnFlowPolicy:
     ) -> ActionCategorical:
         """Retain sampled columns; mask logits instead of packing valid actions.
 
-        One common draw per library is the agreed adaptation of CGFlow. Each
-        reaction shares one query/matmul across libraries, then exposes one
-        logit matrix per (reaction, library). No observed action enters these
-        draws or their importance weights.
+        Each library draw is shared across states and reactions. Each reaction
+        shares one query/matmul across libraries, then exposes one logit matrix
+        per (reaction, library). Observed actions do not affect these draws or
+        their importance weights.
         """
         assert states
+        # 1. Build state features and collect compatible reaction/library rows.
         graphs: dict[tuple[str, int], GraphData] = {}
         properties: dict[tuple[str, int], NDArray[np.float32]] = {}
         keys = [(state.smiles, state.reaction_count) for state in states]
@@ -200,6 +203,7 @@ class RxnFlowPolicy:
                         block_type, []
                     ).append(row)
                 library_rows.setdefault(block_type, set()).add(row)
+        # 2. Draw each library once and apply additive budgets to sampled rows.
         descriptors = np.stack([properties[key] for key in keys])
         samples: dict[str | None, NDArray[np.int64]] = {}
         log_importance: dict[str | None, float] = {}
@@ -236,6 +240,7 @@ class RxnFlowPolicy:
             )
             sizes.append(len(indices))
 
+        # 3. Encode conditions, state graphs, and all sampled blocks in batches.
         # Graph/property preprocessing is shared, but identical molecules may
         # have different beta/preferences and need separate neural encodings.
         cond_info = self.model.encode_cond(beta, preferences)
@@ -259,6 +264,7 @@ class RxnFlowPolicy:
             )
             block_embs = dict(zip(masks, encoded.split(sizes), strict=True))
 
+        # 4. Score by reaction, apply masks, and split columns into subspaces.
         action_logits: list[ActionLogits] = []
         for name, rows in action_rows.items():
             row_indices = torch.tensor(sorted(rows), device=self.device)
@@ -328,9 +334,10 @@ class RxnFlowPolicy:
     ) -> torch.Tensor:
         """Score numerator edges independently of the denominator subsample.
 
-        This is RxnFlow's _cal_action_logits, batched by reaction/library to
-        preserve its values without one model invocation per training state.
+        Group observed actions by reaction and library so their scores use
+        batched encodings, including actions absent from the denominator draw.
         """
+        # 1. Group observed rows while retaining their original batch positions.
         by_reaction, by_library = {}, {}
         for row, action in enumerate(actions):
             name = (
@@ -341,6 +348,7 @@ class RxnFlowPolicy:
             by_reaction.setdefault(name, []).append(row)
             if action.block_type is not None:
                 by_library.setdefault(action.block_type, []).append(row)
+        # 2. Gather and encode only the blocks selected by those actions.
         block_rows, features = [], []
         for name, rows in by_library.items():
             indices = np.array([actions[i].block_index for i in rows], dtype=np.int64)
@@ -371,6 +379,7 @@ class RxnFlowPolicy:
             blocks = blocks.index_copy(
                 0, torch.tensor(block_rows, device=self.device), values
             )
+        # 3. Score each reaction and restore the original action order.
         logits = graph_emb.new_zeros(len(actions))
         for name, rows in by_reaction.items():
             indices = torch.tensor(rows, device=self.device)
@@ -428,6 +437,8 @@ class RxnFlowPolicy:
         numerator = self.get_action_logits(
             fwd_cat.graph_emb, actions, fwd_cat.logit_scale
         )
+        # Independent denominator subsampling can underestimate total mass;
+        # cap log probabilities at zero to keep estimated probabilities <= 1.
         return (numerator - fwd_cat.log_partition()).clamp(max=0.0)
 
     def log_prob_single(
@@ -463,6 +474,8 @@ class RxnFlowPolicy:
         beta: torch.Tensor,
         preferences: torch.Tensor,
     ) -> list[Trajectory]:
+        """Grow a batch with fixed conditions and optional backward analysis."""
+        # 1. Initialize trajectory state and keep conditions fixed for every step.
         if count <= 0:
             raise ValueError("rollout count must be positive")
         assert beta.shape == (count,)
@@ -489,7 +502,7 @@ class RxnFlowPolicy:
                 transition.log_p_B = value
                 retro_trees[index] = tree
 
-        # FirstBlock + at most max_reactions chemical transformations.
+        # 2. Advance active trajectories: FirstBlock plus max_reactions reactions.
         for _ in range(self.env.max_reactions + 1):
             active = [
                 i
@@ -505,8 +518,9 @@ class RxnFlowPolicy:
                 beta[active],
                 preferences[active],
             )
-            # RxnFlow pipeline: the previous reverse search runs while this
-            # iteration encodes states and samples actions on the model device.
+            # Collect the preceding reverse search after forward sampling so
+            # worker processes can overlap it with model computation. Parent
+            # trees must be ready before the next transition is submitted.
             if analyze_backward:
                 collect_backward()
             for index, action in zip(active, selected, strict=True):
@@ -536,6 +550,7 @@ class RxnFlowPolicy:
                         [(action, retro_trees[index])],
                     )
 
+        # 3. Finish pending analysis, then serialize successes and failed attempts.
         if analyze_backward:
             collect_backward()  # Drain terminal states and the final pending batch.
 

@@ -85,6 +85,7 @@ def read_smiles_file(path: Path) -> tuple[list[str], list[list[str]]]:
 
 
 def load_block_libraries(env_dir: Path) -> dict[str, BlockLibrary]:
+    """Load aligned NumPy features and source IDs without reparsing molecules."""
     feature_path = env_dir / "bb_feature.npz"
     block_dir = env_dir / "blocks"
     if not feature_path.is_file() or not block_dir.is_dir():

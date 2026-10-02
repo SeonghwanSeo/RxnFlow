@@ -27,8 +27,8 @@ class RxnFlowModel(nn.Module):
         num_emb = cfg.num_emb
         self.env = env
         self.num_objectives = num_objectives
-        # Fixed encoder coordinates, independent of the beta sampling range.
-        # Keep u itself so periodic features never alias the whole encoding.
+        # Condition encoders feed the virtual node, logit scale, and logZ head.
+        # Beta has nine features: its normalized value plus four sine/cosine pairs.
         self.emb_beta = mlp(9, num_emb, num_emb, 2)
         self.emb_preferences = mlp(num_objectives, num_emb, num_emb, 2)
         self.cond2h = nn.Linear(num_emb, num_emb)
@@ -85,7 +85,7 @@ class RxnFlowModel(nn.Module):
             layernorm=True,
             dropout=cfg.dropout,
         )
-        # HSX/Logit-GFN: one positive condition-dependent scale for all actions.
+        # One condition-dependent multiplier controls the scale of all action logits.
         self._logit_scale = mlp(num_emb, num_emb, 1, 2)
         self._logZ = mlp(num_emb, num_emb, 1, 2)
         self.init_weight()
@@ -99,7 +99,7 @@ class RxnFlowModel(nn.Module):
                 nn.init.zeros_(module.bias)
             elif isinstance(module, nn.LayerNorm):
                 module.reset_parameters()
-        # HSX main initializes both reaction and block-type embeddings small.
+        # Small categorical embeddings limit their initial contribution to fused inputs.
         nn.init.uniform_(self.emb_rxn.weight, -0.1, 0.1)
         nn.init.uniform_(self.emb_type.weight, -0.1, 0.1)
         # Start from unscaled logits and log Z = 0.
@@ -109,6 +109,9 @@ class RxnFlowModel(nn.Module):
         nn.init.zeros_(self._logZ[-1].bias)
 
     def encode_cond(self, beta: torch.Tensor, preferences: torch.Tensor) -> torch.Tensor:
+        """Encode beta and objective weights into one [batch, num_emb] condition."""
+        # Fixed coordinates are independent of the sampling range. The linear
+        # term u distinguishes values that share the same periodic features.
         u = (beta[:, None] - 1.0) / 63.0
         frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
         angles = 2 * math.pi * u * frequencies
@@ -122,7 +125,7 @@ class RxnFlowModel(nn.Module):
         )
 
     def logit_scale(self, cond_info: torch.Tensor) -> torch.Tensor:
-        """HSX ELU + 1: positive scalar per condition, without fixed bounds."""
+        """Map each condition to an ELU + 1 logit multiplier, initialized at 1."""
         return F.elu(self._logit_scale(cond_info)).squeeze(-1) + 1
 
     def logZ(self, cond_info: torch.Tensor) -> torch.Tensor:
@@ -166,6 +169,8 @@ class RxnFlowModel(nn.Module):
     def forward_mdp(
         self, graph_emb: torch.Tensor, action_name: str, logit_scale: torch.Tensor
     ) -> torch.Tensor:
+        """Return a block-query vector or unary logit for one reaction and batch."""
+        # Add reaction identity after graph encoding so all reactions share the GNN.
         index = self.env.action_to_index[action_name]
         rxn_emb = self.emb_rxn.weight[index].expand(graph_emb.shape[0], -1)
         state_rxn_emb = torch.cat([graph_emb, rxn_emb], dim=-1)

@@ -124,16 +124,15 @@ def _conversion_templates(
 def _convert_batch(
     records: list[tuple[str, str]], specs: list[SynthonSpec]
 ) -> dict[str, dict[str, set[str]]]:
-    # Each worker reuses its RDKit reactions and deduplicates a bounded source batch.
-    # The parent merges source-ID sets across batches before writing sorted rows.
+    """Convert a source batch into oriented synthons with merged source IDs."""
+    # 1. Reuse compiled conversions and collect one-handle products.
     conversions = _conversion_templates(tuple(specs))
     blocks: dict[str, dict[str, set[str]]] = {}
     bricks: dict[int, dict[str, tuple[Chem.Mol, set[str]]]] = {
         spec.type: {} for spec in specs
     }
 
-    # Parse each source once, then try all conversions on that same read-only
-    # molecule. Reversing these loops reparses every BB 35 times.
+    # Parse each source once for all conversion templates.
     for smiles, identifier in records:
         mol = Chem.MolFromSmiles(smiles)
         assert mol is not None
@@ -146,8 +145,8 @@ def _convert_batch(
                     identifier
                 )
 
-    # Try both orders: removing one group can change the SMARTS context of the
-    # other. Keep each brick Mol for all second conversions as well.
+    # 2. Convert bricks to two-handle linkers and store both attachment directions.
+    # Try both conversion orders: removing one group can change the other match.
     for left_type, values in bricks.items():
         for mol, identifiers in values.values():
             for right in conversions:
@@ -176,8 +175,8 @@ def _convert_batch(
                             smiles, set()
                         ).update(identifiers)
 
-    # Bricks use the same attachment convention as linkers. FirstBlock restores
-    # their type from the library key when creating the initial synthon state.
+    # 3. Store bricks with the same isotope-0 attachment marker as linkers.
+    # FirstBlock restores its chemical type from the library key.
     for block_type, values in bricks.items():
         key = str(block_type)
         for original, identifiers in values.values():
@@ -198,6 +197,8 @@ def convert_stage(
     num_workers: int = 1,
     min_library_size: int = 1,
 ) -> None:
+    """Write synthon libraries and source provenance from an Enamine stock file."""
+    # 1. Read templates and clean source BBs, including the 50-heavy-atom limit.
     if num_workers < 1:
         raise ValueError("num_workers must be at least 1")
     if min_library_size < 1:
@@ -221,6 +222,7 @@ def convert_stage(
             raise ValueError(f"building-block ID has multiple structures: {identifier}")
         sources[identifier] = smiles
 
+    # 2. Convert source batches and merge duplicate synthons/source IDs.
     # Small batches distribute expensive conversions without sending the entire
     # catalog to every process. Ordered merging and sorted output keep row IDs
     # identical for serial and parallel preparation.
@@ -237,6 +239,7 @@ def convert_stage(
                 for smiles, identifiers in values.items():
                     target.setdefault(smiles, set()).update(identifiers)
 
+    # 3. Apply minimum library size to globally deduplicated oriented synthons.
     # Count unique oriented synthons after merging all source batches. Supplier
     # IDs and repeated source rows do not increase a library's size.
     excluded_counts = {
@@ -247,6 +250,7 @@ def convert_stage(
     if len(excluded_counts) == len(blocks):
         raise ValueError("no block libraries meet min_library_size")
 
+    # 4. Write sorted library rows, source provenance, and the active templates.
     env_path.mkdir(parents=True, exist_ok=True)
     block_dir = env_path / "blocks"
     block_dir.mkdir(exist_ok=True)
@@ -272,7 +276,7 @@ def convert_stage(
     shutil.copyfile(template_path / "synthon.yaml", env_path / "synthon.yaml")
     shutil.copyfile(template_path / "reaction.yaml", env_path / "reaction.yaml")
 
-    # Re-conversion invalidates the previous aligned features and stage record.
+    # 5. Invalidate features because the library row indices may have changed.
     (env_path / "bb_feature.npz").unlink(missing_ok=True)
     manifest = {"format": MANIFEST_FORMAT, "stages": {}}
     (env_path / MANIFEST_NAME).write_text(json.dumps(manifest), encoding="utf-8")
@@ -289,6 +293,8 @@ def convert_stage(
 
 
 def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
+    """Write properties, fingerprints, and atom counts in each library's row order."""
+    # 1. Enumerate converted libraries before opening the replacement archive.
     if num_workers < 1:
         raise ValueError("num_workers must be at least 1")
     env_path = Path(env_dir)
@@ -301,6 +307,7 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     output = env_path / "bb_feature.npz"
     temporary = output.with_suffix(".tmp")
     context = get_context("spawn").Pool(num_workers) if num_workers > 1 else nullcontext()
+    # 2. Calculate rows and stream one library at a time into the NPZ archive.
     # NPZ is a zip of NPY arrays. Stream one library at a time instead of
     # retaining the entire catalog's arrays and millions of temporary row arrays.
     with context as pool, ZipFile(temporary, "w", compression=ZIP_DEFLATED) as archive:
@@ -335,6 +342,7 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
                     f"{path.stem}/{name}.npy", "w", force_zip64=True
                 ) as entry:
                     np.lib.format.write_array(entry, array, allow_pickle=False)
+    # 3. Publish the archive only after every library has been written.
     temporary.replace(output)
     _complete_stage(
         env_path,

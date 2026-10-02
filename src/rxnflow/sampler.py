@@ -94,6 +94,8 @@ class RxnFlowSampler:
         beta: tuple[str, list[float]],
         preferences: tuple[str, list[float]] | None = None,
     ) -> list[SamplingResult]:
+        """Return count valid trajectories, with optional post-generation scoring."""
+        # 1. Resolve requested conditions and reset sampling RNGs when seeded.
         conditions = ConditionSampler(
             beta,
             ("dirichlet", [1.0]) if preferences is None else preferences,
@@ -106,6 +108,7 @@ class RxnFlowSampler:
             torch.manual_seed(seed)  # CPU conditions and device-side categorical draws.
         if sampling_temperature <= 0:
             raise ValueError("softmax temperature must be positive")
+        # 2. Generate until enough valid terminal trajectories or the attempt limit.
         trajectories: list[Trajectory] = []
         attempts = 0
         maximum_attempts = max(100, count * 100)
@@ -130,6 +133,7 @@ class RxnFlowSampler:
             raise RuntimeError(
                 f"generated only {len(trajectories)} valid samples in {maximum_attempts} attempts"
             )
+        # 3. Attach provenance and optional rewards without changing the samples.
         results = [self._result(trajectory) for trajectory in trajectories]
         if self.reward is not None and results:
             values, metrics = evaluate_rewards(

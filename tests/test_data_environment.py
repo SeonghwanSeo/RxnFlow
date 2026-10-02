@@ -53,7 +53,7 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
     block_names = {path.name for path in (prepared_env / "blocks").glob("*.smi")}
     assert {"1.smi", "1-1.smi", "1-3.smi", "3-33.smi", "34.smi", "35.smi"} <= block_names
     assert not list(prepared_env.rglob("*cluster*"))
-    from rxnflow.cli.prepare import main
+    from scripts.prepare import main
 
     root = Path(__file__).parents[1]
     with pytest.raises(SystemExit, match="already exists"):
@@ -366,7 +366,7 @@ def test_parallel_preparation_matches_serial(
     stock = tmp_path / "stock.smi"
     stock.write_text(source + (source.splitlines()[0] + "\n") * 512)
     parallel = tmp_path / "parallel"
-    from rxnflow.cli.prepare import main
+    from scripts.prepare import main
 
     main(
         [

@@ -26,7 +26,7 @@ from rxnflow.envs.retrosynthesis import RetroSynthesisAnalyzer
 
 
 class SynthesisEnv:
-    """Synthon-based synthesis environment"""
+    """Grow one synthon intermediate through typed unary and binary reactions."""
 
     def __init__(
         self,
@@ -89,8 +89,8 @@ class SynthesisEnv:
         }
         bi = {}
         for name, value in raw["BiReaction"].items():
-            # Normalize both allowed reactant orders once when loading. A
-            # BiReaction now owns its direction; no separate BiAction is needed.
+            # Compile each permitted direction with the state first and incoming
+            # block second, so runtime execution always uses the same argument order.
             for block_first in [False, True] if value["ordered"] else [False]:
                 direction = "block_first" if block_first else "state_first"
                 oriented_name = f"{name}_{direction}"
@@ -122,8 +122,8 @@ class SynthesisEnv:
 
     def _build_action_spaces(self) -> None:
         """Precompute eligible actions for each handle and reaction budget."""
-        # A reference branching scale for the bounded backward heuristic. Site
-        # outcomes are state dependent, so this is not an exact action count.
+        # 1. Estimate a branching scale for depth-weighted backward probabilities.
+        # Site outcomes depend on the state, so this is not an exact action count.
         self.num_total_actions = max(
             2,
             len(self.uni_reactions)
@@ -134,14 +134,15 @@ class SynthesisEnv:
                 for name in self._get_compatible_libraries(action.block_type)
             ),
         )
+        # 2. Initialization selects a brick without a current synthon type.
         # Full spaces contain library metadata, not per-block index arrays.
-        # Initialization has no synthon type and gets its own explicit space.
         self.initial_action_space: ActionSpace = [
             ActionSubspace(
                 ("first_block", name), ActionType.FIRST_BLOCK, len(self.blocks[name])
             )
             for name in self.brick_types
         ]
+        # 3. Index unary and binary continuations by the state's remaining handle.
         self.reaction_action_spaces: dict[int, ActionSpace] = {
             site_type: [] for site_type in self.synthon_types
         }
@@ -157,8 +158,8 @@ class SynthesisEnv:
                     )
                 )
 
-        # The final reaction must close the remaining site: terminal unary
-        # transformations or coupling to a brick. Earlier reactions may also end.
+        # 4. The last reaction must close the handle: terminal unary or a brick.
+        # These terminating actions are also available before the final step.
         self.last_action_spaces: dict[int, ActionSpace] = {}
         for site_type, space in self.reaction_action_spaces.items():
             last_space: ActionSpace = []
@@ -238,12 +239,11 @@ class SynthesisEnv:
         block_type: str,
         indices: NDArray[np.int64] | None = None,
     ) -> NDArray[np.bool_]:
-        """HSX budget rule on selected rows (or the full library for inspection).
+        """Mask block rows using additive state + block property estimates.
 
-        Use raw property units instead of division by the bound, so zero and
-        negative upper bounds work too. These sums estimate product properties;
-        they are not exact product descriptors. Enamine dummies have zero mass:
-        do not copy HSX's Synple At subtraction or +29 MW linker correction.
+        Inputs are one state [P] or a batch [B, P]; the result is [N] or [B, N].
+        Compare raw units so zero and negative upper bounds remain meaningful.
+        These sums estimate product properties without executing candidate reactions.
         """
         library = self.blocks[block_type]
         heavy_atoms = (
@@ -262,9 +262,8 @@ class SynthesisEnv:
         )
         for index, limit in self.property_limits.items():
             estimate = properties[:, index] + state_properties[..., index, None]
-            # HSX main uses normalized budget < 1.01 for positive bounds.
-            # Compare raw units for zero/negative bounds, where division is not
-            # meaningful. Discrete zero bounds remain exact; capacity is strict.
+            # Nonzero bounds allow 1% of their magnitude as tolerance.
+            # Zero bounds stay exact; the atom-capacity check above is strict.
             if limit == 0:
                 mask &= estimate <= 0
             else:
@@ -273,6 +272,7 @@ class SynthesisEnv:
 
     def _apply_action(self, current: Chem.Mol | None, action: Action) -> Chem.Mol | None:
         """Apply FirstBlock/UniReaction/BiReaction and return a valid Mol or None."""
+        # 1. Resolve the selected catalog row, when this action consumes a block.
         if action.block_type is not None:
             library = self.blocks[action.block_type]
             if action.block_index is None or not 0 <= action.block_index < len(library):
@@ -281,6 +281,7 @@ class SynthesisEnv:
         elif action.block_index is not None:
             raise ValueError("unary actions do not take a block_index")
 
+        # 2. Execute the selected transformation and determine its expected handle.
         if action.action_type == ActionType.FIRST_BLOCK:
             # Catalog attachment markers are always 0. A first brick becomes a
             # state with its chemical synthon type restored from the library.
@@ -303,6 +304,7 @@ class SynthesisEnv:
                 assert block is not None
                 mol = bi.run_forward(current, block)
                 expected = library.site_types[1:]
+        # 3. Check the actual product's handle, capacity, and structural change.
         if mol is None or typed_dummy_isotopes(mol) != expected:
             return None
         if heavy_atom_count(mol) > self.max_atoms:
@@ -314,6 +316,7 @@ class SynthesisEnv:
         return mol
 
     def step(self, state: State, action: Action) -> State:
+        """Execute an action and terminate when its product has no marked handle."""
         product = self._apply_action(state.mol, action)
         if product is None:
             raise InvalidTransition(

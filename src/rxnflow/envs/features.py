@@ -59,6 +59,7 @@ def heavy_atom_count(mol: Chem.Mol | None) -> int:
 
 
 def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
+    """Return raw descriptors in PROPERTY_NAMES order; the empty state is zero."""
     if mol is None:
         return np.zeros(PROPERTY_DIM, dtype=np.float32)
     # A dummy isotope is a categorical synthesis label, not an isotope mass.
@@ -89,6 +90,7 @@ def normalize_molecular_properties(values: np.ndarray) -> np.ndarray:
 
 
 def block_fingerprint(mol: Chem.Mol) -> np.ndarray:
+    """Concatenate isotope-aware Morgan counts and MACCS bits into 678 bytes."""
     invariants = rdMolDescriptors.GetConnectivityInvariants(mol)
     # Default Morgan invariants ignore dummy isotopes. Supply the categorical
     # label explicitly, so active/latent types and their positions remain
@@ -103,6 +105,7 @@ def block_fingerprint(mol: Chem.Mol) -> np.ndarray:
     morgan_array = np.zeros(512, dtype=np.uint32)
     DataStructs.ConvertToNumpyArray(morgan, morgan_array)
     np.minimum(morgan_array, 255, out=morgan_array)
+    # MACCS index 0 is unused; concatenate only its 166 defined keys.
     maccs = MACCSkeys.GenMACCSKeys(mol)
     maccs_array = np.zeros(167, dtype=np.uint8)
     DataStructs.ConvertToNumpyArray(maccs, maccs_array)

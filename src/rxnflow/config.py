@@ -86,7 +86,7 @@ class RewardConfig:
 
 @dataclass
 class ModelConfig:
-    # Residual GINE width/depth; retain the 2H mean/virtual-node readout.
+    # Residual GINE width/depth; readout concatenates mean and virtual-node features.
     num_emb: int = 128
     num_layers: int = 4
     num_block_emb: int = 128
@@ -294,12 +294,13 @@ class Config:
 
     @classmethod
     def from_file(cls, path: str | Path) -> Config:
-        # Parse text at the YAML boundary, before constructing internal config.
+        # 1. Load YAML and map the run section to the internal flat fields.
         base = OmegaConf.create(cls().to_dict())
         loaded = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
         if not isinstance(loaded, dict):
             raise ValueError("configuration file must contain a mapping")
         normalized = cls._flatten_run_section(loaded)
+        # 2. Parse condition strings once, before constructing numeric config.
         reward = normalized.get("reward")
         if reward is not None:
             if not isinstance(reward, dict):
@@ -312,6 +313,7 @@ class Config:
         property_penalty = normalized.get("property_penalty")
         if property_penalty is not None and not isinstance(property_penalty, dict):
             raise ValueError("property_penalty must be a mapping")
+        # 3. Merge omitted defaults and validate the resolved configuration.
         merged = OmegaConf.merge(base, normalized)
         raw = OmegaConf.to_container(merged, resolve=True)
         assert isinstance(raw, dict)

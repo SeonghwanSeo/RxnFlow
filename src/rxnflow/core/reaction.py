@@ -45,6 +45,8 @@ def _run(
 
 
 class Reaction:
+    """Compiled forward/reverse SMARTS with sanitized, deduplicated products."""
+
     def __init__(self, name: str, forward: str, reverse: str) -> None:
         self.name = name
         self.forward_template = forward
@@ -77,6 +79,8 @@ class Reaction:
 
 
 class UniReaction(Reaction):
+    """Transform one typed handle; output_type=None consumes it and terminates."""
+
     def __init__(
         self,
         name: str,
@@ -143,6 +147,8 @@ class BiReaction(Reaction):
         if len(self.block_types) != 2 or any(value <= 0 for value in self.block_types):
             raise ValueError(f"invalid block types for reaction {self.name}")
 
+        # Reorder both directions into (state, block), then change the block's
+        # attachment query to isotope 0 while retaining the state's typed query.
         state_position, block_position = (1, 0) if self.block_first else (0, 1)
         forward = ChemicalReaction()
         reverse = ChemicalReaction()

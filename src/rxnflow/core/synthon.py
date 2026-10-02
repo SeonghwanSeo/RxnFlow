@@ -28,6 +28,7 @@ class SynthonConversion:
         self.reaction: ChemicalReaction = reaction
 
     def run_mol(self, mol: Chem.Mol) -> dict[str, Chem.Mol]:
+        """Return connected, sanitized conversions keyed by canonical SMILES."""
         products: dict[str, Chem.Mol] = {}
         for product_tuple in self.reaction.RunReactants((mol,), 0):
             if len(product_tuple) != 1:
@@ -46,6 +47,7 @@ class SynthonConversion:
 
 
 def typed_dummy_isotopes(mol: Chem.Mol) -> tuple[int, ...]:
+    """Return sorted dummy labels, including isotope-0 catalog attachments."""
     return tuple(
         sorted(atom.GetIsotope() for atom in mol.GetAtoms() if atom.GetAtomicNum() == 0)
     )

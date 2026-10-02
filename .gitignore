@@ -113,7 +113,7 @@ ENV/
 env.bak/
 venv.bak/
 
-# Local vendor catalogs are inputs to rxnflow-prepare, never repository data.
+# Local vendor catalogs are preparation inputs, never repository data.
 data/building_blocks/*.smi
 !data/building_blocks/.gitkeep
 # Locally prepared vendor subsets and training/evaluation outputs.
