@@ -56,22 +56,16 @@ class RxnFlowModel(nn.Module):
         self.state_norm = nn.LayerNorm(2 * hidden)
         self.action_embedding = nn.Embedding(len(env.action_names), 2 * hidden)
         self.block_type_embedding = nn.Embedding(len(env.block_types), config.block_dim)
-        # explore_250509: keep fingerprint and physical-property projections
-        # separate before fusing them with the categorical block type. Price
-        # tiers are deliberately absent from the public Enamine environment.
+        # HSX main: project and normalize each feature, then learn their
+        # nonlinear interactions in the fusion MLP. Type is included; price
+        # tiers are absent from the public Enamine environment.
         self.fingerprint_encoder = nn.Sequential(
             nn.Linear(FINGERPRINT_DIM, config.block_dim),
-            nn.SiLU(),
-            nn.Linear(config.block_dim, config.block_dim),
             nn.LayerNorm(config.block_dim),
-            nn.SiLU(),
         )
         self.property_encoder = nn.Sequential(
             nn.Linear(PROPERTY_DIM, config.block_dim),
-            nn.SiLU(),
-            nn.Linear(config.block_dim, config.block_dim),
             nn.LayerNorm(config.block_dim),
-            nn.SiLU(),
         )
         self.block_encoder = policy_mlp(
             config.block_dim * 3,
@@ -89,12 +83,10 @@ class RxnFlowModel(nn.Module):
         self.uni_reaction_head = policy_mlp(
             2 * hidden, hidden, 1, config.mlp_layers, config.dropout
         )
-        # HSX explore initializes the separate fp/property MLPs for SiLU.
+        # Main's feature projections have no activation and use Xavier init.
         for encoder in (self.fingerprint_encoder, self.property_encoder):
-            for layer in encoder.modules():
-                if isinstance(layer, nn.Linear):
-                    nn.init.kaiming_uniform_(layer.weight, nonlinearity="relu")
-                    nn.init.zeros_(layer.bias)
+            nn.init.xavier_uniform_(encoder[0].weight)
+            nn.init.zeros_(encoder[0].bias)
         # HSX main SimilarityMDP(dot): normalize only block embeddings and learn
         # a bounded temperature per reaction. Unary logits use the same scale
         # convention because all Uni/Bi choices share one categorical policy.

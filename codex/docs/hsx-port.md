@@ -12,7 +12,7 @@
 
 | 부분 | 참고 구현 | 현재 선택과 차이 |
 | --- | --- | --- |
-| Block encoder | explore의 `models/gfn.py:BlockEmbedding` | FP와 property 각각 Linear/SiLU/Linear/LayerNorm/SiLU로 projection하고 type embedding과 concat한 뒤 MLP. Tier 제외. |
+| Block encoder | main의 `models/layers.py:BlockEmbedding` projection + explore fusion MLP | FP와 property 각각 Linear/LayerNorm으로 projection하고 type embedding과 concat한 뒤 MLP. Projection은 main의 Xavier/zero-bias 초기화. Tier 제외, block_dim64와 기존 fusion MLP 유지. |
 | Reaction conditioning | explore의 `hook_firstblock`, `hook_birxn` | State + reaction embedding에 SiLU를 적용하고 FirstBlock/BiReaction별 MLP. Workflow/order 대신 reaction name으로 식별. Graph를 reaction마다 다시 계산하지 않음. |
 | Action similarity | main의 `models/layers.py:SimilarityMDP(dot)` | Block embedding만 L2 정규화하고 query와 dot product. Reaction별 bounded temperature 0.01–10, 초기 0.2. 별도 클래스/선택 옵션 없이 현재 모델에 직접 구현. |
 | UniReaction | 현재 합의한 동적 MDP | State + reaction embedding의 scalar head. 동일한 bounded temperature convention을 적용하고 BiReaction/block과 하나의 categorical에서 경쟁. 두 hsx 버전의 workflow-determined placeholder와 다름. |

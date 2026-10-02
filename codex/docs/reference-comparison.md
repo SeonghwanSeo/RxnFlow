@@ -1,8 +1,8 @@
 # 현재 구현과 네 reference의 섹션별 비교
 
-작성일: 2026-10-02. 비교는 중간 commit `2aac819`에서 시작했으며, 아래 현재 구현에는 이후 승인된 bond stereo·temperature 초기값·mask margin 변경도 반영했다. 현재 구현은 **HSX main의 일괄 이식이 아니라, HSX 250509의 encoder 구조 + HSX main의 similarity/TB/optimizer 구성 + RxnFlow master·CGFlow의 categorical/subsampling/backward를 결합한 구현**이다. Enamine 환경과 workflow 없는 선형 MDP는 별도로 작성했다.
+작성일: 2026-10-02. 비교는 중간 commit `2aac819`에서 시작했으며, 아래 현재 구현에는 이후 승인된 bond stereo·temperature 초기값·mask margin·block projection 변경도 반영했다. 현재 구현은 **HSX main의 일괄 이식이 아니라, HSX 250509의 graph readout/conditioning·fusion MLP + HSX main의 block projection/similarity/TB/optimizer 구성 + RxnFlow master·CGFlow의 categorical/subsampling/backward를 결합한 구현**이다. Enamine 환경과 workflow 없는 선형 MDP는 별도로 작성했다.
 
-후속 사용자 결정: property scale은 사용자가 단순한 값으로 바꾼 것이므로 유지한다. Bond stereo는 main의 categorical, temperature 초기값은 0.2, mask margin은 1%로 변경했다. Reaction embedding은 GNN 이후에 적용하는 250509 방식을 유지한다. Block encoder/readout은 아래 구조 검토를 기록하고 기존 구현을 유지한다. MW 함수 선택은 scale 변경과 별도 항목이다.
+후속 사용자 결정: property scale은 사용자가 단순한 값으로 바꾼 것이므로 유지한다. Bond stereo는 main의 categorical, temperature 초기값은 0.2, mask margin은 1%로 변경했다. FP/property projection은 main의 Linear→LayerNorm으로 단순화했다. Fusion MLP, 2H readout, GNN 이후 reaction embedding은 기존 250509 방식을 유지한다. MW 함수 선택은 scale 변경과 별도 항목이다.
 
 이 문서는 소스와 기본 설정을 비교한 결과다. 동일하다는 판정은 명시한 수식 또는 동작 범위에 한정한다. Reference 네 개를 동일 데이터로 학습해 출력·성능을 비교한 결과가 아니며, 네 checkpoint와의 호환성을 뜻하지 않는다. 특히 “reference graph equations 복원”은 HSX main 전체 모델과의 동일성을 의미하지 않는다.
 
@@ -29,7 +29,7 @@ Reference는 위 commit의 파일을 `git show`로 읽었다. HSX 작업 디렉�
 | Property budget | X의 sampled-row 적용 + H의 1% tolerance | Positive bound 판정은 H와 같음. Sampling과 all-masked 처리는 다름 |
 | Graph message passing | R/C/X의 GENConv(add) + TransformerConv를 native Torch로 구현 | 같은 계열. H의 GENConv bias 설정은 다름 |
 | Graph readout·reaction conditioning | X 중심, R/C와도 공통 | 다름. H의 2H→H projection 및 GNN 이전 action conditioning 없음 |
-| Block encoder·policy MLP | X, tier 제외 | 다름. H는 FP/property 각각 single Linear projection |
+| Block encoder·policy MLP | H의 feature projection + X의 fusion/policy MLP, tier 제외 | FP/property의 Linear→LN 및 Xavier 초기화는 H와 같음. Fusion 차원·깊이·MLP 정의는 다름 |
 | Block score | H의 SimilarityMDP(dot) 수식 | Action만 L2 normalize하는 수식·temperature 범위·초기값은 같음. Parameter 구분은 다름 |
 | UniReaction score | R의 learned scalar head 계열 + 현재 typed MDP | 다름. H/X에서는 workflow가 선택하므로 logP=0 |
 | Subsampling·categorical·observed logP | R/C + X의 budget mask | 다름. H는 cluster→block 계층 정책 |
@@ -100,7 +100,7 @@ Empty graph도 완전히 같지 않다. Reference의 `graph_to_Data`는 empty용
 | Normalization | Graph-mode LayerNorm + 조건부 affine | 동일 계열 | 동일 계열 | 동일 계열 | Graph 전체 valid node/channel로 정규화. Padding 제외, virtual 포함 |
 | Readout | Molecular mean + virtual, 2H; model LN | 동일 계열 | 2H concat→Linear→H→LN | 2H concat + LN | X/R/C 계열의 2H, 추가 projection 없음 |
 | Action conditioning | GNN 이후 reaction embedding + SiLU, FirstBlock은 별도 | GNN 이후 protocol embedding + SiLU | Workflow/order embedding을 GNN condition에 포함 | GNN 이후 workflow/order embedding + SiLU | X의 위치를 따름. ID는 reaction name이고 FirstBlock에도 embedding 적용 |
-| FP/property projection | 각각 single Linear→LN→activation | 각각 single Linear→LN→activation | 각각 single Linear→LN | 각각 Linear→SiLU→Linear→LN→SiLU | X와 같은 2-Linear 구조 |
+| FP/property projection | 각각 single Linear→LN→activation | 각각 single Linear→LN→activation | 각각 single Linear→LN | 각각 Linear→SiLU→Linear→LN→SiLU | H와 같은 single Linear→LN으로 변경 |
 | Block fusion | FP+property | FP+property+type | FP+property+type+tier | FP+property+type+tier | X에서 tier 제외, 3×block_dim concat→MLP |
 | Block logits | Raw dot + conditional logit scale | Raw dot + conditional logit scale | SimilarityMDP, cluster와 block 두 단계 | Raw dot + conditional logit scale | H의 action-normalized dot을 flat sampled block policy에 적용 |
 | Uni logit | Learned scalar | 해당 loader에서 지원 안 함 | Workflow로 고정, logP=0 | Workflow로 고정, logP=0 | Learned scalar / reaction temperature. R과 유사하나 현재 site/action 정의에 맞게 확장 |
@@ -108,7 +108,7 @@ Empty graph도 완전히 같지 않다. Reference의 `graph_to_Data`는 empty용
 
 현재 block score는 `q_r(s) · normalize(e(b)) / T_r`이며 `T_r = 0.01 + 9.99 × sigmoid(t_r)`이다. Query를 normalize하지 않는 것은 H의 dot 모드와 같다. 그러나 H는 workflow/order별 cluster score와 block score에 각각 SimilarityMDP를 두고, 현재는 reaction별 temperature를 둔다. H의 `SimilarityMDP` constructor 기본 인자는 1이지만 **실제 ModelConfig 기본값은 0.2**를 전달한다. 후속 요청으로 현재 초기값도 1에서 0.2로 변경했다.
 
-Initialization도 X를 중심으로 선택했다. 현재 graph MLP는 LeakyReLU Kaiming, policy와 FP/property MLP는 SiLU용 Kaiming, type embedding은 uniform[-1,1], action embedding은 normal이다. H는 별도 Linear wrapper에서 activation 없는 output layer에 Xavier, embedding에 uniform[-0.1,0.1]을 사용한다. 따라서 layer 수만 같아도 초기 분포는 다를 수 있다.
+FP/property projection은 H처럼 Xavier weight와 zero bias로 초기화한다. 나머지는 X를 중심으로 선택했다. 현재 graph MLP는 LeakyReLU Kaiming, fusion/policy MLP는 SiLU용 Kaiming, type embedding은 uniform[-1,1], action embedding은 normal이다. H는 별도 Linear wrapper에서 activation 없는 output layer에 Xavier, embedding에 uniform[-0.1,0.1]을 사용한다. Fusion/policy hidden layer도 현재 `Linear→LN→SiLU`이고 H는 `Linear→SiLU→LN`이다. 따라서 projection을 정렬해도 전체 MLP 및 초기 분포까지 같아지는 것은 아니다.
 
 R/C/X는 GENConv의 bias를 명시하지 않으므로 원래 설치된 PyG 버전에 따라 결과가 달라진다. H의 `_gen_conv_kwargs`는 이 문제를 피하려고 True를 명시한다. 현재 `False` 구현에 대한 독립 수식·gradient test는 통과했지만, H의 bias=True graph를 그대로 재현한 테스트는 아니다. 또 native nn.Linear와 reference 내부 Linear의 초기화까지 모든 parameter가 같다는 검증은 하지 않았다.
 
@@ -122,7 +122,7 @@ H의 encoder/readout 개편은 `a1afab8` (`feat: v1.3.0: ES reward, BB clust, pi
 - H의 readout projection은 molecular mean/virtual node를 공통 embedding 차원으로 섞어 cluster와 block에 직접 similarity score를 계산하도록 한다. X/현재는 두 정보를 2H로 넘기고 reaction-conditioned policy head에서 섞는다. 두 방식은 압축과 reaction별 처리의 위치가 다르며, projection 추가 자체가 성능 향상을 보장하지 않는다.
 - H의 early conditioning은 reaction/workflow에 따라 message passing부터 달라질 수 있다. 대신 같은 분자라도 condition이 달라지면 GNN 출력도 다시 계산해야 한다. 현재는 한 state에서 여러 reaction을 비교하므로 post-GNN conditioning을 유지해 graph encoding을 공유한다. 이는 사용자가 명시적으로 유지하기로 한 선택이다.
 
-현재 권고는 late conditioning과 기존 encoder/readout을 유지하는 것이다. Main의 block projection 또는 readout만 독립적으로 가져오는 것은 가능하지만, 필요하다면 각각 별도 비교 대상으로 삼아야 한다. 이번 수정에는 구조 변경을 포함하지 않았다.
+후속 사용자 요청으로 block의 FP/property projection만 H의 Linear→LN으로 단순화했다. 이 변경은 readout/conditioning과 독립적이다. Fusion MLP의 비선형 처리와 기존 block_dim64, late conditioning 및 2H readout은 유지한다. 따라서 H의 전체 모델을 그대로 이식한 것이 아니며 단순화 자체로 성능 우위를 주장하지 않는다.
 
 ## 5. Masking, subsampling, log probability, 실행
 
@@ -210,7 +210,7 @@ Replay는 “uniform FIFO”라는 이름만으로 네 구현이 같지 않다. 
 - Native Torch/fixed graph capacity, dummy isotope를 보존하는 count FP와 uint8, Synple At/+29 보정 제외는 환경 및 의존성 요구사항이다.
 - Property normalization scale은 사용자가 간단한 수치로 조정한 설정이며 유지한다. 이를 이식 누락으로 분류했던 설명을 정정한다.
 - Uniform per-library sampling, tier/clustering 제외, batch의 state/reaction 간 library draw 공유는 사용자 선택이다. H main의 clustering으로 자동 회귀할 대상이 아니다.
-- X의 block encoder와 post-GNN conditioning, H의 normalized dot/learnable temperature, R식 backward를 조합한 방향은 기존 선택이다. 다만 아래 세부 parameter 차이가 모두 별도 합의됐다는 뜻은 아니다.
+- H의 Linear→LN block projection과 normalized dot/learnable temperature, X의 fusion MLP·readout·post-GNN conditioning, R식 backward를 조합한 방향은 기존 선택이다. 다만 아래 세부 parameter 차이가 모두 별도 합의됐다는 뜻은 아니다.
 - Local reward, 공개 범위의 최소 GFlowNet, 서비스/docking/workflow 확장 제외는 프로젝트 범위다.
 
 ### 동일하다고 간주하면 안 되는 잔여 차이
@@ -220,6 +220,7 @@ Replay는 “uniform FIFO”라는 이름만으로 네 구현이 같지 않다. 
 | Atom feature | H의 rich categorical 대신 현재 정의 | Bond stereo는 정렬 완료. Atom feature 전체까지 H와 동일해진 것은 아님 |
 | Descriptor | MolWt vs ExactMolWt | 사용자가 유지한 scale과는 별개인 함수 선택. Synple magic number 제거의 필수 결과는 아님 |
 | Graph bias/empty state | GENConv bias False vs H True, empty node 처리 다름 | 현재 수식 test 통과가 H 전체 equivalence의 증거는 아님 |
+| Fusion/policy MLP | 현재 Linear→LN→SiLU vs H Linear→SiLU→LN, output/embedding 초기화도 다름 | Block projection의 Linear→LN/Xavier 정렬과 별개. 현재는 X 계열을 유지한 상태 |
 | Defaults/initialization | Model 크기, embedding/output 초기화, WD/clip/reward/EMA 등 | Temperature 초기값은 정렬 완료. 구조 출처와 training setup 출처를 따로 판단해야 함 |
 | Mask 적용/failure | Sampled rows에 hard -inf, invalid 종료, H의 fallback 미사용 | Margin은 정렬 완료. Sampling 및 실패 분포까지 같은 것은 아님 |
 | Backward approximation | R 기반이지만 search/parent/action count 수정 | H처럼 0도 아니고 R의 bitwise 복제도 아님 |
@@ -247,3 +248,7 @@ git show 2aac819:src/rxnflow/models/rxnflow.py
 
 - `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 ./test.sh quick > /tmp/rxnflow-hsx-alignment-final-quick.log 2>&1` — exit 0, 53 passed / 1 heavy deselected, 12.29s. Compile/lint/build/import 통과. E/Z/unspecified가 graph input과 GNN output에서 구분되는지, temperature 초기값과 gradient, 1% margin 경계 및 zero/negative bound·strict graph capacity를 확인했다.
 - `git diff --check` — 통과. `features.py`와 `config.py`는 변경하지 않았으며 property scale을 유지했다.
+
+추가 승인된 block projection 단순화: FP/property별 Linear→SiLU→Linear→LN→SiLU를 Linear→LN으로 바꾸고 H의 Xavier/zero-bias 초기화를 적용했다. Fusion/policy MLP와 type embedding, readout/conditioning은 유지한다. 이전 two-Linear branch checkpoint는 호환되지 않지만 prepared library는 그대로 사용한다.
+
+- `OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 ./test.sh quick > /tmp/rxnflow-block-projection-quick.log 2>&1` — exit 0, 53 passed / 1 heavy deselected, 11.46s. Compile/lint/build/import와 기존 graph/block scoring·gradient·train/restart/sample 검증 통과. Runtime 또는 학습 품질 우위를 측정한 것은 아니다.
