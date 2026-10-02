@@ -100,7 +100,8 @@ class RxnFlowModel(nn.Module):
         # convention because all Uni/Bi choices share one categorical policy.
         self.min_temperature = 0.01
         self.max_temperature = 10.0
-        initial = (1.0 - self.min_temperature) / (
+        # HSX main ModelConfig initializes SimilarityMDP at 0.2.
+        initial = (0.2 - self.min_temperature) / (
             self.max_temperature - self.min_temperature
         )
         self.logit_temperature = nn.Parameter(

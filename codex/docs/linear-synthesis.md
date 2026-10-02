@@ -79,7 +79,7 @@ Provenance는 해당 synthon을 만들 수 있는 원본 BB 후보의 목록이�
 
 ## Masking과 모델
 
-hsx의 state budget + block budget 방식을 사용한다. 가능한 reaction/library type을 결정하고, 해당 library에서 uniform subsampling한 뒤 선택된 row의 준비된 property와 현재 state property를 합산해 `property_penalty` 및 heavy-atom capacity mask를 계산한다. 확률 보정은 원래 library 크기와 최초 sampling 개수를 기준으로 한다. 탈락 후보를 다시 채우지 않으며, 모든 후보가 탈락하면 trajectory가 실패한다. 0 또는 음수 상한도 지원하도록 bound로 나누지 않고 원래 단위로 비교한다. 0이 아닌 상한은 explore_250509의 0.1% 상대 여유를 적용하고, 0 상한과 heavy-atom capacity는 strict하게 유지한다. Property 합산은 추정치이며 실제 생성물의 상한을 보장하지 않는다. Enamine dummy isotope는 질량에서 제외하며, hsx의 Synple/eXplore 전용 At 질량 차감 및 linker MW +29.0은 이식하지 않는다.
+hsx의 state budget + block budget 방식을 사용한다. 가능한 reaction/library type을 결정하고, 해당 library에서 uniform subsampling한 뒤 선택된 row의 준비된 property와 현재 state property를 합산해 `property_penalty` 및 heavy-atom capacity mask를 계산한다. 확률 보정은 원래 library 크기와 최초 sampling 개수를 기준으로 한다. 탈락 후보를 다시 채우지 않으며, 모든 후보가 탈락하면 trajectory가 실패한다. 0 또는 음수 상한도 지원하도록 bound로 나누지 않고 원래 단위로 비교한다. 0이 아닌 상한은 hsx main의 1% 상대 여유를 적용하고, 0 상한과 heavy-atom capacity는 strict하게 유지한다. Property 합산은 추정치이며 실제 생성물의 상한을 보장하지 않는다. Enamine dummy isotope는 질량에서 제외하며, hsx의 Synple/eXplore 전용 At 질량 차감 및 linker MW +29.0은 이식하지 않는다.
 
 후보별 반응 실행 없이 점수를 계산하고 action을 선택한다. 선택한 action만 RDKit으로 실행하여 site signature와 실제 `max_atoms`를 확인한다. 실패하면 해당 trajectory는 invalid이며 실패 action도 빈 product SMILES로 trajectory에 남겨 TB 학습에 포함한다. 재선택하거나 mask를 풀지 않는다. UniReaction은 typed handle과 step 규칙으로 선택하며 block budget이나 생성물 property 검사는 적용하지 않는다. 선택된 생성물 Mol을 state와 graph encoding에서 재사용한다. Product SMILES는 선택 후 action 기록에 채우며, policy choice의 identity는 reaction과 oriented block row이다.
 
@@ -99,11 +99,11 @@ Invalid trajectory는 raw reward 0으로 기록하고 학습에서 reward floor�
 
 Synthetic quick 검증은 선형 경로의 전이·mask·site 선택·backward·학습 연결을 확인한다. Production template의 실험적 적용 범위, 전체 Enamine catalog의 성능 및 분포 품질은 별도 검토 대상이다. hsx 방식 multi-step workflow library는 이번 구현에 포함하지 않는다.
 
-TB loss는 MSE이며, logZ는 policy와 별도 learning rate를 사용한다. Replay는 fresh trajectory를 넣기 전에 기존 buffer에서 균일 비복원 추출한다. Learning rate는 지정한 half-life에 따라 감소하고, optimizer/scheduler 상태를 함께 복원한다. 모델은 FP/property별 projection, additive reaction conditioning, block 정규화 dot score 및 학습 temperature를 사용한다. UniReaction scalar score도 같은 temperature convention을 따른다. Graph encoder는 native Torch의 GENConv(add)·TransformerConv 수식, graph-mode normalization과 conditional scale/shift를 사용한다. Readout은 molecular mean과 virtual node를 concat한 2H에 LayerNorm을 적용한다. 상세 출처와 차이는 [HSX 이식 기록](hsx-port.md)을 참고한다.
+TB loss는 MSE이며, logZ는 policy와 별도 learning rate를 사용한다. Replay는 fresh trajectory를 넣기 전에 기존 buffer에서 균일 비복원 추출한다. Learning rate는 지정한 half-life에 따라 감소하고, optimizer/scheduler 상태를 함께 복원한다. 모델은 FP/property별 projection, GNN 이후 additive reaction conditioning, block 정규화 dot score 및 학습 temperature를 사용한다. Temperature 범위는 0.01–10이며 초기값은 main과 같은 0.2다. UniReaction scalar score도 같은 temperature convention을 따른다. Graph encoder는 native Torch의 GENConv(add)·TransformerConv 수식, graph-mode normalization과 conditional scale/shift를 사용한다. Readout은 molecular mean과 virtual node를 concat한 2H에 LayerNorm을 적용한다. 상세 출처와 차이는 [HSX 이식 기록](hsx-port.md)을 참고한다.
 
 Checkpoint에는 library subsampling용 CPU generator와 Gumbel sampling·dropout용 전역 CPU·CUDA RNG 상태를 함께 보관한다. 복원 시 checkpoint를 CPU로 읽고 model/optimizer loader가 parameter를 해당 device로 옮긴다. RNG 상태가 없는 이전 checkpoint의 호환 복원은 제공하지 않는다.
 
-State graph에는 기준 구현의 atom chirality feature를 복원했다. Bond stereo는 유무만 표현하며 block fingerprint도 achiral 설정이다. 따라서 state chirality 복원이 block encoder의 모든 stereoisomer 구분을 보장하지는 않는다. 유한한 fingerprint와 property가 같은 서로 다른 block에는 같은 embedding을 부여한다.
+State graph에는 atom chirality와 main의 bond stereo categorical을 사용한다. Bond는 type 4개, stereo 7개(NONE/ANY/Z/E/CIS/TRANS/unknown), conjugation/ring 2개로 총 13차원이며 E/Z를 구분한다. Block fingerprint는 기존 achiral 설정이므로 state stereo 표현이 block encoder의 모든 stereoisomer 구분을 보장하지는 않는다. 유한한 fingerprint와 property가 같은 서로 다른 block에는 같은 embedding을 부여한다. Property normalization scale은 사용자가 조정한 현재 값을 유지한다.
 
 Library subsampling은 policy batch마다 library별로 한 번만 수행하고 모든 state와 reaction이 공유한다. Budget mask는 state별로 broadcast 연산한다. 관측 action의 존재 여부는 sampling에 영향을 주지 않는다. 다음 policy 호출에서는 새로 sampling하며, full set을 쓰는 작은 library는 index tensor를 그대로 재사용하고 RNG를 소비하지 않는다.
 

@@ -141,7 +141,9 @@ def test_dot_scores_ignore_block_norm_and_train_both_action_scales(
     (-probability).backward()
     for name in ("first_block", "nitrile_to_tetrazole"):
         assert model.logit_temperature.grad[env.action_to_index[name]].abs() > 0
-    assert torch.allclose(model.temperature, torch.ones_like(model.temperature))
+    torch.testing.assert_close(
+        model.temperature, torch.full_like(model.temperature, 0.2)
+    )
 
 
 def test_chirality_and_graph_padding_are_preserved(prepared_env):
@@ -161,6 +163,25 @@ def test_chirality_and_graph_padding_are_preserved(prepared_env):
     # Padding cannot influence graph-mode normalization, message passing or pooling.
     batch.node_features[~batch.node_mask] = 1000
     torch.testing.assert_close(model.encode_graphs(batch), original)
+
+
+def test_graph_encoder_distinguishes_bond_stereoisomers(prepared_env):
+    env = SynthesisEnv(prepared_env, max_atoms=12, retrosynthesis_workers=0)
+    model = RxnFlowModel(
+        env, ModelConfig(hidden_dim=16, num_heads=2, num_layers=2)
+    ).eval()
+    # Same atoms and connectivity; only double-bond stereo differs (E/Z/none).
+    graphs = [
+        molecule_to_graph_data(parse_molecule(s), 12, 1)
+        for s in ("F/C=C/F", "F/C=C\\F", "FC=CF")
+    ]
+    for graph in graphs[1:]:
+        assert torch.equal(graphs[0].node_features, graph.node_features)
+        assert torch.equal(graphs[0].adjacency, graph.adjacency)
+    embeddings = model.encode_graphs(GraphBatch.from_graphs(graphs))
+    for i, j in ((0, 1), (0, 2), (1, 2)):
+        assert not torch.equal(graphs[i].bond_features, graphs[j].bond_features)
+        assert not torch.allclose(embeddings[i], embeddings[j])
 
 
 def test_native_graph_layer_matches_reference_equations_and_gradients():

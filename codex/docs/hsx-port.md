@@ -2,6 +2,8 @@
 
 2026-10-02 기준 구현 복원 내용과 검증은 [변경점 검토](implementation-deviations.md#restoration-implemented--2026-10-02)에 기록했다. 아래 과거 실험 수치는 당시 source snapshot의 결과다.
 
+`2aac819`에서 시작한 [섹션별 비교표](reference-comparison.md)에 수식, feature, 기본값의 일치 여부를 별도로 기록했다. 이후 사용자 요청으로 bond stereo, temperature 초기값, mask margin을 main에 맞췄다. Property scale은 사용자가 단순한 값으로 조정한 설정이며 유지한다. 아래의 “참고 구현”은 해당 부분의 출처를 뜻하며 HSX main과 모델 전체가 동일하다는 뜻은 아니다.
+
 ## 기준과 범위
 
 현재 목표는 hsx의 공개 가능한 모델·학습 로직을 현재 선형 Enamine synthon 환경에 이식하는 것이다. `source/rxnflow_hits`의 작업 트리를 변경하지 않고, `explore_250509` (`2d472443806ac107b9cdc8a65d03866302394d84`)와 로컬 `main` (`e999c3d1b2f911d1b33fb8245c0a66a2946f14b0`)을 비교했다. Backward는 공개 RxnFlow 로컬 `origin/master` (`a39c7ae`)를 기준으로 한다. 전체 production env, 추가 수기 template, workflow library, tier/clustering은 포함하지 않는다.
@@ -12,11 +14,12 @@
 | --- | --- | --- |
 | Block encoder | explore의 `models/gfn.py:BlockEmbedding` | FP와 property 각각 Linear/SiLU/Linear/LayerNorm/SiLU로 projection하고 type embedding과 concat한 뒤 MLP. Tier 제외. |
 | Reaction conditioning | explore의 `hook_firstblock`, `hook_birxn` | State + reaction embedding에 SiLU를 적용하고 FirstBlock/BiReaction별 MLP. Workflow/order 대신 reaction name으로 식별. Graph를 reaction마다 다시 계산하지 않음. |
-| Action similarity | main의 `models/layers.py:SimilarityMDP(dot)` | Block embedding만 L2 정규화하고 query와 dot product. Reaction별 bounded temperature 0.01–10, 초기 1. 별도 클래스/선택 옵션 없이 현재 모델에 직접 구현. |
+| Action similarity | main의 `models/layers.py:SimilarityMDP(dot)` | Block embedding만 L2 정규화하고 query와 dot product. Reaction별 bounded temperature 0.01–10, 초기 0.2. 별도 클래스/선택 옵션 없이 현재 모델에 직접 구현. |
 | UniReaction | 현재 합의한 동적 MDP | State + reaction embedding의 scalar head. 동일한 bounded temperature convention을 적용하고 BiReaction/block과 하나의 categorical에서 경쟁. 두 hsx 버전의 workflow-determined placeholder와 다름. |
 | Graph readout | explore의 molecular mean + virtual node | 2H concat → LayerNorm. 추가 2H→H compression 제거. |
 | Attention 구현 | RxnFlow master/CGFlow/HSX explore | GENConv(add), TransformerConv, graph-mode normalization, conditional scale/shift를 native Torch로 구현. Fixed padding과 virtual node 유지. 출력·gradient를 독립 수식으로 비교. |
-| Mask | explore의 state + block property level | 가능한 type의 library를 먼저 uniform subsampling한 뒤, 선택된 row에 적용. Positive bound는 `< limit × 1.001`; negative bound는 `< limit + abs(limit) × 0.001`; zero bound는 `<= 0`. Heavy-atom capacity는 항상 strict. |
+| Mask | explore의 sampled-row 적용 + main의 1% margin | 가능한 type의 library를 먼저 uniform subsampling한 뒤, 선택된 row에 적용. Positive bound는 `< limit × 1.01`; negative bound는 `< limit + abs(limit) × 0.01`; zero bound는 `<= 0`. Heavy-atom capacity는 항상 strict. |
+| Bond stereo | main의 `utils/vocab.py:BondFeaturizer` | NONE/ANY/Z/E/CIS/TRANS/unknown categorical로 인코딩. 기존 bond type·conjugation·ring과 합쳐 13차원. |
 | Synple property 보정 | explore의 `envs/building_block.py` | At isotope 차감 및 linker MW +29는 사용하지 않음. 기존 dummy-aware Enamine descriptor 유지. |
 | TB loss/reward | main의 `gflownet/algo/trajectory_balance.py` | `mean((logZ + ΣlogPF - ΣlogPB - exponent × log(max(raw_reward, floor)))²)`. Invalid raw reward는 0. Local injectable reward 유지. |
 | Optimizer | main의 `gflownet/online_trainer.py` | AdamW 두 parameter group. Policy와 logZ learning rate 분리, 공통 `2^(-step/lr_decay_steps)` decay. Policy gradient만 norm 10으로 clip. Gradient clip/weight decay의 기존 설정값은 유지. |

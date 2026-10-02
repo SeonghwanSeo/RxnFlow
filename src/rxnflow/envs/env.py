@@ -271,13 +271,13 @@ class SynthesisEnv:
         )
         for index, limit in self.property_limits.items():
             estimate = properties[:, index] + state_properties[..., index, None]
-            # explore_250509 uses normalized budget < 1.001 for positive bounds.
+            # HSX main uses normalized budget < 1.01 for positive bounds.
             # Compare raw units for zero/negative bounds, where division is not
             # meaningful. Discrete zero bounds remain exact; capacity is strict.
             if limit == 0:
                 mask &= estimate <= 0
             else:
-                mask &= estimate < limit + abs(limit) * 0.001
+                mask &= estimate < limit + abs(limit) * 0.01
         return mask
 
     def _reaction_products(

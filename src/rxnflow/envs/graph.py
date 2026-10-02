@@ -28,7 +28,17 @@ ATOM_TYPES = tuple(range(100))
 SYNTHON_TYPES = tuple(range(100))
 # Atom/type one-hots, degree, charge, four scalar features and chirality.
 NODE_FEATURE_DIM = len(ATOM_TYPES) + 1 + 7 + 6 + 4 + len(SYNTHON_TYPES) + 1 + 3
-BOND_FEATURE_DIM = 7
+# HSX main: keep E/Z identity, rather than only whether stereo is specified.
+BOND_STEREO_TYPES = (
+    Chem.BondStereo.STEREONONE,
+    Chem.BondStereo.STEREOANY,
+    Chem.BondStereo.STEREOZ,
+    Chem.BondStereo.STEREOE,
+    Chem.BondStereo.STEREOCIS,
+    Chem.BondStereo.STEREOTRANS,
+)
+# Four bond types, stereo categories + unknown, conjugation and ring flags.
+BOND_FEATURE_DIM = 4 + len(BOND_STEREO_TYPES) + 1 + 2
 
 
 @dataclass
@@ -149,16 +159,22 @@ def molecule_to_graph_data(
             begin = index_map[bond.GetBeginAtomIdx()]
             end = index_map[bond.GetEndAtomIdx()]
             adjacency[begin, end] = adjacency[end, begin] = True
-            feature = (
+            feature = bond_features[begin, end]
+            feature[:4] = (
                 bond.GetBondType() == Chem.BondType.SINGLE,
                 bond.GetBondType() == Chem.BondType.DOUBLE,
                 bond.GetBondType() == Chem.BondType.TRIPLE,
                 bond.GetBondType() == Chem.BondType.AROMATIC,
-                bond.GetIsConjugated(),
-                bond.IsInRing(),
-                bond.GetStereo() != Chem.BondStereo.STEREONONE,
             )
-            bond_features[begin, end] = bond_features[end, begin] = feature
+            stereo = bond.GetStereo()
+            stereo_index = (
+                BOND_STEREO_TYPES.index(stereo)
+                if stereo in BOND_STEREO_TYPES
+                else len(BOND_STEREO_TYPES)
+            )
+            feature[4 + stereo_index] = 1
+            feature[-2:] = bond.GetIsConjugated(), bond.IsInRing()
+            bond_features[end, begin] = feature
 
     return GraphData(
         node_features=torch.from_numpy(node_features),

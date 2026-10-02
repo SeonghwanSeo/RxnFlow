@@ -275,18 +275,27 @@ def test_budget_tolerance_and_nonpositive_bounds(prepared_env: Path) -> None:
     )
     name = env.brick_types[0]
     library = env.blocks[name]
-    library.properties[:, PROPERTY_NAMES.index("mw")] = 100.05
+    library.properties[:, PROPERTY_NAMES.index("mw")] = 100.5
     library.properties[:, PROPERTY_NAMES.index("rings")] = 0
     library.properties[:, PROPERTY_NAMES.index("logp")] = -1.0
     state_properties = torch.zeros(PROPERTY_DIM)
     assert env.block_mask(state_properties, name).all()
-    state_properties[PROPERTY_NAMES.index("mw")] = 0.1
+    # Main's 1% margin admits 100.5, but the exact 101.0 boundary is excluded.
+    state_properties[PROPERTY_NAMES.index("mw")] = 0.49
+    assert env.block_mask(state_properties, name).all()
+    state_properties[PROPERTY_NAMES.index("mw")] = 0.5
     assert not env.block_mask(state_properties, name).any()
     state_properties.zero_()
     state_properties[PROPERTY_NAMES.index("rings")] = 1
     assert not env.block_mask(state_properties, name).any()
     state_properties.zero_()
-    state_properties[PROPERTY_NAMES.index("logp")] = 0.01
+    state_properties[PROPERTY_NAMES.index("logp")] = 0.005
+    assert env.block_mask(state_properties, name).all()
+    state_properties[PROPERTY_NAMES.index("logp")] = 0.02
+    assert not env.block_mask(state_properties, name).any()
+    state_properties.zero_()
+    # Graph capacity remains strict regardless of the property margin.
+    state_properties[PROPERTY_NAMES.index("heavy_atoms")] = env.max_atoms
     assert not env.block_mask(state_properties, name).any()
 
 

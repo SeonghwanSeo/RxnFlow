@@ -43,7 +43,7 @@ The environment/library, MDP/masking, model/features, reward/backward, training/
 
 State/product Mol ownership, terminal and last-step rules, direction-specific catalog lookup, exact product masks, fixed graph capacity, native PyTorch attention masks, conditional subsampling corrections, and known backward branches were retained. Bounded backward probabilities remain an intentional approximation. User code-review checkboxes in PLAN.md have not been marked complete by this technical review.
 
-The existing graph features do not explicitly encode atom chirality or E/Z identity, and block fingerprints can collide. RDKit still preserves molecular stereochemistry. This feature limitation is recorded for subsequent research decisions; no new feature representation was introduced in this pass.
+At the time of this pilot, graph features did not explicitly encode atom chirality or E/Z identity, and block fingerprints could collide. Subsequent changes restored atom chirality and added HSX main's categorical bond stereo; see the [reference comparison](reference-comparison.md). Block fingerprints retain their original chirality setting and can still collide. These later graph changes do not alter the historical pilot measurements.
 
 ## Integration and pilot evaluation
 
