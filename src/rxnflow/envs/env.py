@@ -340,14 +340,3 @@ class SynthesisEnv:
                 for identifier in identifiers
             ]
         return result
-
-    def backward_log_probability(
-        self, state: State, action: Action, parent_smiles: str
-    ) -> float | None:
-        return self.retro_analyzer.log_probability(
-            state.smiles,
-            state.reaction_count,
-            action,
-            self.num_total_actions,
-            parent_smiles,
-        )

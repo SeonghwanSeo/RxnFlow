@@ -58,6 +58,7 @@ class State:
 @dataclass(frozen=True)
 class Action:
     """A selected reaction and optional oriented catalog row."""
+
     action_type: ActionType
     reaction: str | None = None
     block_type: str | None = None
@@ -76,6 +77,11 @@ class Action:
         data = data.copy()
         data["action_type"] = ActionType[data.pop("action_type")]
         return cls(**data)
+
+
+# Reverse-ordered edges: (forward action, parent SMILES), ending at the empty
+# state's SMILES "" through FirstBlock. The number of entries is the route length.
+BackwardTrajectory = list[tuple[Action, str]]
 
 
 @dataclass
@@ -115,6 +121,7 @@ ActionSpace = list[ActionSubspace]
 @dataclass
 class Transition:
     """One observed action, its product, and the estimated backward log probability."""
+
     state: State
     action: Action
     product_smiles: str

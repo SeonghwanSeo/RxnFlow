@@ -666,8 +666,6 @@ def test_sampler_loads_checkpoint_once_on_cpu(prepared_env, tmp_path, monkeypatc
 def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     prepared_env, tmp_path, monkeypatch
 ):
-    from rxnflow.envs.retrosynthesis import RetrosynthesisTree
-
     trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "overlap"), QEDReward())
     policy = trainer.policy
     events, pending = [], []
@@ -688,9 +686,11 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
 
     def submit(key, smiles, depth, known):
         events.append("submit")
-        # A parent's tree must be collected before the child's reverse search.
-        assert known[0][1].smiles == ("" if smiles == middle.smiles else middle.smiles)
-        pending.append((key, RetrosynthesisTree(smiles, known)))
+        # A parent's routes must be collected before extending the next edge.
+        assert known[0][0][1] == ("" if smiles == middle.smiles else middle.smiles)
+        if smiles == terminal.smiles:
+            assert known[0][1:] == [(first, "")]
+        pending.append((key, known))
 
     def result():
         events.append("collect")
@@ -707,7 +707,7 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     )
     monkeypatch.setattr(analyzer, "submit", submit)
     monkeypatch.setattr(analyzer, "result", result)
-    monkeypatch.setattr(analyzer, "tree_log_probability", lambda *args: -0.5)
+    monkeypatch.setattr(policy, "calc_bck_logprob", lambda *args: -0.5)
     trajectories = policy.rollouts(1, beta=torch.ones(1), preferences=torch.ones(1, 1))
     assert events == [
         "forward",

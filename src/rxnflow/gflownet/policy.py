@@ -16,6 +16,7 @@ from rxnflow.core.types import (
     Action,
     ActionSubspace,
     ActionType,
+    BackwardTrajectory,
     State,
     Trajectory,
     Transition,
@@ -23,7 +24,6 @@ from rxnflow.core.types import (
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.features import molecular_properties
 from rxnflow.envs.graph import GraphBatch, GraphData, molecule_to_graph_data
-from rxnflow.envs.retrosynthesis import RetrosynthesisTree
 from rxnflow.models import RxnFlowModel
 
 
@@ -446,6 +446,26 @@ class RxnFlowPolicy:
     ) -> torch.Tensor:
         return self.log_prob([state], [action], beta, preferences)[0]
 
+    def calc_bck_logprob(
+        self,
+        action: Action,
+        trajectories: list[BackwardTrajectory],
+        parent_smiles: str,
+    ) -> float | None:
+        """Normalize depth-weighted route mass for the observed reverse edge."""
+        numerator = 0.0
+        denominator = 0.0
+        for trajectory in trajectories:
+            # Exclude the root edge: the weight measures remaining actions to
+            # the empty state. FirstBlock therefore has weight N**0 = 1.
+            weight = self.env.num_total_actions ** (-(len(trajectory) - 1))
+            denominator += weight
+            if trajectory[0] == (action, parent_smiles):
+                numerator += weight
+        if numerator <= 0 or denominator <= 0:
+            return None
+        return math.log(numerator) - math.log(denominator)
+
     def rollout(
         self,
         sampling_temperature: float = 1.0,
@@ -486,21 +506,22 @@ class RxnFlowPolicy:
         states = [self.env.initial_state() for _ in range(count)]
         steps: list[list[Transition]] = [[] for _ in range(count)]
         reasons: list[str | None] = [None] * count
-        retro_trees = [RetrosynthesisTree("") for _ in range(count)]
+        # The empty state has one zero-action path. Every selected forward edge
+        # prepends to its parent's paths before submitting the next reverse search.
+        backward_trajectories: list[list[BackwardTrajectory]] = [
+            [[]] for _ in range(count)
+        ]
 
         def collect_backward() -> None:
-            for index, tree in self.env.retro_analyzer.result():
+            for index, routes in self.env.retro_analyzer.result():
                 transition = steps[index][-1]
-                value = self.env.retro_analyzer.tree_log_probability(
-                    tree,
-                    transition.action,
-                    self.env.num_total_actions,
-                    transition.state.smiles,
+                value = self.calc_bck_logprob(
+                    transition.action, routes, transition.state.smiles
                 )
-                if value is None or tree is None:
+                if value is None:
                     raise RuntimeError("backward analysis lost the generated route")
                 transition.log_p_B = value
-                retro_trees[index] = tree
+                backward_trajectories[index] = routes
 
         # 2. Advance active trajectories: FirstBlock plus max_reactions reactions.
         for _ in range(self.env.max_reactions + 1):
@@ -520,7 +541,7 @@ class RxnFlowPolicy:
             )
             # Collect the preceding reverse search after forward sampling so
             # worker processes can overlap it with model computation. Parent
-            # trees must be ready before the next transition is submitted.
+            # routes must be ready before the next transition is submitted.
             if analyze_backward:
                 collect_backward()
             for index, action in zip(active, selected, strict=True):
@@ -547,7 +568,10 @@ class RxnFlowPolicy:
                         index,
                         next_state.smiles,
                         next_state.reaction_count,
-                        [(action, retro_trees[index])],
+                        [
+                            [(action, state.smiles), *route]
+                            for route in backward_trajectories[index]
+                        ],
                     )
 
         # 3. Finish pending analysis, then serialize successes and failed attempts.

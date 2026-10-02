@@ -126,9 +126,12 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     assert public["block_ids"] == ["EN-A", "EN-A2"]
     assert public["building_blocks"][0] == {"id": "EN-A", "smiles": "NCCN"}
     assert env.action_to_dict(coupling)["block_type"] == "linker"
-    assert env.backward_log_probability(start, first, "") is not None
-    assert (
-        env.backward_log_probability(activated, deprotect, protected.smiles) is not None
+    assert any(
+        route[0] == (first, "") for route in env.retro_analyzer.run(start.smiles, 0)
+    )
+    assert any(
+        route[0] == (deprotect, protected.smiles)
+        for route in env.retro_analyzer.run(activated.smiles, activated.reaction_count)
     )
 
 
@@ -212,7 +215,10 @@ def test_linker_orientation_fixes_attachment_and_reverse_catalog_lookup(
         products.append(product.smiles)
         assert env.get_synthon_types(product.smiles) == (1,)
         assert not product.terminated
-        assert env.backward_log_probability(product, action, state.smiles) is not None
+        assert any(
+            route[0] == (action, state.smiles)
+            for route in env.retro_analyzer.run(product.smiles, product.reaction_count)
+        )
     assert outcomes[0].block_index != outcomes[1].block_index
     assert products[0] != products[1]
     assert not np.array_equal(fingerprints[0], fingerprints[1])
