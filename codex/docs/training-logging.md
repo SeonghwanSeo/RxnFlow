@@ -19,7 +19,7 @@ TB metrics describe the optimization batch (fresh trajectories followed by sampl
 
 | Logged fields | Definition | Reference / adaptation |
 | --- | --- | --- |
-| `loss`, `log_z` | Mean squared TB residual and pre-update logZ | All references; existing MSE objective unchanged |
+| `loss`, `log_z` | Mean squared TB residual and mean pre-update conditional logZ | All references; existing MSE objective unchanged |
 | `batch_entropy` | `-mean(sum_transition log P_F)` over fresh + replay | All four references. This is observed trajectory surprisal, not categorical entropy or molecular diversity. Off-policy/replay data and subsampled probabilities prevent treating it as an unbiased policy entropy estimate. |
 | `mean_log_pf`, `mean_log_pb`, `mean_log_reward`, `mean_tb_residual` | Batch means of the existing TB terms; `mean_log_reward` includes reward floor and exponent | Lightweight diagnostics exposing the terms already computed by reference TB objectives; not claimed as identical reference log keys. `mean_log_pf = -batch_entropy`. |
 | `invalid_loss`, `invalid_logprob` | Mean TB loss and summed forward log probability for invalid batch trajectories | RxnFlow master / HSX-250509 `invalid_losses`, `invalid_logprob`; local naming and exact nonempty denominator |
@@ -41,8 +41,10 @@ Tensor diagnostics are detached and transferred to CPU together. Logging does no
 
 The reference SQLite hooks retain generated structures, rewards and synthesis paths. The local single-process trainer preserves that information in append-only `samples.jsonl`, reusing `Trajectory.to_dict()` rather than adding a database or logging framework. Each row contains `step`, a zero-based within-update `sample` index, `final_smiles`, raw `reward`, `valid`, `invalid_reason`, and `steps`. Each transition contains its parent state SMILES/metadata, action identifiers, product SMILES, and stored `log_pb`. Failed selected actions retain their empty product SMILES and invalid reason.
 
-Only fresh attempts are written, including invalid ones. Replayed trajectories are not written again. Raw reward is before TB flooring/exponentiation; custom `RewardFunction.metrics()` remain per-update summaries. No additional property calculations are introduced for individual samples. The serialized trajectories can be reconstructed with `Trajectory.from_dict()` after removing the two log-index fields. Storage grows with the number of fresh attempts; FIFO replay eviction and checkpoint replacement do not remove sample history.
+Only fresh attempts are written, including invalid ones. Replayed trajectories are not written again. Every record includes `beta`, `preferences` and `objective_rewards` in checkpoint objective order. Raw scalar reward is the preference-weighted sum before TB flooring/exponentiation; custom `RewardFunction.metrics()` remain per-update summaries. No additional property calculations are introduced for individual samples. The serialized trajectories can be reconstructed with `Trajectory.from_dict()` after removing the two log-index fields. Storage grows with the number of fresh attempts; FIFO replay eviction and checkpoint replacement do not remove sample history.
 
 ## Deferred
 
 Exact categorical entropy, scaffold/fingerprint diversity, reward quantiles, and periodic exploration-free evaluation are outside this change. Existing evaluation scripts can still perform separate before/after evaluations. There is no new automatic evaluation run or training job.
+
+Conditional training additionally records `mean_beta` and `mean_logit_temperature` over the fresh+replay optimization batch. `mean_objective_rewards` and `mean_preferences` are dictionaries keyed by objective name for fresh attempts, including zero rewards for invalid/filtered samples. The beta/preference encoder is shared by policy and logZ; its parameters belong to the policy optimizer group, while only the logZ head uses `log_z_learning_rate`.

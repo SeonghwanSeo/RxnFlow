@@ -41,6 +41,13 @@ class RxnFlowTrainer:
         config.validate()
         self.config = config
         self.reward = reward
+        self.objectives = tuple(reward.objectives)
+        if not self.objectives or len(set(self.objectives)) != len(self.objectives):
+            raise ValueError("reward.objectives must contain unique objective names")
+        if config.reward.preferences is not None and len(
+            config.reward.preferences
+        ) != len(self.objectives):
+            raise ValueError("reward.preferences must match reward.objectives")
         self.sample_filter = sample_filter
         self.device = resolve_device(config.device)
         torch.manual_seed(config.seed)
@@ -54,20 +61,30 @@ class RxnFlowTrainer:
             config.training.retrosynthesis_workers,
             config.property_penalty,
         )
-        self.model = RxnFlowModel(self.env, config.model).to(self.device)
-        self.sampling_model = RxnFlowModel(self.env, config.model).to(self.device).eval()
+        self.model = RxnFlowModel(self.env, config.model, len(self.objectives)).to(
+            self.device
+        )
+        self.sampling_model = (
+            RxnFlowModel(self.env, config.model, len(self.objectives))
+            .to(self.device)
+            .eval()
+        )
         self.sampling_model.load_state_dict(self.model.state_dict())
         # HSX main trains logZ at its own rate and excludes it from policy
         # gradient clipping. One optimizer with two groups keeps restart simple.
         self.policy_parameters = [
             parameter
             for name, parameter in self.model.named_parameters()
-            if name != "log_z"
+            if not name.startswith("log_z.")
         ]
+        self.log_z_parameters = list(self.model.log_z.parameters())
         self.optimizer = torch.optim.AdamW(
             [
                 {"params": self.policy_parameters},
-                {"params": [self.model.log_z], "lr": config.training.log_z_learning_rate},
+                {
+                    "params": self.log_z_parameters,
+                    "lr": config.training.log_z_learning_rate,
+                },
             ],
             lr=config.training.learning_rate,
             weight_decay=config.training.weight_decay,
@@ -121,6 +138,7 @@ class RxnFlowTrainer:
                     else None
                 ),
                 "python_random": self.python_rng.getstate(),
+                "objectives": self.objectives,
                 "reward_class": self._reward_class_name(),
             },
             temporary,
@@ -155,6 +173,8 @@ class RxnFlowTrainer:
             raise ValueError(
                 "reward implementation differs from the checkpoint reward class"
             )
+        if checkpoint["objectives"] != self.objectives:
+            raise ValueError("reward objectives differ from the checkpoint")
         self.model.load_state_dict(checkpoint["model"])
         self.sampling_model.load_state_dict(checkpoint["sampling_model"])
         self.optimizer.load_state_dict(checkpoint["optimizer"])
@@ -176,13 +196,28 @@ class RxnFlowTrainer:
             ],
             self.sample_filter,
         )
-        for trajectory, value in zip(trajectories, values, strict=True):
-            trajectory.reward = value if trajectory.valid else 0.0
+        # Objective values are independent of the condition; retain them for
+        # logging and replay. The scalar reward is the untempered weighted sum.
+        preferences = values.new_tensor([t.preferences for t in trajectories])
+        scalar_rewards = (values * preferences).sum(-1).cpu().tolist()
+        for trajectory, objectives, scalar in zip(
+            trajectories, values.cpu().tolist(), scalar_rewards, strict=True
+        ):
+            trajectory.objective_rewards = objectives
+            trajectory.reward = scalar if trajectory.valid else 0.0
         return metrics
 
     def _loss(
         self, trajectories: list[Trajectory], num_fresh: int
     ) -> tuple[Tensor, dict[str, Tensor]]:
+        beta = torch.tensor(
+            [t.beta for t in trajectories], dtype=torch.float32, device=self.device
+        )
+        preferences = torch.tensor(
+            [t.preferences for t in trajectories], dtype=torch.float32, device=self.device
+        )
+        condition = self.model.encode_condition(beta, preferences)
+        log_z = self.model.log_z(condition).squeeze(-1)
         transitions = []
         trajectory_indices: list[int] = []
         backward_flows = torch.tensor(
@@ -198,23 +233,26 @@ class RxnFlowTrainer:
                 transitions.append(transition)
                 trajectory_indices.append(trajectory_index)
         if transitions:
+            indices = torch.tensor(
+                trajectory_indices, dtype=torch.long, device=self.device
+            )
             values = self.policy.action_log_probabilities(
                 [step.state for step in transitions],
                 [step.action for step in transitions],
-            )
-            indices = torch.tensor(
-                trajectory_indices, dtype=torch.long, device=self.device
+                beta[indices],
+                preferences[indices],
             )
             forward_flow = sum_by_trajectory(values, indices, len(trajectories))
         else:
             forward_flow = torch.zeros(len(trajectories), device=self.device)
-        rewards = torch.tensor(
-            [max(value.reward, self.config.reward.floor) for value in trajectories],
+        objective_rewards = torch.tensor(
+            [t.objective_rewards for t in trajectories],
             dtype=torch.float32,
             device=self.device,
         )
-        log_reward = rewards.log() * self.config.reward.exponent
-        residual = self.model.log_z + forward_flow - backward_flows - log_reward
+        rewards = (objective_rewards * preferences).sum(-1)
+        log_reward = rewards.clamp_min(self.config.reward.floor).log() * beta
+        residual = log_z + forward_flow - backward_flows - log_reward
         # Both HSX baselines default to the squared trajectory-balance residual.
         trajectory_losses = residual.square()
         loss = trajectory_losses.mean()
@@ -227,7 +265,9 @@ class RxnFlowTrainer:
             )
             info = {
                 "loss": loss.detach(),
-                "log_z": self.model.log_z.detach().clone(),
+                "log_z": log_z.mean(),
+                "mean_beta": beta.mean(),
+                "mean_logit_temperature": self.model.temperature(condition).mean(),
                 "batch_entropy": -forward_flow.mean(),
                 "mean_log_pf": forward_flow.mean(),
                 "mean_log_pb": backward_flows.mean(),
@@ -265,10 +305,33 @@ class RxnFlowTrainer:
         while self.step < final_step:
             started = perf_counter()
             self.sampling_model.eval()
+            count = self.config.training.batch_size
+            exponent = self.config.reward.exponent
+            if isinstance(exponent, list):
+                beta = torch.empty(count).uniform_(*exponent, generator=self.generator)
+            else:
+                beta = torch.full((count,), float(exponent))
+            fixed_preferences = self.config.reward.preferences
+            if fixed_preferences is not None:
+                preferences = torch.tensor(fixed_preferences, dtype=torch.float32).expand(
+                    count, -1
+                )
+            elif len(self.objectives) == 1:
+                preferences = torch.ones(count, 1)
+            else:
+                # Normalized independent Exp(1) samples give Dirichlet(1).
+                preferences = (
+                    -torch.rand(count, len(self.objectives), generator=self.generator)
+                    .clamp_min(torch.finfo(torch.float32).tiny)
+                    .log()
+                )
+                preferences = preferences / preferences.sum(-1, keepdim=True)
             fresh = self.sampling_policy.rollouts(
                 self.config.training.batch_size,
                 self.config.training.sampling_temperature,
                 self.config.training.random_action_prob,
+                beta=beta,
+                preferences=preferences,
             )
             rollout_seconds = perf_counter() - started
             reward_metrics = self._assign_rewards(fresh)
@@ -290,9 +353,14 @@ class RxnFlowTrainer:
             loss_info.update(
                 policy_grad_norm=policy_grad_norm,
                 # HSX main's grad_norm includes logZ, which is not clipped.
-                grad_norm=(policy_grad_norm.square() + self.model.log_z.grad.square())
-                .sqrt()
-                .reshape(()),
+                grad_norm=(
+                    policy_grad_norm.square()
+                    + sum(
+                        p.grad.square().sum()
+                        for p in self.log_z_parameters
+                        if p.grad is not None
+                    )
+                ).sqrt(),
                 policy_grad_clipped=(policy_grad_norm > 100.0).float(),
             )
             self.optimizer.step()
@@ -338,6 +406,14 @@ class RxnFlowTrainer:
                 "batch_invalid_count": sum(not value.valid for value in batch),
                 "learning_rate": self.optimizer.param_groups[0]["lr"],
                 "mean_reward": sum(value.reward for value in fresh) / len(fresh),
+                "mean_objective_rewards": {
+                    name: sum(t.objective_rewards[i] for t in fresh) / len(fresh)
+                    for i, name in enumerate(self.objectives)
+                },
+                "mean_preferences": {
+                    name: sum(t.preferences[i] for t in fresh) / len(fresh)
+                    for i, name in enumerate(self.objectives)
+                },
                 "valid_fraction": sum(value.valid for value in fresh) / len(fresh),
                 # These describe raw rollout attempts, before retry/filtering.
                 # In particular, uniqueness is among valid terminal molecules.

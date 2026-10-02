@@ -31,7 +31,9 @@ def test_device_sampling_balances_libraries_and_keeps_property_masks():
         torch.zeros(1),
         torch.zeros(1),
     )
-    policy = ActionCategorical([blocks, unary], torch.zeros(n, 2))
+    policy = ActionCategorical(
+        [blocks, unary], torch.zeros(n, 2), temperatures=torch.ones(n, 1)
+    )
     counts = Counter(action.block_type for action in policy.sample(1.0, 1.0, 1.0))
     for name, expected in (("small", 0.25), ("large", 0.25), (None, 0.5)):
         assert abs(counts[name] / n - expected) < 0.03
@@ -57,7 +59,7 @@ def test_policy_sampling_matches_temperature_and_importance_weights():
         weights,
         torch.zeros(3),
     )
-    policy = ActionCategorical([group], torch.zeros(n, 2))
+    policy = ActionCategorical([group], torch.zeros(n, 2), temperatures=torch.ones(n, 1))
     actions = policy.sample(0.7, 0.0, 0.5)
     counts = Counter(action.block_index for action in actions)
     expected = ((logits + 0.5 * weights) / 0.7).softmax(0)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -39,6 +40,9 @@ class RxnFlowSampler:
         config.validate()
         self.config = config
         self.reward = reward
+        self.objectives = tuple(payload["objectives"])
+        if reward is not None and tuple(reward.objectives) != self.objectives:
+            raise ValueError("scoring reward objectives differ from the checkpoint")
         self.sample_filter = sample_filter
         self.device = resolve_device(config.device)
         self.env = SynthesisEnv(
@@ -53,7 +57,11 @@ class RxnFlowSampler:
             raise ValueError(
                 "prepared environment differs from the checkpoint environment"
             )
-        self.model = RxnFlowModel(self.env, config.model).to(self.device).eval()
+        self.model = (
+            RxnFlowModel(self.env, config.model, len(self.objectives))
+            .to(self.device)
+            .eval()
+        )
         self.model.load_state_dict(payload["sampling_model"])
         self.generator = torch.Generator(device="cpu").manual_seed(config.seed)
         self.policy = SynthesisPolicy(
@@ -62,7 +70,10 @@ class RxnFlowSampler:
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
         actions = [
-            {**self.env.action_to_dict(step.action), "product_smiles": step.product_smiles}
+            {
+                **self.env.action_to_dict(step.action),
+                "product_smiles": step.product_smiles,
+            }
             for step in trajectory.steps
         ]
         intermediates = [step.product_smiles for step in trajectory.steps]
@@ -70,7 +81,12 @@ class RxnFlowSampler:
             smiles=trajectory.final_smiles,
             trajectory=actions,
             intermediates=intermediates,
-            metadata={"valid": trajectory.valid},
+            metadata={
+                "valid": trajectory.valid,
+                "beta": trajectory.beta,
+                "preferences": trajectory.preferences,
+                "objectives": self.objectives,
+            },
         )
 
     def sample(
@@ -78,7 +94,20 @@ class RxnFlowSampler:
         count: int,
         temperature: float | None = None,
         seed: int | None = None,
+        *,
+        beta: float,
+        preferences: list[float],
     ) -> list[SamplingResult]:
+        if not math.isfinite(beta) or beta <= 0:
+            raise ValueError("beta must be positive and finite")
+        if (
+            len(preferences) != len(self.objectives)
+            or any(not math.isfinite(w) or w < 0 for w in preferences)
+            or not math.isclose(sum(preferences), 1.0, abs_tol=1e-6)
+        ):
+            raise ValueError(
+                "preferences must match objectives, be non-negative and sum to 1"
+            )
         if count <= 0:
             raise ValueError("sample count must be positive")
         if seed is not None:
@@ -101,7 +130,14 @@ class RxnFlowSampler:
                 maximum_attempts - attempts,
             )
             batch = self.policy.rollouts(
-                batch_size, sampling_temperature, 0.0, analyze_backward=False
+                batch_size,
+                sampling_temperature,
+                0.0,
+                analyze_backward=False,
+                beta=torch.full((batch_size,), float(beta)),
+                preferences=torch.tensor(preferences, dtype=torch.float32).expand(
+                    batch_size, -1
+                ),
             )
             attempts += batch_size
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
@@ -116,8 +152,16 @@ class RxnFlowSampler:
                 [Chem.MolFromSmiles(value.final_smiles) for value in trajectories],
                 self.sample_filter,
             )
-            for result, value in zip(results, values, strict=True):
-                result.reward = value
+            scalar_rewards = (
+                (values * values.new_tensor(preferences)).sum(-1).cpu().tolist()
+            )
+            for result, value, scalar in zip(
+                results, values.cpu().tolist(), scalar_rewards, strict=True
+            ):
+                result.reward = scalar
+                result.metadata["objective_rewards"] = dict(
+                    zip(self.objectives, value, strict=True)
+                )
                 result.metadata.update(metrics)
         return results
 

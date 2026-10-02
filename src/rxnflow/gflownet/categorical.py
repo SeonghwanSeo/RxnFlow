@@ -42,6 +42,7 @@ class ActionLogits:
 class ActionCategorical:
     action_groups: list[ActionLogits]
     embeddings: Tensor
+    temperatures: Tensor
 
     def log_partition(self) -> Tensor:
         # RxnFlow estimates the denominator from an independent subsample.

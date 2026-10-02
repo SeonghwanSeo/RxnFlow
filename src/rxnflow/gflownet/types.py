@@ -107,6 +107,10 @@ class Transition:
 class Trajectory:
     steps: list[Transition]
     final_smiles: str
+    # Conditions are fixed for the entire trajectory, including replay.
+    beta: float
+    preferences: list[float]
+    objective_rewards: list[float] = field(default_factory=list)
     reward: float = 0.0
     valid: bool = True
     invalid_reason: str | None = None
@@ -115,6 +119,9 @@ class Trajectory:
         return {
             "steps": [step.to_dict() for step in self.steps],
             "final_smiles": self.final_smiles,
+            "beta": self.beta,
+            "preferences": list(self.preferences),
+            "objective_rewards": list(self.objective_rewards),
             "reward": self.reward,
             "valid": self.valid,
             "invalid_reason": self.invalid_reason,
@@ -125,6 +132,9 @@ class Trajectory:
         return cls(
             steps=[Transition.from_dict(step) for step in data["steps"]],
             final_smiles=data["final_smiles"],
+            beta=data["beta"],
+            preferences=list(data["preferences"]),
+            objective_rewards=list(data["objective_rewards"]),
             reward=data["reward"],
             valid=data["valid"],
             invalid_reason=data["invalid_reason"],

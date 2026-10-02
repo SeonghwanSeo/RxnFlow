@@ -85,4 +85,4 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
     checkpoint = restarted.run(1)
     assert restarted.step == steps + 1
     restarted.env.retro_analyzer.close()
-    assert RxnFlowSampler(checkpoint).sample(4)
+    assert RxnFlowSampler(checkpoint).sample(4, beta=1.0, preferences=[1.0])

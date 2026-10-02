@@ -12,7 +12,10 @@ class ReplayBuffer:
     def __init__(self, capacity: int):
         assert capacity >= 0
         self.capacity = capacity
-        # Store SMILES and scalar metadata, not live states or RDKit molecules.
+        # Store plain trajectory data, including beta, preferences and objective
+        # rewards. Sampling preserves these conditions; no relabeling.
+        # TODO: benchmark beta/preference relabeling and prioritized replay
+        # separately (see codex/docs/conditioning.md).
         self._items: list[dict[str, Any]] = []
         self._next = 0
 

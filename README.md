@@ -85,21 +85,24 @@ A trajectory starts with a one-site brick and grows one intermediate. Each BiRea
 
 Following HSX, building-block masks compare current state properties plus precomputed block properties against the configured upper bounds. Following `explore_250509`, select compatible reaction/library types, uniformly subsample each library, then apply the state + block budget mask to those sampled rows. Inclusion probabilities use the full library size and the original draw count, not the number surviving the mask. Rejected rows are not refilled; a sampled action space with no feasible continuation fails the trajectory. `property_penalty` therefore constrains an additive estimate, not exact product descriptors. Comparisons use raw units: nonzero bounds allow HSX main's 1% relative tolerance, while zero bounds and graph capacity remain strict. State and block MW use `Descriptors.ExactMolWt`. Enamine dummy labels have zero mass; HSX's Synple/eXplore At-isotope subtraction and `+29.0` linker MW correction do not apply.
 
-Graph tensors have a fixed capacity of `max_atoms + 1` (heavy atoms plus a dummy slot). Rollout batches all active states; trajectory-balance training batches all observed transitions. Each policy call draws each needed library once and shares its sampled rows across states and reactions. Sampled block features are encoded together, and each reaction concatenates its compatible libraries for one score matrix over eligible states. Boolean budget masks set excluded logits to `-inf` while preserving sampled columns. Only selected indices become action objects. Repeated states reuse CPU graph construction and share graph encoding in evaluation mode; training keeps separate graph rows. Embeddings are not cached across updates. Full-library draws use their existing indices without randomness; partial draws sample the requested count without shuffling the full library.
+Graph tensors have a fixed capacity of `max_atoms + 1` (heavy atoms plus a dummy slot). Rollout batches all active states; trajectory-balance training batches all observed transitions. Each policy call draws each needed library once and shares its sampled rows across states and reactions. Sampled block features are encoded together, and each reaction concatenates its compatible libraries for one score matrix over eligible states. Boolean budget masks set excluded logits to `-inf` while preserving sampled columns. Only selected indices become action objects. Repeated states reuse CPU graph construction; neural encoding keeps separate rows because beta and preferences may differ. Embeddings are not cached across updates. Full-library draws use their existing indices without randomness; partial draws sample the requested count without shuffling the full library.
 
 Training follows RxnFlow master: the subsample estimates the denominator with `log(library_size / draw_count)` weights, and observed actions are scored separately even when absent from the draw. Observed actions do not alter the subsample or its inclusion weights. The resulting log probability is clamped at zero, as in the reference. Sampling uses device-side Gumbel draws and copies only selected indices to Python. Random exploration follows CGFlow's `-log(number_of_libraries * sampled_library_size)` offsets, with property masks retained; this balances libraries before masking rather than drawing uniformly over all surviving blocks.
 
 The policy scores state/reaction embeddings and prepared block features without executing candidate reactions. Only the chosen action executes RDKit chemistry, checking the resulting site signature and actual `data.max_atoms` capacity. An invalid selected transition fails the trajectory without retry or unmasking. Unary actions use typed-handle and trajectory-length eligibility, without an additive block budget or exact product-property filter. The state holds the resulting RDKit `Mol`, shared with graph encoding; canonical SMILES identify and serialize states. Graph tensors reserve `max_atoms` RDKit heavy-atom slots plus one dummy slot, and molecules are never truncated.
 
-The graph encoder uses residual GINE message passing in native PyTorch, with graph-mode normalization, conditional scale/shift and bidirectional virtual-node edges. Each layer sums ReLU(source + bond), adds the normalized target once (fixed epsilon=0), and applies a two-Linear H→2H→H MLP before the conditioned residual update. Explicit self loops and attention are absent. Atom features include chirality. The 13 bond features follow HSX main: four bond types, seven stereo categories (NONE/ANY/Z/E/CIS/TRANS/unknown), conjugation and ring membership. Molecular mean and virtual-node pooling give a `2 * hidden_dim` readout followed by LayerNorm. The block encoder projects fingerprints and properties with separate Linear/LayerNorm branches using HSX main's Xavier initialization, then combines them with a type embedding through the fusion MLP. HSX explore supplies the fusion/policy normalization order and post-GNN reaction conditioning; HSX main supplies the block-normalized dot score and bounded reaction temperature, initialized at 0.2. Graph/fusion/policy MLPs use Kaiming hidden weights and Xavier output weights, with zero biases; reaction and block-type embeddings use uniform[-0.1,0.1]. UniReaction uses a scalar head. Defaults are `hidden_dim=128`, `num_layers=4`, `block_dim=128`, `mlp_layers=2`, and `block_mlp_layers=1`. The backbone is an explicitly selected GINE variant; the reference 2H readout and late conditioning remain. Anchor readout is not added. The obsolete `num_heads` option has been removed. Checkpoints with the previous architecture or dimensions cannot be loaded into the new default model; existing MolWt-based prepared libraries need their feature stage rerun before use; block conversion is unchanged.
+The graph encoder uses residual GINE message passing in native PyTorch with node-wise LayerNorm and bidirectional virtual-node edges. Each layer sums ReLU(source + bond), adds the normalized target once (fixed epsilon=0), and applies a two-Linear H→2H→H MLP before the residual update. Explicit self loops, attention and FiLM are absent. Atom features include chirality and bond features distinguish E/Z stereo. Molecular mean and virtual-node pooling give a `2 * hidden_dim` readout with separate LayerNorms. Block fingerprints and properties have separate Linear projections, then join a type embedding in the fusion MLP. Reactions condition the policy after the GNN, so one state/condition encoding serves all reactions. Defaults are `hidden_dim=128`, `num_layers=4`, `block_dim=128`, `mlp_layers=2`, and `block_mlp_layers=2`; Linear weights use Xavier initialization.
 
-Training uses MSE trajectory balance, uniform FIFO replay, an EMA sampling model, and restartable checkpoints. Replay and checkpoints store trajectories as plain dictionaries with SMILES; only sampled replay trajectories reconstruct RDKit molecules. Failed selected reactions retain their forward probability and receive zero raw reward with the configured training reward floor. Policy gradients use global norm clipping at 100, excluding logZ. Default random action probability is 0.05, reward floor is 1e-4, and weight decay remains 1e-8. `training.log_z_learning_rate` controls logZ separately; `training.lr_decay_steps` is the learning-rate half-life. Optimizer, scheduler, library RNG and model-device RNG states are restored. Backward analysis preserves the generated route and adds forward-verified precursor routes within the reaction-depth bound. Its depth-weighted probabilities remain an approximation to the backward distribution. Reverse workers run alongside the next forward-policy computation; pending results are collected before extending their parent trees, including after the final reaction.
+The model receives reward exponent beta and objective preferences as external conditions. Beta uses fixed Fourier features (`u=(beta-1)/63`, frequencies 1/2/4/8, plus u itself), followed by an MLP; preferences use another MLP. Their summed embedding conditions the initial virtual node, reaction-specific logit temperatures and logZ through separate projections/heads. Temperatures remain bounded to 0.01–10 and initialize at 0.2. The encoder does not clamp beta or depend on its sampling range. See [conditioning and replay](codex/docs/conditioning.md) for the reward contract and deferred replay experiments.
+
+Training uses MSE trajectory balance, uniform FIFO replay, an EMA sampling model, and restartable checkpoints. Replay and checkpoints store trajectories as plain dictionaries with SMILES, beta, preferences and objective rewards; only sampled replay trajectories reconstruct RDKit molecules. Failed selected reactions retain their forward probability and receive zero raw reward with the configured training reward floor. Policy gradients use global norm clipping at 100, excluding logZ. Default random action probability is 0.05, reward floor is 1e-4, and weight decay remains 1e-8. `training.log_z_learning_rate` controls the conditional logZ head separately; `training.lr_decay_steps` is the learning-rate half-life. Optimizer, scheduler, library RNG and model-device RNG states are restored. Backward analysis preserves the generated route and adds forward-verified precursor routes within the reaction-depth bound. Its depth-weighted probabilities remain an approximation to the backward distribution. Reverse workers run alongside the next forward-policy computation; pending results are collected before extending their parent trees, including after the final reaction.
 
 ## Custom rewards
 
 Rewards are explicit local Python objects implementing `RewardFunction`. Both `score` and `sample_filter` receive RDKit molecules directly; use `Chem.MolToSmiles(mol)` when strings are needed:
 
 ```python
+import torch
 from rxnflow.config import Config
 from rdkit import Chem
 from rxnflow.reward import RewardFunction
@@ -107,11 +110,13 @@ from rxnflow.trainer import RxnFlowTrainer
 
 
 class CarbonReward(RewardFunction):
-    def score(self, molecules: list[Chem.Mol]) -> list[float]:
-        return [
-            sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms()) / 50
+    objectives = ("carbon",)
+
+    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
+        return torch.tensor([
+            [sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms()) / 50]
             for mol in molecules
-        ]
+        ], dtype=torch.float32).reshape(-1, 1)
 
 
 config = Config.from_file("config.yaml")
@@ -119,7 +124,7 @@ trainer = RxnFlowTrainer(config, CarbonReward())
 trainer.run()
 ```
 
-`reward.settings` is passed to the selected reward constructor. YAML does not import or choose a reward class.
+`score` returns a finite, non-negative float32 tensor `[batch, num_objectives]`; objective names define the column order. Each objective must be scaled explicitly by the reward implementation. The trainer applies preferences by weighted sum, then floor and beta. `reward.exponent` accepts a scalar or `[low, high]` for uniform beta sampling. `reward.preferences: null` draws Dirichlet(1) preferences; a list fixes them. `reward.settings` is passed to the selected reward constructor. YAML does not import or choose a reward class.
 
 ## Sample
 
@@ -127,6 +132,7 @@ trainer.run()
 rxnflow-sample \
   --checkpoint runs/qed/checkpoint_latest.pt \
   --num-samples 100 \
+  --beta 32 --preferences 1 \
   --output samples.json
 ```
 

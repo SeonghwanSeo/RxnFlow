@@ -34,7 +34,7 @@ def evaluate(trainer: RxnFlowTrainer, count: int, seed: int, name: str) -> dict:
     trainer.generator.manual_seed(seed)
     started = time.perf_counter()
     try:
-        trajectories = trainer.sampling_policy.rollouts(count, analyze_backward=False)
+        trajectories = trainer.sampling_policy.rollouts(count, analyze_backward=False, beta=torch.full((count,), float(trainer.config.reward.exponent)), preferences=torch.ones(count, 1))
     finally:
         trainer.generator.set_state(previous_rng)
     elapsed = time.perf_counter() - started
@@ -131,27 +131,24 @@ def action_diagnostics(trainer: RxnFlowTrainer) -> dict:
     report = {}
     try:
         for smiles in ("[11*]CC", "[33*]NCC", "[1*]NCC", "[3*]C"):
-            candidates = trainer.sampling_policy.candidates(
-                MoleculeState.from_smiles(smiles)
+            candidates = trainer.sampling_policy.candidate_batch(
+                [MoleculeState.from_smiles(smiles)],
+                torch.tensor([float(trainer.config.reward.exponent)], device=trainer.device),
+                torch.ones(1, 1, device=trainer.device),
             )
-            weighted = (
-                candidates.logits
-                + trainer.config.subsampling.importance_temp * candidates.log_importance
-            )
-            probabilities = weighted.softmax(0)
+            groups = candidates.action_groups
+            weighted = [g.logits[0] + trainer.config.subsampling.importance_temp * g.log_importance for g in groups]
+            log_partition = torch.logsumexp(torch.cat(weighted), 0)
             by_kind = {}
-            for kind in {action.kind for action in candidates.actions}:
-                positions = [
-                    i
-                    for i, action in enumerate(candidates.actions)
-                    if action.kind == kind
-                ]
-                values = candidates.logits[positions]
+            for kind in {g.kind for g in groups}:
+                values = torch.cat([g.logits[0] for g in groups if g.kind == kind])
+                weights = torch.cat([w for g, w in zip(groups, weighted, strict=True) if g.kind == kind])
+                valid = torch.isfinite(values)
                 by_kind[kind.name] = {
-                    "sampled_actions": len(positions),
-                    "logit_min": float(values.min().cpu()),
-                    "logit_max": float(values.max().cpu()),
-                    "probability_mass": float(probabilities[positions].sum().cpu()),
+                    "sampled_actions": int(valid.sum()),
+                    "logit_min": float(values[valid].min().cpu()) if valid.any() else None,
+                    "logit_max": float(values[valid].max().cpu()) if valid.any() else None,
+                    "probability_mass": float((weights - log_partition).exp().sum().cpu()),
                 }
             report[smiles] = by_kind
     finally:
@@ -237,7 +234,7 @@ def main() -> None:
         report["after"] = evaluate(trainer, args.count, 11, "after")
         report["action_diagnostics_after"] = action_diagnostics(trainer)
         report["learned_temperatures"] = {
-            name: float(trainer.model.temperature[index].detach().cpu())
+            name: float(trainer.model.temperature(trainer.model.encode_condition(torch.tensor([float(trainer.config.reward.exponent)], device=trainer.device), torch.ones(1, 1, device=trainer.device)))[0, index].detach().cpu())
             for name, index in trainer.env.action_to_index.items()
         }
         report["peak_rss_mib_main_process"] = (

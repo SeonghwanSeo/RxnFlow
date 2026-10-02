@@ -26,7 +26,7 @@ class ValidationQEDReward(QEDReward):
         ]
         count = len(molecules)
         self.last_metrics = {
-            "mean_qed_valid": sum(scores) / max(1, count),
+            "mean_qed_valid": float(scores.sum()) / max(1, count),
             "lipinski_fraction": sum(mw <= 500 and hba <= 10 and hbd <= 5 for mw, hba, hbd in properties) / max(1, count),
         }
         for index, name in enumerate(("mw", "hba", "hbd")):
@@ -37,7 +37,7 @@ class ValidationQEDReward(QEDReward):
         return self.last_metrics
 
 
-def evaluate(trainer, label, count):
+def evaluate(trainer, label, count, beta):
     # Isolate both CPU library draws and device-side Gumbel draws from training.
     policy = SynthesisPolicy(
         trainer.env, trainer.sampling_model, trainer.config, trainer.device,
@@ -50,6 +50,8 @@ def evaluate(trainer, label, count):
             batch = policy.rollouts(
                 min(trainer.config.training.batch_size, count - start),
                 1.0, 0.0, analyze_backward=False,
+                beta=torch.full((min(trainer.config.training.batch_size, count - start),), float(beta)),
+                preferences=torch.ones(min(trainer.config.training.batch_size, count - start), 1),
             )
             for trajectory in batch:
                 row = {
@@ -92,18 +94,19 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True)
     parser.add_argument('--evaluation-samples', type=int, default=1024)
+    parser.add_argument('--evaluation-beta', type=float, default=32.0)
     args = parser.parse_args()
     config = Config.from_file(args.config)
     trainer = RxnFlowTrainer(config, ValidationQEDReward())
     try:
-        before = evaluate(trainer, 'before', args.evaluation_samples)
+        before = evaluate(trainer, 'before', args.evaluation_samples, args.evaluation_beta)
         print(json.dumps({'before': before}), flush=True)
         torch.cuda.reset_peak_memory_stats()
         started = perf_counter()
         checkpoint = trainer.run()
         torch.cuda.synchronize()
         elapsed = perf_counter() - started
-        after = evaluate(trainer, 'after', args.evaluation_samples)
+        after = evaluate(trainer, 'after', args.evaluation_samples, args.evaluation_beta)
         result = {
             'checkpoint': str(checkpoint), 'completed_steps': trainer.step,
             'training_seconds': elapsed, 'gpu': torch.cuda.get_device_name(),

@@ -6,8 +6,10 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 
+import torch
 from rdkit import Chem
 from rdkit.Chem import QED
+from torch import Tensor
 
 SampleFilter = Callable[[Chem.Mol], bool]
 
@@ -17,11 +19,15 @@ class RewardFunction(ABC):
 
     Implementations receive RDKit molecules. Treat them as read-only and use
     ``Chem.MolToSmiles`` if a reward needs strings. ``score`` must return
-    finite, non-negative values aligned with the input list.
+    a float32 tensor of shape [batch, len(objectives)], including empty batches.
+    Values must be finite, non-negative and larger-is-better. Implementations
+    define the objective order and scale; preferences are applied by the trainer.
     """
 
+    objectives: tuple[str, ...]
+
     @abstractmethod
-    def score(self, molecules: list[Chem.Mol]) -> list[float]:
+    def score(self, molecules: list[Chem.Mol]) -> Tensor:
         raise NotImplementedError
 
     def metrics(self) -> dict[str, float]:
@@ -31,15 +37,19 @@ class RewardFunction(ABC):
 class QEDReward(RewardFunction):
     """Example reward using RDKit's quantitative estimate of drug-likeness."""
 
-    def score(self, molecules: list[Chem.Mol]) -> list[float]:
-        return [float(QED.qed(mol)) for mol in molecules]
+    objectives = ("qed",)
+
+    def score(self, molecules: list[Chem.Mol]) -> Tensor:
+        return torch.tensor(
+            [QED.qed(mol) for mol in molecules], dtype=torch.float32
+        ).reshape(-1, 1)
 
 
 def evaluate_rewards(
     reward: RewardFunction,
     molecules: list[Chem.Mol | None],
     sample_filter: SampleFilter | None = None,
-) -> tuple[list[float], dict[str, float]]:
+) -> tuple[Tensor, dict[str, float]]:
     """Filter molecules and align rewards; failed trajectories pass None."""
 
     accepted: list[Chem.Mol] = []
@@ -54,15 +64,15 @@ def evaluate_rewards(
             accepted.append(mol)
             accepted_indices.append(index)
 
-    raw_scores = reward.score(accepted)
-    if len(raw_scores) != len(accepted):
-        raise ValueError("RewardFunction.score returned a misaligned number of rewards")
-    scores = [float(value) for value in raw_scores]
-    if any(not math.isfinite(value) or value < 0 for value in scores):
+    scores = reward.score(accepted).detach()
+    if scores.shape != (len(accepted), len(reward.objectives)):
+        raise ValueError("RewardFunction.score must return [batch, num_objectives]")
+    if scores.dtype != torch.float32:
+        raise ValueError("RewardFunction.score must return float32")
+    if not torch.isfinite(scores).all() or (scores < 0).any():
         raise ValueError("rewards must be finite and non-negative")
-    result = [0.0] * len(molecules)
-    for index, score in zip(accepted_indices, scores, strict=True):
-        result[index] = score
+    result = scores.new_zeros((len(molecules), len(reward.objectives)))
+    result[accepted_indices] = scores
 
     metrics = {name: float(value) for name, value in reward.metrics().items()}
     if any(not math.isfinite(value) for value in metrics.values()):

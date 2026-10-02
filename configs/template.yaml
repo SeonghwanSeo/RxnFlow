@@ -10,7 +10,10 @@ run:
   seed: 0
 
 reward:
+  # Fixed beta, or [low, high] for uniform sampling per fresh trajectory.
   exponent: 32.0
+  # null: Dirichlet(1); otherwise fixed weights in reward.objectives order.
+  preferences: null
   floor: 0.0001
   settings: {}
 

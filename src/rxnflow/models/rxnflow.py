@@ -22,10 +22,16 @@ from .nn import mlp
 
 
 class RxnFlowModel(nn.Module):
-    def __init__(self, env: SynthesisEnv, config: ModelConfig):
+    def __init__(self, env: SynthesisEnv, config: ModelConfig, num_objectives: int):
         super().__init__()
         hidden = config.hidden_dim
         self.env = env
+        self.num_objectives = num_objectives
+        # Fixed encoder coordinates, independent of the beta sampling range.
+        # Keep u itself so periodic features never alias the whole encoding.
+        self.beta_encoder = mlp(9, hidden, hidden, 2)
+        self.preference_encoder = mlp(num_objectives, hidden, hidden, 2)
+        self.graph_condition = nn.Linear(hidden, hidden)
         self.register_buffer(
             "property_scale", torch.tensor(PROPERTY_SCALE), persistent=False
         )
@@ -84,8 +90,8 @@ class RxnFlowModel(nn.Module):
         # convention because all Uni/Bi choices share one categorical policy.
         self.min_temperature = 0.01
         self.max_temperature = 10.0
-        self.logit_temperature = nn.Parameter(torch.empty(len(env.action_names)))
-        self.log_z = nn.Parameter(torch.empty(()))
+        self.temperature_head = mlp(hidden, hidden, len(env.action_names), 2)
+        self.log_z = mlp(hidden, hidden, 1, 2)
         self.init_weight()
 
     def init_weight(self) -> None:
@@ -104,23 +110,37 @@ class RxnFlowModel(nn.Module):
         initial = (0.2 - self.min_temperature) / (
             self.max_temperature - self.min_temperature
         )
-        nn.init.constant_(self.logit_temperature, math.log(initial / (1.0 - initial)))
-        nn.init.zeros_(self.log_z)
+        nn.init.zeros_(self.temperature_head[-1].weight)
+        nn.init.constant_(
+            self.temperature_head[-1].bias, math.log(initial / (1.0 - initial))
+        )
+        nn.init.zeros_(self.log_z[-1].weight)
+        nn.init.zeros_(self.log_z[-1].bias)
 
-    def encode_graphs(self, batch: GraphBatch) -> Tensor:
-        mean, virtual = self.graph_encoder(batch).chunk(2, dim=-1)
+    def encode_condition(self, beta: Tensor, preferences: Tensor) -> Tensor:
+        u = (beta[:, None] - 1.0) / 63.0
+        frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
+        angles = 2 * math.pi * u * frequencies
+        features = torch.cat([u, angles.sin(), angles.cos()], dim=-1)
+        return self.beta_encoder(features) + self.preference_encoder(preferences)
+
+    def encode_graphs(self, batch: GraphBatch, condition: Tensor) -> Tensor:
+        mean, virtual = self.graph_encoder(batch, self.graph_condition(condition)).chunk(
+            2, dim=-1
+        )
         return torch.cat([self.mean_norm(mean), self.virtual_norm(virtual)], dim=-1)
 
-    @property
-    def temperature(self) -> Tensor:
+    def temperature(self, condition: Tensor) -> Tensor:
         return (
             self.min_temperature
             + (self.max_temperature - self.min_temperature)
-            * self.logit_temperature.sigmoid()
+            * self.temperature_head(condition).sigmoid()
         )
 
-    def score_scalar(self, state_embedding: Tensor, action_name: str) -> Tensor:
-        return self.action_query(state_embedding, action_name)[0, 0]
+    def score_scalar(
+        self, state_embedding: Tensor, action_name: str, temperatures: Tensor
+    ) -> Tensor:
+        return self.action_query(state_embedding, action_name, temperatures)[0, 0]
 
     def _encode_blocks(
         self, block_type: str, indices: Tensor, device: torch.device
@@ -148,7 +168,9 @@ class RxnFlowModel(nn.Module):
             )
         )
 
-    def action_query(self, states: Tensor, action_name: str) -> Tensor:
+    def action_query(
+        self, states: Tensor, action_name: str, temperatures: Tensor
+    ) -> Tensor:
         index = self.env.action_to_index[action_name]
         reaction = self.action_embedding.weight[index].expand(states.shape[0], -1)
         conditioned = torch.cat([states, reaction], dim=-1)
@@ -158,7 +180,7 @@ class RxnFlowModel(nn.Module):
             head = self.uni_reaction_head
         else:
             head = self.bi_reaction_head
-        return head(conditioned) / self.temperature[index]
+        return head(conditioned) / temperatures[:, index, None]
 
     def score_blocks(
         self,
@@ -166,8 +188,9 @@ class RxnFlowModel(nn.Module):
         action_name: str,
         block_type: str,
         indices: Tensor,
+        temperatures: Tensor,
     ) -> Tensor:
         assert indices.ndim == 1 and state_embedding.shape[0] == 1
-        query = self.action_query(state_embedding, action_name)
+        query = self.action_query(state_embedding, action_name, temperatures)
         blocks = self._encode_blocks(block_type, indices, state_embedding.device)
         return F.normalize(blocks, dim=-1) @ query.squeeze(0)

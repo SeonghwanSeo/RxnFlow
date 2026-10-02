@@ -29,11 +29,16 @@ from rxnflow.trainer import RxnFlowTrainer
 
 
 class CarbonReward(RewardFunction):
-    def score(self, molecules: list[Chem.Mol]) -> list[float]:
-        return [
-            float(sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms())) / 10
-            for mol in molecules
-        ]
+    objectives = ("score",)
+
+    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
+        return torch.tensor(
+            [
+                float(sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms())) / 10
+                for mol in molecules
+            ],
+            dtype=torch.float32,
+        ).reshape(-1, 1)
 
 
 def tiny_config(env_dir: Path, output_dir: Path) -> Config:
@@ -115,8 +120,8 @@ def test_training_restart_sampling_and_output_formats(
         value = {key: val for key, val in row.items() if key not in ("step", "sample")}
         assert Trajectory.from_dict(value).to_dict() == value
 
-    sampler = RxnFlowSampler(restarted_checkpoint, reward=CarbonReward())
-    results = sampler.sample(3, seed=11)
+    sampler = RxnFlowSampler(restarted_checkpoint, reward=QEDReward())
+    results = sampler.sample(3, seed=11, beta=1.0, preferences=[1.0])
     assert len(results) == 3
     assert all(
         result.smiles and result.trajectory and result.reward is not None
@@ -150,9 +155,9 @@ def test_trajectory_balance_uses_backward_probability(
     prepared_env: Path, tmp_path: Path
 ) -> None:
     trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "tb"), QEDReward())
-    trainer.model.log_z.data.zero_()
-    trainer.policy.action_log_probabilities = lambda states, actions: (
-        trainer.model.log_z.expand(len(states)) * 0
+    trainer.model.log_z[-1].bias.data.zero_()
+    trainer.policy.action_log_probabilities = lambda states, actions, beta, preferences: (
+        trainer.model.log_z[-1].bias.expand(len(states)) * 0
     )
     trajectory = Trajectory(
         steps=[
@@ -165,6 +170,9 @@ def test_trajectory_balance_uses_backward_probability(
         ],
         final_smiles="N",
         reward=1.0,
+        beta=1.0,
+        preferences=[1.0],
+        objective_rewards=[1.0],
     )
     loss, _ = trainer._loss([trajectory], num_fresh=1)
     assert torch.isclose(loss, torch.tensor(4.0))
@@ -174,9 +182,9 @@ def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path
     config = tiny_config(prepared_env, tmp_path / "diagnostics")
     config.reward.floor = math.exp(-4)
     trainer = RxnFlowTrainer(config, QEDReward())
-    trainer.model.log_z.data.zero_()
-    trainer.policy.action_log_probabilities = lambda states, actions: (
-        torch.tensor([-2.0, -3.0, -1.0]) + trainer.model.log_z * 0
+    trainer.model.log_z[-1].bias.data.zero_()
+    trainer.policy.action_log_probabilities = lambda states, actions, beta, preferences: (
+        torch.tensor([-2.0, -3.0, -1.0]) + trainer.model.log_z[-1].bias * 0
     )
     batch = [
         Trajectory(
@@ -184,6 +192,9 @@ def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path
             final_smiles="C",
             reward=reward,
             valid=valid,
+            beta=1.0,
+            preferences=[1.0],
+            objective_rewards=[reward],
         )
         for pb, reward, valid in [
             (-0.5, math.exp(-1), True),
@@ -212,10 +223,17 @@ def test_tb_diagnostics_separate_fresh_replay_and_invalid(prepared_env, tmp_path
         assert not info[key].requires_grad
         assert info[key].item() == pytest.approx(value)
     loss.backward()
-    assert trainer.model.log_z.grad.item() == pytest.approx(5.5 / 3)
+    assert trainer.model.log_z[-1].bias.grad.item() == pytest.approx(5.5 / 3)
 
     # No valid samples, replay, or transitions: diagnostics remain finite.
-    loss, info = trainer._loss([Trajectory([], "", valid=False)], num_fresh=1)
+    loss, info = trainer._loss(
+        [
+            Trajectory(
+                [], "", valid=False, beta=1.0, preferences=[1.0], objective_rewards=[0.0]
+            )
+        ],
+        num_fresh=1,
+    )
     assert loss.item() == pytest.approx(16.0)
     assert info["valid_loss"].item() == info["replay_loss"].item() == 0
     assert all(torch.isfinite(value) for value in info.values())
@@ -263,13 +281,19 @@ def test_oriented_block_scoring_and_observed_action_log_probability(
         for i in range(len(trainer.env.blocks["1-1"]))
         if (values := trainer.env.outcomes(state, group, i))
     )
-    probability = trainer.policy.action_log_probability(state, actions[0])
+    probability = trainer.policy.action_log_probability(
+        state, actions[0], beta=torch.ones(1), preferences=torch.ones(1, 1)
+    )
     assert torch.isfinite(probability) and probability <= 0
     (-probability).backward()
     assert trainer.model.block_encoder[0].weight.grad is not None
     with pytest.raises(NoValidActions):
         trainer.policy.choose_action(
-            MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1), 1.0, 0.0
+            MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1),
+            1.0,
+            0.0,
+            beta=torch.ones(1),
+            preferences=torch.ones(1, 1),
         )
 
 
@@ -303,7 +327,11 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
     found = missed = 0
     for seed in range(20):
         trainer.policy.generator.manual_seed(seed)
-        group = trainer.policy.candidate_batch([env.initial_state()]).action_groups[0]
+        group = trainer.policy.candidate_batch(
+            [env.initial_state()],
+            beta=torch.ones(len([env.initial_state()])),
+            preferences=torch.ones(len([env.initial_state()]), 1),
+        ).action_groups[0]
         valid = torch.isfinite(group.logits[0])
         # Masking retains every sampled column, even when all actions are invalid.
         assert group.logits.shape[1] == sum(map(len, group.block_indices))
@@ -344,7 +372,9 @@ def test_failed_selected_action_is_retained_for_tb(
         "choose_actions",
         lambda states, *args: [action] * len(states),
     )
-    trajectory = trainer.sampling_policy.rollout(analyze_backward=False)
+    trajectory = trainer.sampling_policy.rollout(
+        analyze_backward=False, beta=torch.ones(1), preferences=torch.ones(1, 1)
+    )
     assert not trajectory.valid
     assert "graph-capacity" in trajectory.invalid_reason
     assert len(trajectory.steps) == 1
@@ -374,7 +404,9 @@ def test_batched_scores_and_gradients_match_scalar_reference(
         MoleculeState.from_smiles("[11*]C"),
         MoleculeState.from_smiles("[33*]NCC"),
     ]
-    categorical = trainer.policy.candidate_batch(states)
+    categorical = trainer.policy.candidate_batch(
+        states, beta=torch.ones(len(states)), preferences=torch.ones(len(states), 1)
+    )
     reference, actual = [], []
     for row, state in enumerate(states):
         embedding = model.encode_graphs(
@@ -384,7 +416,19 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                         state.mol, trainer.env.max_atoms, state.reaction_count
                     )
                 ]
-            )
+            ),
+            condition=_condition(
+                model,
+                len(
+                    GraphBatch.from_graphs(
+                        [
+                            molecule_to_graph_data(
+                                state.mol, trainer.env.max_atoms, state.reaction_count
+                            )
+                        ]
+                    ).node_mask
+                ),
+            ),
         )
         for group in categorical.action_groups:
             for column in range(group.logits.shape[1]):
@@ -392,13 +436,18 @@ def test_batched_scores_and_gradients_match_scalar_reference(
                     continue
                 action = group.action_at(column)
                 score = (
-                    model.score_scalar(embedding, action.reaction)
+                    model.score_scalar(
+                        embedding,
+                        action.reaction,
+                        temperatures=model.temperature(_condition(model, 1)),
+                    )
                     if action.kind == ActionKind.UNI_REACTION
                     else model.score_blocks(
                         embedding,
                         group.name,
                         action.block_type,
                         torch.tensor([action.block_index]),
+                        temperatures=model.temperature(_condition(model, 1)),
                     )[0]
                 )
                 reference.append(score)
@@ -431,12 +480,22 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
 
     monkeypatch.setattr(BlockSubsampler, "sample", sample)
     initial = trainer.env.initial_state()
-    categorical = trainer.policy.candidate_batch([initial, initial])
+    categorical = trainer.policy.candidate_batch(
+        [initial, initial],
+        beta=torch.ones(len([initial, initial])),
+        preferences=torch.ones(len([initial, initial]), 1),
+    )
     assert len(draws) == len(set(draws))
     for group in categorical.action_groups:
         torch.testing.assert_close(group.logits[0], group.logits[1])
     dead = MoleculeState.from_smiles("[33*]NCC", trainer.env.max_reactions - 1)
-    choices = trainer.policy.choose_actions([dead, initial], 1.0, 0.0)
+    choices = trainer.policy.choose_actions(
+        [dead, initial],
+        1.0,
+        0.0,
+        beta=torch.ones(len([dead, initial])),
+        preferences=torch.ones(len([dead, initial]), 1),
+    )
     assert choices[0] is None and choices[1].kind == ActionKind.FIRST_BLOCK
 
 
@@ -457,11 +516,20 @@ def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypa
 
     monkeypatch.setattr(policy_module, "Action", record_action)
     probabilities = trainer.policy.action_log_probabilities(
-        [initial, initial], [observed, observed]
+        [initial, initial],
+        [observed, observed],
+        beta=torch.ones(len([initial, initial])),
+        preferences=torch.ones(len([initial, initial]), 1),
     )
     assert torch.isfinite(probabilities).all()
     assert not constructed
-    selected = trainer.policy.choose_actions([initial, initial], 1.0, 0.0)
+    selected = trainer.policy.choose_actions(
+        [initial, initial],
+        1.0,
+        0.0,
+        beta=torch.ones(len([initial, initial])),
+        preferences=torch.ones(len([initial, initial]), 1),
+    )
     assert constructed == selected
     assert len(constructed) == 2
 
@@ -486,14 +554,23 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     actions = [
         Action(ActionKind.FIRST_BLOCK, block_type="1", block_index=i) for i in (0, 1)
     ]
-    categorical = trainer.policy.candidate_batch([state, state])
+    categorical = trainer.policy.candidate_batch(
+        [state, state],
+        beta=torch.ones(len([state, state])),
+        preferences=torch.ones(len([state, state]), 1),
+    )
     assert all(
         indices.tolist() == [0]
         for p in categorical.action_groups
         for indices in p.block_indices
     )
     monkeypatch.setattr(trainer.policy, "candidate_batch", lambda *args: categorical)
-    actual = trainer.policy.action_log_probabilities([state, state], actions)
+    actual = trainer.policy.action_log_probabilities(
+        [state, state],
+        actions,
+        beta=torch.ones(len([state, state])),
+        preferences=torch.ones(len([state, state]), 1),
+    )
     numerator = torch.stack(
         [
             trainer.model.score_blocks(
@@ -501,6 +578,7 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
                 "first_block",
                 "1",
                 torch.tensor([a.block_index]),
+                temperatures=trainer.model.temperature(_condition(trainer.model, 1)),
             )[0]
             for i, a in enumerate(actions)
         ]
@@ -587,7 +665,7 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     monkeypatch.setattr(analyzer, "submit", submit)
     monkeypatch.setattr(analyzer, "result", result)
     monkeypatch.setattr(analyzer, "tree_log_probability", lambda *args: -0.5)
-    trajectories = policy.rollouts(1)
+    trajectories = policy.rollouts(1, beta=torch.ones(1), preferences=torch.ones(1, 1))
     assert events == [
         "forward",
         "collect",
@@ -599,3 +677,7 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     ]
     assert trajectories[0].valid and not pending
     assert [step.log_pb for step in trajectories[0].steps] == [-0.5, -0.5]
+
+
+def _condition(model, count):
+    return model.encode_condition(torch.ones(count), torch.ones(count, 1))

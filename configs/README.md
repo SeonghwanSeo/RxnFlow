@@ -10,7 +10,7 @@ RxnFlow merges a YAML file with built-in defaults. `qed.yaml` is the minimal exa
 
 The shallow top-level `property_penalty` mapping accepts `mw`, `tpsa`, `hbd`, `hba`, `logp`, `rotatable_bonds`, `rings`, `aromatic_rings`, and `heavy_atoms`. These are hard upper bounds checked on each actual candidate product before scoring, for FirstBlock, UniReaction, and BiReaction. Intermediate descriptors describe the synthon, with dummy isotope labels excluded from mass. Terminal descriptors describe the final molecule. They are not additive reactant estimates or reward penalties.
 
-`reward.exponent` and `reward.floor` control trajectory-balance reward scaling. `reward.settings` is expanded into the explicitly selected local `RewardFunction` constructor; YAML never imports a reward class.
+`reward.exponent` is a positive scalar beta or a two-element uniform interval `[low, high]`; `reward.floor` is applied before exponentiation. `reward.preferences` is either null (Dirichlet(1), automatically `[1]` for a single objective) or fixed weights summing to one in `RewardFunction.objectives` order. These are external training settings, not model encoder parameters. Sampling supplies `--beta` and `--preferences` explicitly. `reward.settings` is expanded into the explicitly selected local `RewardFunction` constructor; YAML never imports a reward class.
 
 `training.retrosynthesis_workers` controls the local CPU process pool used to calculate backward probabilities. Set it to `0` for synchronous execution.
 

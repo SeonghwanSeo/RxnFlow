@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import torch
 import yaml
 from rdkit import Chem
 
@@ -18,23 +19,34 @@ from rxnflow.reward import QEDReward, RewardFunction, evaluate_rewards
 
 
 class AtomCountReward(RewardFunction):
-    def score(self, molecules: list[Chem.Mol]) -> list[float]:
-        return [float(mol.GetNumHeavyAtoms()) for mol in molecules]
+    objectives = ("score",)
+
+    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
+        return torch.tensor(
+            [float(mol.GetNumHeavyAtoms()) for mol in molecules], dtype=torch.float32
+        ).reshape(-1, 1)
 
 
 class BrokenReward(RewardFunction):
-    def score(self, molecules: list[Chem.Mol]) -> list[float]:
-        return [-1.0 for _ in molecules]
+    objectives = ("score",)
+
+    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
+        return torch.tensor([-1.0 for _ in molecules], dtype=torch.float32).reshape(-1, 1)
 
 
 class ScaledAtomCountReward(RewardFunction):
+    objectives = ("score",)
+
     def __init__(self, scale: float, options: dict[str, bool]):
         self.scale = scale
         self.options = options
 
-    def score(self, molecules: list[Chem.Mol]) -> list[float]:
+    def score(self, molecules: list[Chem.Mol]) -> torch.Tensor:
         sign = 1.0 if self.options["positive"] else -1.0
-        return [sign * self.scale * mol.GetNumHeavyAtoms() for mol in molecules]
+        return torch.tensor(
+            [sign * self.scale * mol.GetNumHeavyAtoms() for mol in molecules],
+            dtype=torch.float32,
+        ).reshape(-1, 1)
 
 
 def test_config_round_trip_and_validation(tmp_path: Path) -> None:
@@ -69,7 +81,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert loaded.reward.exponent == 8
     assert loaded.property_penalty == {"tpsa": 140.0}
     reward = ScaledAtomCountReward(**loaded.reward.settings)
-    assert evaluate_rewards(reward, [Chem.MolFromSmiles("CCO")])[0] == [6.0]
+    assert evaluate_rewards(reward, [Chem.MolFromSmiles("CCO")])[0].tolist() == [[6.0]]
     with pytest.raises(ValueError):
         DataConfig(max_atoms=0).validate()
     with pytest.raises(ValueError):
@@ -140,7 +152,17 @@ def test_checked_in_minimal_and_complete_configs_load() -> None:
 def test_zero_replay_capacity_disables_storage() -> None:
     TrainingConfig(replay_capacity=0).validate()
     buffer = ReplayBuffer(0)
-    buffer.add([Trajectory(steps=[], final_smiles="CC")])
+    buffer.add(
+        [
+            Trajectory(
+                steps=[],
+                final_smiles="CC",
+                beta=1.0,
+                preferences=[1.0],
+                objective_rewards=[0.0],
+            )
+        ]
+    )
     assert len(buffer) == 0
     assert buffer.state_dict()["items"] == []
 
@@ -150,13 +172,13 @@ def test_qed_and_custom_reward_alignment() -> None:
     assert 0 < values[0] <= 1
     assert values[1] == 0
     custom, _ = evaluate_rewards(AtomCountReward(), [Chem.MolFromSmiles("CCO")])
-    assert custom == [3.0]
+    assert custom.tolist() == [[3.0]]
     filtered, _ = evaluate_rewards(
         AtomCountReward(),
         [Chem.MolFromSmiles("CCO"), Chem.MolFromSmiles("CCCC")],
         sample_filter=lambda mol: mol.GetNumHeavyAtoms() <= 3,
     )
-    assert filtered == [3.0, 0.0]
+    assert filtered.tolist() == [[3.0], [0.0]]
     with pytest.raises(ValueError, match="non-negative"):
         evaluate_rewards(BrokenReward(), [Chem.MolFromSmiles("CCO")])
 
@@ -169,7 +191,14 @@ def test_replay_wraparound_matches_fifo_and_restarts() -> None:
     reference = deque(maxlen=7)
     for start in range(0, 30, 5):
         items = [
-            Trajectory(steps=[], final_smiles=str(i)) for i in range(start, start + 5)
+            Trajectory(
+                steps=[],
+                final_smiles=str(i),
+                beta=1.0,
+                preferences=[1.0],
+                objective_rewards=[0.0],
+            )
+            for i in range(start, start + 5)
         ]
         buffer.add(items)
         reference.extend(items)
@@ -179,7 +208,9 @@ def test_replay_wraparound_matches_fifo_and_restarts() -> None:
         )
     restored = ReplayBuffer(7)
     restored.load_state_dict(buffer.state_dict())
-    next_item = Trajectory(steps=[], final_smiles="new")
+    next_item = Trajectory(
+        steps=[], final_smiles="new", beta=1.0, preferences=[1.0], objective_rewards=[0.0]
+    )
     buffer.add([next_item])
     restored.add([next_item])
     assert restored.sample(4, random.Random(7)) == buffer.sample(4, random.Random(7))
@@ -203,6 +234,9 @@ def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
         ],
         final_smiles="CC",
         reward=0.5,
+        beta=1.0,
+        preferences=[1.0],
+        objective_rewards=[0.5],
     )
     expected = trajectory.to_dict()
     buffer = ReplayBuffer(2)

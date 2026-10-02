@@ -15,7 +15,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--format", choices=("smi", "csv", "json"))
     parser.add_argument("--num-samples", type=int, default=100)
-    parser.add_argument("--temperature", type=float)
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        help="additional sampling temperature; independent of beta",
+    )
+    parser.add_argument("--beta", type=float, required=True)
+    parser.add_argument(
+        "--preferences",
+        type=float,
+        nargs="+",
+        required=True,
+        help="weights in the checkpoint objective order; sum to 1",
+    )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device")
     parser.add_argument(
@@ -24,7 +36,13 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     reward = QEDReward() if args.qed else None
     sampler = RxnFlowSampler(args.checkpoint, reward=reward, device=args.device)
-    results = sampler.sample(args.num_samples, args.temperature, args.seed)
+    results = sampler.sample(
+        args.num_samples,
+        args.temperature,
+        args.seed,
+        beta=args.beta,
+        preferences=args.preferences,
+    )
     sampler.write(results, args.output, args.format)
     print(f"wrote {len(results)} valid samples to {args.output}")
 

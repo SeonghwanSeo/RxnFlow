@@ -60,14 +60,12 @@ class MPNN(nn.Module):
         self.e2h = mlp(edge_dim, hidden_dim, hidden_dim, 2)
         # Environment-specific graph condition: properties, remaining capacity,
         # reaction count. These enter message passing through the virtual node.
-        self.c2h = mlp(
-            mol_feature_dim + 1 + max_reactions + 1, hidden_dim, hidden_dim, 2
-        )
+        self.c2h = mlp(mol_feature_dim + 1 + max_reactions + 1, hidden_dim, hidden_dim, 2)
         self.layers = nn.ModuleList([GINELayer(hidden_dim) for _ in range(num_layers)])
 
-    def forward(self, batch: GraphBatch) -> Tensor:
+    def forward(self, batch: GraphBatch, condition: Tensor) -> Tensor:
         nodes = self.x2h(batch.node_features)
-        condition = self.c2h(
+        virtual = self.c2h(
             torch.cat(
                 [
                     batch.mol_features,
@@ -79,7 +77,9 @@ class MPNN(nn.Module):
                 -1,
             )
         )
-        x = torch.cat([nodes, condition[:, None]], 1)
+        # External beta/preference conditioning enters once, at initialization.
+        virtual = virtual + condition
+        x = torch.cat([nodes, virtual[:, None]], 1)
         _, length, hidden = x.shape
         # Preserve directed bond order source -> target. Virtual edges have
         # embedded feature [1, 0, ...], as in the original implementation.

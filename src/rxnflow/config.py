@@ -45,13 +45,28 @@ class SubsamplingConfig:
 class RewardConfig:
     """Reward transformation and constructor settings."""
 
-    exponent: float = 32.0
+    # Scalar beta or [low, high] for a uniform draw per trajectory.
+    # OmegaConf does not support unions containing containers.
+    exponent: Any = 32.0
+    # None draws uniformly on the objective simplex (Dirichlet(1)).
+    preferences: list[float] | None = None
     floor: float = 1e-4
     settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        if self.exponent <= 0:
-            raise ValueError("reward.exponent must be positive")
+        bounds = self.exponent if isinstance(self.exponent, list) else [self.exponent]
+        if not bounds or any(not math.isfinite(x) or x <= 0 for x in bounds):
+            raise ValueError("reward.exponent must be positive and finite")
+        if isinstance(self.exponent, list) and (
+            len(bounds) != 2 or bounds[0] >= bounds[1]
+        ):
+            raise ValueError("reward.exponent range must be [low, high] with low < high")
+        if self.preferences is not None and (
+            not self.preferences
+            or any(not math.isfinite(x) or x < 0 for x in self.preferences)
+            or not math.isclose(sum(self.preferences), 1.0, abs_tol=1e-6)
+        ):
+            raise ValueError("reward.preferences must be non-negative and sum to 1")
         if self.floor <= 0:
             raise ValueError("reward.floor must be positive")
         if not isinstance(self.settings, dict):

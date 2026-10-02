@@ -54,7 +54,9 @@ class SynthesisPolicy:
             for name, library in env.blocks.items()
         }
 
-    def candidate_batch(self, states: list[MoleculeState]) -> ActionCategorical:
+    def candidate_batch(
+        self, states: list[MoleculeState], beta: Tensor, preferences: Tensor
+    ) -> ActionCategorical:
         """Retain sampled columns; mask logits instead of packing valid actions.
 
         One common draw per library is the agreed adaptation of CGFlow. Each
@@ -105,19 +107,14 @@ class SynthesisPolicy:
             )
             sizes.append(len(sample.indices))
 
-        if self.model.training:
-            embeddings = self.model.encode_graphs(
-                GraphBatch.from_graphs([graphs[key] for key in keys]).to(self.device)
-            )
-        else:
-            # Empty initial states can share an encoding during rollout.
-            unique = self.model.encode_graphs(
-                GraphBatch.from_graphs(list(graphs.values())).to(self.device)
-            )
-            lookup = {key: i for i, key in enumerate(graphs)}
-            embeddings = unique[
-                torch.tensor([lookup[key] for key in keys], device=self.device)
-            ]
+        # Graph/property preprocessing is shared, but identical molecules may
+        # have different beta/preferences and need separate neural encodings.
+        condition = self.model.encode_condition(beta, preferences)
+        embeddings = self.model.encode_graphs(
+            GraphBatch.from_graphs([graphs[key] for key in keys]).to(self.device),
+            condition,
+        )
+        temperatures = self.model.temperature(condition)
         block_embeddings = {}
         if features:
             fps, props, types = zip(*features, strict=True)
@@ -134,7 +131,7 @@ class SynthesisPolicy:
         action_groups = []
         for name, rows in action_rows.items():
             rows = torch.tensor(sorted(rows), device=self.device)
-            query = self.model.action_query(embeddings[rows], name)
+            query = self.model.action_query(embeddings[rows], name, temperatures[rows])
             libraries = list(action_libraries.get(name, {}))
             if libraries:
                 # CGFlow: a single group matrix over concatenated libraries.
@@ -175,9 +172,11 @@ class SynthesisPolicy:
                     exploration,
                 )
             )
-        return ActionCategorical(action_groups, embeddings)
+        return ActionCategorical(action_groups, embeddings, temperatures)
 
-    def observed_logits(self, embeddings: Tensor, actions: list[Action]) -> Tensor:
+    def observed_logits(
+        self, embeddings: Tensor, actions: list[Action], temperatures: Tensor
+    ) -> Tensor:
         """Score numerator edges independently of the denominator subsample.
 
         This is RxnFlow's _cal_action_logits, batched by reaction/library to
@@ -224,7 +223,9 @@ class SynthesisPolicy:
         logits = embeddings.new_zeros(len(actions))
         for name, rows in by_reaction.items():
             indices = torch.tensor(rows, device=self.device)
-            query = self.model.action_query(embeddings[indices], name)
+            query = self.model.action_query(
+                embeddings[indices], name, temperatures[indices]
+            )
             values = (
                 query.squeeze(1)
                 if actions[rows[0]].kind == ActionKind.UNI_REACTION
@@ -235,16 +236,28 @@ class SynthesisPolicy:
 
     @torch.no_grad()
     def choose_actions(
-        self, states: list[MoleculeState], temperature: float, random_action_prob: float
+        self,
+        states: list[MoleculeState],
+        temperature: float,
+        random_action_prob: float,
+        beta: Tensor,
+        preferences: Tensor,
     ) -> list[Action | None]:
-        return self.candidate_batch(states).sample(
+        return self.candidate_batch(states, beta, preferences).sample(
             temperature, random_action_prob, self.config.subsampling.importance_temp
         )
 
     def choose_action(
-        self, state: MoleculeState, temperature: float, random_action_prob: float
+        self,
+        state: MoleculeState,
+        temperature: float,
+        random_action_prob: float,
+        beta: Tensor,
+        preferences: Tensor,
     ) -> Action:
-        action = self.choose_actions([state], temperature, random_action_prob)[0]
+        action = self.choose_actions(
+            [state], temperature, random_action_prob, beta, preferences
+        )[0]
         if action is None:
             raise NoValidActions(
                 "the sampled action space has no budget-feasible continuation"
@@ -252,22 +265,40 @@ class SynthesisPolicy:
         return action
 
     def action_log_probabilities(
-        self, states: list[MoleculeState], actions: list[Action]
+        self,
+        states: list[MoleculeState],
+        actions: list[Action],
+        beta: Tensor,
+        preferences: Tensor,
     ) -> Tensor:
-        categorical = self.candidate_batch(states)
-        numerator = self.observed_logits(categorical.embeddings, actions)
+        categorical = self.candidate_batch(states, beta, preferences)
+        numerator = self.observed_logits(
+            categorical.embeddings, actions, categorical.temperatures
+        )
         return (numerator - categorical.log_partition()).clamp(max=0.0)
 
-    def action_log_probability(self, state: MoleculeState, action: Action) -> Tensor:
-        return self.action_log_probabilities([state], [action])[0]
+    def action_log_probability(
+        self, state: MoleculeState, action: Action, beta: Tensor, preferences: Tensor
+    ) -> Tensor:
+        return self.action_log_probabilities([state], [action], beta, preferences)[0]
 
     def rollout(
         self,
         temperature: float = 1.0,
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
+        *,
+        beta: Tensor,
+        preferences: Tensor,
     ) -> Trajectory:
-        return self.rollouts(1, temperature, random_action_prob, analyze_backward)[0]
+        return self.rollouts(
+            1,
+            temperature,
+            random_action_prob,
+            analyze_backward,
+            beta=beta,
+            preferences=preferences,
+        )[0]
 
     def rollouts(
         self,
@@ -275,9 +306,17 @@ class SynthesisPolicy:
         temperature: float = 1.0,
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
+        *,
+        beta: Tensor,
+        preferences: Tensor,
     ) -> list[Trajectory]:
         if count <= 0:
             raise ValueError("rollout count must be positive")
+        assert beta.shape == (count,)
+        assert preferences.shape == (count, self.model.num_objectives)
+        # Transfer once; retain Python metadata for serialization at termination.
+        beta_values, preference_values = beta.tolist(), preferences.tolist()
+        beta, preferences = beta.to(self.device), preferences.to(self.device)
         states = [self.env.initial_state() for _ in range(count)]
         steps: list[list[Transition]] = [[] for _ in range(count)]
         reasons: list[str | None] = [None] * count
@@ -307,7 +346,11 @@ class SynthesisPolicy:
             if not active:
                 break
             selected = self.choose_actions(
-                [states[index] for index in active], temperature, random_action_prob
+                [states[index] for index in active],
+                temperature,
+                random_action_prob,
+                beta[active],
+                preferences[active],
             )
             # RxnFlow pipeline: the previous reverse search runs while this
             # iteration encodes states and samples actions on the model device.
@@ -350,6 +393,8 @@ class SynthesisPolicy:
             trajectories.append(
                 Trajectory(
                     steps=steps[index],
+                    beta=beta_values[index],
+                    preferences=preference_values[index],
                     final_smiles=state.smiles if reasons[index] is None else "",
                     valid=reasons[index] is None,
                     invalid_reason=reasons[index],
