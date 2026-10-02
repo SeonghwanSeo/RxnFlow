@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 class Worker:
     """Enumerate catalog-supported routes within the supplied reaction budget.
 
-    The shortest route found bounds further exploration. Known generated routes
-    remain available even when they are longer than that bound. Candidates must
-    match a catalog entry and reproduce the product in the forward direction.
+    The fewest synthons found bounds further exploration; unary reactions do not
+    consume that budget. Known generated routes remain available above the bound.
+    Candidates must match a catalog entry and reproduce the product forward.
     Return reverse-ordered edge lists; probability weighting belongs to the policy.
     """
 
@@ -31,8 +31,9 @@ class Worker:
             for library_name, library in env.synthons.items()
         }
         self.brick_types = set(env.brick_types)
-        self._memo: dict[tuple[str, int, int], list[BackwardTrajectory]] = {}
-        self._min_depth = 0
+        self._memo: dict[tuple[str, int, int, int], list[BackwardTrajectory]] = {}
+        self._max_depth = 0
+        self._min_synthons = 0
 
     def run(
         self,
@@ -40,28 +41,36 @@ class Worker:
         max_reactions: int,
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
-        self._min_depth = max_reactions + 1  # Include FirstSynthon.
+        self._max_depth = max_reactions + 1  # Bound reaction cycles independently.
+        self._min_synthons = max_reactions + 1  # FirstSynthon plus binary reactions.
         if known_trajectories:
-            self._min_depth = min(self._min_depth, min(map(len, known_trajectories)))
+            self._min_synthons = min(
+                self._min_synthons,
+                min(
+                    sum(not action.action_type.is_unirxn for action, _ in route)
+                    for route in known_trajectories
+                ),
+            )
         self._memo = {}
         mol = Chem.MolFromSmiles(smiles) if smiles else None
         if mol is None:
             return []
-        return self._dfs(mol, Chem.MolToSmiles(mol), 1, known_trajectories)
+        return self._dfs(mol, Chem.MolToSmiles(mol), 1, 1, known_trajectories)
 
     def _dfs(
         self,
         mol: Chem.Mol,
         canonical: str,
         depth: int,
+        num_synthons: int,
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
-        # 1. Reuse results under the same depth bound and preserve known routes.
-        if depth > self._min_depth:
+        # 1. Count removed binary reactants plus the eventual FirstSynthon.
+        # UniReaction advances depth but leaves this synthon count unchanged.
+        if depth > self._max_depth or num_synthons > self._min_synthons:
             return []
-        # A shorter route can tighten the bound during DFS. Results computed
-        # under the previous bound must not reopen its deeper branches.
-        key = (canonical, depth, self._min_depth)
+        # Cache only under the same remaining reaction and synthon budgets.
+        key = (canonical, depth, num_synthons, self._min_synthons)
         if known_trajectories is None and key in self._memo:
             return self._memo[key]
         trajectories = list(known_trajectories or [])
@@ -82,7 +91,7 @@ class Worker:
             if library_name in self.brick_types:
                 synthon_index = self.synthon_search[library_name].get(brick_smiles)
                 if synthon_index is not None:
-                    self._min_depth = depth
+                    self._min_synthons = num_synthons
                     action = Action(
                         ActionType.FIRST_SYNTHON,
                         library_name=library_name,
@@ -93,16 +102,12 @@ class Worker:
                         branch_keys.add((action, ""))
 
         # 3. Reverse unary transformations and verify each precursor forward.
-        if depth < self._min_depth:
+        if depth < self._max_depth:
             for name, reaction in self.uni_reactions.items():
-                if depth >= self._min_depth:
-                    break
                 expected = () if reaction.output_type is None else (reaction.output_type,)
                 if signature != expected:
                     continue
                 for products in reaction.run_reverse(mol):
-                    if depth >= self._min_depth:
-                        break
                     if len(products) != 1:
                         continue
                     precursor = products[0]
@@ -123,7 +128,9 @@ class Worker:
                         or Chem.MolToSmiles(forward_product) != canonical
                     ):
                         continue
-                    suffixes = self._dfs(precursor, parent_smiles, depth + 1)
+                    suffixes = self._dfs(
+                        precursor, parent_smiles, depth + 1, num_synthons
+                    )
                     if suffixes:
                         trajectories.extend(
                             [(action, parent_smiles), *suffix] for suffix in suffixes
@@ -132,10 +139,10 @@ class Worker:
 
             # 4. Reverse couplings, recover the oriented synthon, and find its row.
             for name, action in self.bi_reactions.items():
-                if depth >= self._min_depth:
+                if num_synthons >= self._min_synthons:
                     break
                 for child_mol, synthon_mol in action.run_reverse(mol):
-                    if depth >= self._min_depth:
+                    if num_synthons >= self._min_synthons:
                         break
                     child_canonical = Chem.MolToSmiles(child_mol)
                     synthon_canonical = Chem.MolToSmiles(synthon_mol)
@@ -172,7 +179,9 @@ class Worker:
                         or Chem.MolToSmiles(forward_product) != canonical
                     ):
                         continue
-                    suffixes = self._dfs(child_mol, child_canonical, depth + 1)
+                    suffixes = self._dfs(
+                        child_mol, child_canonical, depth + 1, num_synthons + 1
+                    )
                     if suffixes:
                         trajectories.extend(
                             [(reverse_action, child_canonical), *suffix]

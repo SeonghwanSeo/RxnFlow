@@ -143,6 +143,8 @@ class TrainingConfig:
     checkpoint_every: int = 500
     log_every: int = 10
     retrosynthesis_workers: int = 4
+    # Route mass is divided by this factor for each additional synthon.
+    backward_synthon_penalty: float = 100.0
 
     def validate(self) -> None:
         positive_ints = {
@@ -160,6 +162,13 @@ class TrainingConfig:
             raise ValueError("training.replay_capacity must be non-negative")
         if self.retrosynthesis_workers < 0:
             raise ValueError("training.retrosynthesis_workers must be non-negative")
+        if (
+            not math.isfinite(self.backward_synthon_penalty)
+            or self.backward_synthon_penalty <= 0
+        ):
+            raise ValueError(
+                "training.backward_synthon_penalty must be finite and positive"
+            )
         if any(
             value <= 0
             for value in (

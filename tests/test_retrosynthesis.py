@@ -18,9 +18,9 @@ from rxnflow.gflownet.policy import RxnFlowPolicy
 from rxnflow.models import RxnFlowModel
 
 
-class UnexpectedUnaryReaction:
+class UnexpectedBinaryReaction:
     def run_reverse(self, mol):
-        raise AssertionError("deeper reverse reaction was not pruned")
+        raise AssertionError("extra synthon decomposition was not pruned")
 
 
 @pytest.fixture
@@ -33,18 +33,22 @@ def policy(prepared_env):
     )
 
 
-def test_depth_weighted_backward_probability(policy) -> None:
+@pytest.mark.parametrize("penalty", [100.0, 1000.0])
+def test_synthon_weighted_backward_probability(policy, penalty) -> None:
+    policy.config.training.backward_synthon_penalty = penalty
     selected = Action(ActionType.UNIRXN_TRANSFORM, reaction="selected")
     alternative = Action(ActionType.UNIRXN_TRANSFORM, reaction="alternative")
     first = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
+    coupling = Action(
+        ActionType.BIRXN_LINKER, reaction="join", library_name="1-1", synthon_index=0
+    )
     routes = [
         [(selected, "one"), (first, "")],
-        [(selected, "one"), (alternative, "two"), (first, "")],
+        [(selected, "one"), (coupling, "two"), (first, "")],
         [(alternative, "two"), (selected, "one"), (first, "")],
     ]
     value = policy.calc_bck_logprob(selected, routes, "one")
-    n = policy.env.num_total_actions
-    expected = math.log(n**-1 + n**-2) - math.log(n**-1 + 2 * n**-2)
+    expected = math.log(1 + 1 / penalty) - math.log(2 + 1 / penalty)
     assert math.isclose(value, expected)
     assert policy.calc_bck_logprob(first, [[(first, "")]], "") == 0.0
     assert policy.calc_bck_logprob(selected, [], "one") is None
@@ -54,8 +58,8 @@ def test_depth_weighted_backward_probability(policy) -> None:
 def test_known_routes_are_preserved_and_reaction_budget_bounds_dfs() -> None:
     brick = "[1*]C"
     env = SimpleNamespace(
-        uni_reactions={"unexpected": UnexpectedUnaryReaction()},
-        bi_reactions={},
+        uni_reactions={},
+        bi_reactions={"unexpected": UnexpectedBinaryReaction()},
         synthons={"1": SimpleNamespace(smiles=["*C"])},
         brick_types=["1"],
     )
@@ -63,7 +67,7 @@ def test_known_routes_are_preserved_and_reaction_budget_bounds_dfs() -> None:
     routes = analyzer.run(brick, max_reactions=0)
     first = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     assert routes == [[(first, "")]]
-    # A catalog origin tightens a larger budget before any reverse chemistry.
+    # A catalog origin prunes extra synthons, independently of reaction depth.
     assert analyzer.run(brick, max_reactions=3) == routes
     # Seeding an already discoverable branch must not duplicate its mass.
     assert analyzer.run(brick, max_reactions=0, known_trajectories=routes) == routes
@@ -105,7 +109,9 @@ def test_reverse_search_finds_catalog_match_after_second_decomposition() -> None
     )
 
 
-def test_short_route_prunes_deeper_search_but_preserves_generated_route() -> None:
+def test_same_synthon_count_allows_more_unary_steps_and_preserves_generated_route() -> (
+    None
+):
     close = UniReaction("close", "[#6:1]-[1*]>>[#6:1]", "[#6:1]>>[#6:1]-[1*]", 1, None)
     activate = UniReaction(
         "activate",
@@ -123,7 +129,7 @@ def test_short_route_prunes_deeper_search_but_preserves_generated_route() -> Non
     analyzer = Worker(env)
     assert [len(route) for route in analyzer.run("CC", max_reactions=1)] == [2]
     routes = analyzer.run("CC", max_reactions=2)
-    assert list(map(len, routes)) == [2]
+    assert sorted(map(len, routes)) == [2, 3]
     assert all(route[-1][0].action_type == ActionType.FIRST_SYNTHON for route in routes)
     assert all(route[-1][1] == "" for route in routes)
     # The longer generated history remains represented in the backward mass.
@@ -166,7 +172,7 @@ def test_same_action_from_different_parents_has_distinct_backward_probability(
     first = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
     routes = [
         [(action, "first"), (first, "")],
-        [(action, "second"), (first, "")],
+        [(action, "second"), (action, "third"), (first, "")],
     ]
     for parent in ("first", "second"):
         assert math.isclose(policy.calc_bck_logprob(action, routes, parent), -math.log(2))

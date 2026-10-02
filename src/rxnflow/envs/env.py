@@ -141,19 +141,6 @@ class SynthesisEnv:
         self.reaction_action_spaces = {
             int(site): load_space(pairs) for site, pairs in spaces["reaction"].items()
         }
-        # Derived from connected spaces, so counts cannot drift from libraries.
-        # This is a branching scale for backward weights, not a state action count.
-        self.num_total_actions = max(
-            2,
-            len(self.uni_reactions)
-            + sum(subspace.num_actions for subspace in self.initial_action_space)
-            + sum(
-                subspace.num_actions
-                for space in self.reaction_action_spaces.values()
-                for subspace in space
-                if subspace.action_type.is_birxn
-            ),
-        )
         # Prepared artifacts are immutable until the next preparation. Reading
         # this saved signature avoids hashing the full feature archive at startup.
         self.signature = json.loads((self.env_dir / "signature.json").read_text())

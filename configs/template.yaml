@@ -56,3 +56,5 @@ training:
   checkpoint_every: 500
   log_every: 10
   retrosynthesis_workers: 4
+  # Each additional synthon divides reverse-route mass by this factor.
+  backward_synthon_penalty: 100.0

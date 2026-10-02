@@ -133,9 +133,7 @@ def test_coupling_deprotection_coupling_and_provenance(prepared_env: Path) -> No
     assert (terminal.num_synthons, terminal.num_reactions) == (3, 3)
     assert State.from_dict(terminal.to_dict()).to_dict() == terminal.to_dict()
     assert "*" not in terminal.smiles and not env.get_action_space(terminal)
-    assert all(
-        env.synthons[g.name[1]].is_brick for g in env.get_action_space(activated)
-    )
+    assert all(env.synthons[g.name[1]].is_brick for g in env.get_action_space(activated))
     public = env.action_to_dict(first)
     assert public["synthon_ids"] == ["EN-A", "EN-A2"]
     assert public["building_blocks"][0] == {"id": "EN-A", "smiles": "NCCN"}
@@ -577,16 +575,6 @@ def test_prepared_action_spaces_and_signature(prepared_env, monkeypatch):
         ]
         assert [s.name for s in env.reaction_action_spaces[site]] == expected
         assert [list(pair) for pair in expected] == spaces["reaction"][str(site)]
-    expected_count = len(env.uni_reactions) + sum(
-        len(env.synthons[n]) for n in env.brick_types
-    )
-    expected_count += sum(
-        len(synthon)
-        for r in env.bi_reactions.values()
-        for synthon in env.synthons.values()
-        if synthon.attachment_type == r.attachment_type
-    )
-    assert env.num_total_actions == max(2, expected_count)
 
 
 def test_missing_spec_and_failed_rebuild_do_not_load_stale_spaces(

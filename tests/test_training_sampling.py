@@ -724,6 +724,8 @@ def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
 
     def submit(key, smiles, depth, known):
         events.append("submit")
+        # Reverse alternatives may use more reactions than the observed prefix.
+        assert depth == trainer.env.max_reactions
         # A parent's routes must be collected before extending the next edge.
         assert known[0][0][1] == ("" if smiles == middle.smiles else middle.smiles)
         if smiles == terminal.smiles:

@@ -458,21 +458,22 @@ class RxnFlowPolicy:
         trajectories: list[BackwardTrajectory],
         parent_smiles: str,
     ) -> float | None:
-        """Normalize depth-weighted route mass for the observed reverse edge."""
-        # TODO: Review action-space-dependent route weights and their consistency
-        # with trajectory limits; retain the current approximation until then.
-        numerator = 0.0
-        denominator = 0.0
+        """Normalize synthon-count-weighted route mass for the observed reverse edge."""
+        # This is an explicit route preference, independent of catalog size.
+        # TODO: Review backward consistency with trajectory limits and search approximation.
+        log_penalty = math.log(self.config.training.backward_synthon_penalty)
+        numerator = denominator = -math.inf
         for trajectory in trajectories:
-            # Exclude the root edge: the weight measures remaining actions to
-            # the empty state. FirstSynthon therefore has weight N**0 = 1.
-            weight = self.env.num_total_actions ** (-(len(trajectory) - 1))
-            denominator += weight
+            num_synthons = sum(not edge.action_type.is_unirxn for edge, _ in trajectory)
+            # Every complete route includes FirstSynthon. Subtract its common
+            # count; extra UniReactions leave the route's weight unchanged.
+            log_weight = -(num_synthons - 1) * log_penalty
+            denominator = np.logaddexp(denominator, log_weight)
             if trajectory[0] == (action, parent_smiles):
-                numerator += weight
-        if numerator <= 0 or denominator <= 0:
+                numerator = np.logaddexp(numerator, log_weight)
+        if numerator == -math.inf:
             return None
-        return math.log(numerator) - math.log(denominator)
+        return float(numerator - denominator)
 
     def rollout(
         self,
@@ -576,10 +577,13 @@ class RxnFlowPolicy:
                     self.env.retro_analyzer.submit(
                         index,
                         next_state.smiles,
-                        next_state.num_reactions,
+                        self.env.max_reactions,
                         [
                             [(action, state.smiles), *route]
                             for route in backward_trajectories[index]
+                            # Allow different lengths, but do not extend an
+                            # alternative beyond the configured reaction cap.
+                            if len(route) <= self.env.max_reactions
                         ],
                     )
 
