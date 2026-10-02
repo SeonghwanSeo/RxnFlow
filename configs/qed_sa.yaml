@@ -1,0 +1,29 @@
+# QED/SA training with reward-exponent and preference conditioning.
+data:
+  env_dir: /path/to/prepared/enamine
+  max_atoms: 50
+
+run:
+  output_dir: runs/qed_sa
+  device: auto
+  seed: 0
+
+reward:
+  beta: "uniform(1,64)"
+  preferences: "uniform"
+  scalarization: mul
+  settings: {}
+
+property_penalty:
+  mw: 500
+
+subsampling:
+  sampling_ratio: 0.05
+
+generation:
+  max_reactions: 3
+
+training:
+  steps: 3000
+  batch_size: 64
+  replay_batch_size: 64

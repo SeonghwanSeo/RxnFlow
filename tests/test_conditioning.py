@@ -322,3 +322,39 @@ def test_reward_scalarization_zero_weights_and_floor():
     assert RewardConfig().scalarization == "mul"
     with pytest.raises(ValueError, match="scalarization"):
         RewardConfig(scalarization="unknown").validate()
+
+
+def test_qed_sa_example_conditioned_training_and_sampling(prepared_env, tmp_path):
+    from rdkit import Chem
+    from rdkit.Contrib.SA_Score import sascorer
+
+    from examples.qed_sa import QEDSAReward
+
+    reward = QEDSAReward()
+    mol = Chem.MolFromSmiles("CCO")
+    np.testing.assert_allclose(
+        reward.score([mol]),
+        [[QED.qed(mol), (10 - sascorer.calculateScore(mol)) / 9]],
+        rtol=1e-6,
+    )
+    assert reward.score([]).shape == (0, 2)
+    config = Config.from_file("configs/qed_sa.yaml")
+    config.data.env_dir = str(prepared_env)
+    config.output_dir = str(tmp_path / "qed_sa")
+    config.device = "cpu"
+    config.model = ModelConfig(num_emb=16, num_layers=1, num_synthon_emb=16)
+    config.training = TrainingConfig(
+        batch_size=4, replay_batch_size=0, retrosynthesis_workers=0
+    )
+    trainer = RxnFlowTrainer(config, reward)
+    sampler = RxnFlowSampler(trainer.run(1), reward=reward)
+    results = sampler.sample(
+        2, beta=("fixed", [32.0]), preferences=("fixed", [0.3, 0.7]), seed=5
+    )
+    for result in results:
+        assert result.metadata["beta"] == 32.0
+        assert result.metadata["preferences"] == pytest.approx([0.3, 0.7])
+        scores = result.metadata["objective_rewards"]
+        assert result.reward == pytest.approx(
+            max(scores["qed"], 1e-4) ** 0.3 * max(scores["sa"], 1e-4) ** 0.7
+        )

@@ -140,6 +140,14 @@ reward:
 
 `beta` controls reward sharpening; it can be fixed, such as `"32"`, or sampled uniformly. `preferences: "uniform"` draws weights uniformly on the simplex. Use `"fixed(0.3,0.7)"` for fixed weights in a two-objective task, or `"dirichlet(0.5)"` for a different preference distribution.
 
+The QED/SA example returns `[QED, (10 - SA score) / 9]`, both larger-is-better. It uses RDKit's bundled SA scorer and requires no additional graph dependencies. Set `data.env_dir` in `configs/qed_sa.yaml`, then run:
+
+```bash
+python examples/qed_sa.py --config configs/qed_sa.yaml
+```
+
+This configuration samples `beta` uniformly from 1 to 64 and preferences uniformly on the simplex, with `mul` scalarization. Beta and preferences condition the virtual node and the learned logit scale through the existing model branches; the additional sampling softmax temperature stays at 1. At sampling time, fixed beta and preferences select a desired trade-off.
+
 ## Sample molecules
 
 Generate molecules from a trained checkpoint:
