@@ -27,7 +27,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["build>=1", "pytest>=8", "ruff>=0.5", "wheel>=0.45"]
+dev = ["build>=1", "ruff>=0.5", "wheel>=0.45"]
 
 [tool.setuptools.dynamic]
 version = { attr = "rxnflow.__version__" }
@@ -42,8 +42,3 @@ ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]
-"tests/**" = ["B011"]
-
-[tool.pytest.ini_options]
-addopts = "-ra"
-markers = ["heavy: requires the local Enamine stock catalog and substantial compute"]
