@@ -28,15 +28,6 @@ from rxnflow.envs.graph import GraphBatch, GraphData, molecule_to_graph_data
 from rxnflow.models import RxnFlowModel
 
 
-def resolve_device(value: str) -> torch.device:
-    if value == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(value)
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is unavailable")
-    return device
-
-
 @dataclass
 class ActionLogits:
     subspace: ActionSubspace

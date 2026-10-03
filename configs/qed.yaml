@@ -2,17 +2,9 @@
 data:
   env_dir: /path/to/prepared/env/
 
-run:
-  output_dir: runs/qed
-  device: auto
-  seed: 0
-
 reward:
   beta: "32"
   settings: {}
 
 property_penalty:
   mw: 500
-
-training:
-  steps: 1000

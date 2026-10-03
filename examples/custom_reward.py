@@ -31,5 +31,6 @@ if __name__ == "__main__":
     trainer = RxnFlowTrainer(
         config,
         reward,
+        output_dir="runs/custom_reward",
     )
-    trainer.run()
+    trainer.run(1000)

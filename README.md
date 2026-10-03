@@ -4,11 +4,11 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
-RxnFlow uses generative flow networks to design molecules through synthesis pathways. Train it with a molecular reward function, then sample molecules together with their reaction paths and building-block sources.
+RxnFlow uses generative flow networks to design molecules through synthesis pathways. Optimize molecular properties with your own reward function and generate molecules with their synthesis routes.
 
 This repository accompanies the ICLR paper **Generative Flows on Synthetic Pathway for Drug Design** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[Paper](https://arxiv.org/abs/2410.04542)]
 
-**v0.9.0 is a preview release of the core architecture behind Hyper Screening X (HSX), developed with eMolecules and HITS. It does not include the full implementation described in the HSX preprint.**
+This is a preview of the core framework behind Hyper Screening X (HSX), developed with eMolecules and HITS. The preprint is coming soon.
 
 ## Installation
 
@@ -18,61 +18,51 @@ RxnFlow requires Python 3.10 or later. Install from the repository root:
 pip install -e .
 ```
 
-### Data preparation
+## Prepare a synthesis environment
 
 Prepare an eMolecules or Enamine building-block catalog with the supplied reaction templates:
 
 ```bash
 python scripts/prepare.py \
   --building-blocks /path/to/building_blocks.smi \
-  --config data/templates/basic/config.yaml \
   --env-dir /path/to/prepared/environment \
-  --num-workers 16 \
-  --max-atoms 30 \
-  --min-library-size 10
+  --num-workers 16
 ```
 
-Set `data.env_dir` and `run.output_dir` in your chosen configuration. See the [environment guide](docs/environment.md) for catalog format and preparation details.
+Set `data.env_dir` in your training configuration to the prepared directory. See [environment preparation](docs/environment.md) for catalog format, filters and custom reaction templates.
 
 ## Single-objective optimization
 
 Train with QED as the reward:
 
 ```bash
-python examples/qed.py --config configs/qed.yaml
+python examples/qed.py --config configs/qed.yaml --steps 1000 --output-dir runs/qed
 ```
 
-See [training and restart](docs/training.md) and [custom rewards](docs/rewards.md) for other objectives.
+See [training settings and resuming a run](docs/training.md) or [define your own reward](docs/rewards.md).
 
 ## Multi-objective optimization
 
 Train on QED and synthetic accessibility, with SA reward `(10 - SA score) / 9`:
 
 ```bash
-python examples/qed_sa.py --config configs/qed_sa.yaml
+python examples/qed_sa.py --config configs/qed_sa.yaml --steps 3000 --output-dir runs/qed_sa
 ```
 
-The default reward is the product of QED and SA rewards, with beta sampled uniformly from 1 to 64. Preference conditioning is optional: set `reward.moo_preferences: "uniform"` to train across trade-offs. See [MOO rewards and conditioning](docs/rewards.md).
+This example uses the product of the two rewards and samples the reward exponent beta uniformly from 1 to 64. To learn different objective trade-offs, set `reward.moo_preferences: "uniform"`. See [multi-objective rewards and conditioning](docs/rewards.md#combine-multiple-objectives).
 
 ## Sampling
 
-Replace the checkpoint path with your trained model and choose a beta value from its training range:
+Generate molecules from a trained checkpoint and save them with their routes to CSV:
 
 ```bash
 python scripts/sample.py \
   --checkpoint runs/qed_sa/checkpoints/latest.ckpt \
   --num-samples 100 \
-  --beta 32 \
-  --output samples.json
+  --output samples.csv
 ```
 
-Both full training checkpoints and optionally [extracted sampling models](docs/training.md#extract-a-sampling-model) are accepted.
-
-For preference-conditioned checkpoints, use `--preferences "fixed(0.3,0.7)"` to choose a trade-off. See the [sampling guide](docs/training.md#sampling) for formats and reward evaluation.
-
-## Documentation
-
-[Environment preparation](docs/environment.md) · [Configuration, training and sampling](docs/training.md) · [Custom rewards and MOO](docs/rewards.md)
+Omitted beta and preferences use their training settings. Use `--beta 32` to select a fixed exponent supported by the trained model. Both full checkpoints and [extracted sampling models](docs/training.md#extract-a-sampling-model) are accepted. See [sampling](docs/training.md#sampling) for batch size, objective preferences and output formats.
 
 ## Citation
 

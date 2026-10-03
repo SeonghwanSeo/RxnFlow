@@ -2,7 +2,6 @@
 
 import json
 import math
-import random
 
 import numpy as np
 import pytest
@@ -41,7 +40,7 @@ class TwoObjectiveReward(RewardFunction):
         ).reshape(-1, 2)
 
 
-def config_for(env_dir, output_dir):
+def config_for(env_dir):
     return Config(
         data=DataConfig(env_dir=str(env_dir), max_atoms=20),
         reward=RewardConfig(
@@ -57,9 +56,6 @@ def config_for(env_dir, output_dir):
             retrosynthesis_workers=0,
             learning_rate_logZ=0.001,
         ),
-        output_dir=str(output_dir),
-        device="cpu",
-        seed=31,
     )
 
 
@@ -79,7 +75,11 @@ def test_sampling_configuration_is_independent_of_encoder_range(tmp_path):
 
 def test_condition_encoding_reaches_all_three_branches(prepared_env, tmp_path):
     trainer = RxnFlowTrainer(
-        config_for(prepared_env, tmp_path / "encoding"), TwoObjectiveReward()
+        config_for(prepared_env),
+        TwoObjectiveReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
     )
     model = trainer.model
     beta = torch.tensor([1.0, 64.0, 128.0, 32.0])
@@ -138,17 +138,21 @@ def test_replay_snapshots_keep_conditions_and_objectives():
     trajectory.beta = 1.0
     restored = ReplayBuffer(2)
     restored.load_state_dict(json.loads(json.dumps(buffer.state_dict())))
-    sample = restored.sample(1, random.Random(1))[0]
+    sample = restored.sample(1, np.random.default_rng(1))[0]
     assert sample.to_dict() == expected
     sample.preferences[0] = 0.0
-    assert restored.sample(1, random.Random(1))[0].to_dict() == expected
+    assert restored.sample(1, np.random.default_rng(1))[0].to_dict() == expected
 
 
 def test_tb_uses_stored_conditions_and_objective_vector(
     prepared_env, tmp_path, monkeypatch
 ):
     trainer = RxnFlowTrainer(
-        config_for(prepared_env, tmp_path / "tb"), TwoObjectiveReward()
+        config_for(prepared_env),
+        TwoObjectiveReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
     )
     transition = Transition(State(), Action(ActionType.FIRST_SYNTHON), "CC", -0.5)
     trajectories = [
@@ -191,21 +195,30 @@ def test_tb_uses_stored_conditions_and_objective_vector(
 def test_multiobjective_training_restart_and_fixed_condition_sampling(
     prepared_env, tmp_path, method
 ):
-    config = config_for(prepared_env, tmp_path / "training")
+    config = config_for(prepared_env)
     config.reward.moo_scalarization = method
-    trainer = RxnFlowTrainer(config, TwoObjectiveReward())
+    trainer = RxnFlowTrainer(
+        config, TwoObjectiveReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    )
     checkpoint = trainer.run(2)
     before = trainer.replay.state_dict()
     trainer.run(1)
     expected_model = {k: v.clone() for k, v in trainer.model.state_dict().items()}
     expected_replay = trainer.replay.state_dict()
-    restarted = RxnFlowTrainer(config, TwoObjectiveReward(), restart=checkpoint)
+    restarted = RxnFlowTrainer(
+        config,
+        TwoObjectiveReward(),
+        output_dir=tmp_path / "resumed",
+        device="cpu",
+        seed=7,
+    )
+    restarted.run(0, resume_from_checkpoint=checkpoint)
     assert restarted.replay.state_dict() == before
     restarted_checkpoint = restarted.run(1)
     for key, value in restarted.model.state_dict().items():
         torch.testing.assert_close(value, expected_model[key], rtol=0, atol=0)
     assert restarted.replay.state_dict() == expected_replay
-    for trajectory in restarted.replay.sample(100, random.Random(0)):
+    for trajectory in restarted.replay.sample(100, np.random.default_rng(0)):
         assert 4 <= trajectory.beta <= 128
         assert sum(trajectory.preferences) == pytest.approx(2 if method == "mul" else 1)
         assert len(trajectory.objective_rewards) == 2
@@ -239,7 +252,11 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
 
 def test_sampling_draws_preferences_when_omitted(prepared_env, tmp_path):
     trainer = RxnFlowTrainer(
-        config_for(prepared_env, tmp_path / "dirichlet"), TwoObjectiveReward()
+        config_for(prepared_env),
+        TwoObjectiveReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
     )
     sampler = RxnFlowSampler(trainer.run(1))
     results = sampler.sample(4, beta=("fixed", [32.0]), seed=17)
@@ -348,11 +365,11 @@ def test_qed_sa_example_unconditioned_training_and_sampling(prepared_env, tmp_pa
     assert reward.score([]).shape == (0, 2)
     config = Config.from_file("configs/qed_sa.yaml")
     config.data.env_dir = str(prepared_env)
-    config.output_dir = str(tmp_path / "qed_sa")
-    config.device = "cpu"
     config.model = ModelConfig(num_emb=16, num_layers=1, num_synthon_emb=16)
     config.training = TrainingConfig(num_online=4, num_replay=0, retrosynthesis_workers=0)
-    trainer = RxnFlowTrainer(config, reward)
+    trainer = RxnFlowTrainer(
+        config, reward, output_dir=tmp_path / "run", device="cpu", seed=7
+    )
     assert trainer.model.emb_preferences is None
     beta = torch.tensor([1.0, 64.0])
     cond = trainer.model.encode_cond(beta, torch.eye(2))

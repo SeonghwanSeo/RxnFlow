@@ -10,8 +10,6 @@ from typing import Any, Literal
 
 from omegaconf import OmegaConf
 
-RUN_FIELDS = ("output_dir", "seed", "device")
-
 
 def parse_distribution(value: str) -> tuple[str, list[float]]:
     """Parse a CLI/YAML condition. Bare uniform means simplex-uniform weights."""
@@ -128,7 +126,6 @@ class GenerationConfig:
 
 @dataclass
 class TrainingConfig:
-    steps: int = 1_000
     num_online: int = 64
     num_replay: int = 64
     replay_capacity: int = 10_000
@@ -148,7 +145,6 @@ class TrainingConfig:
 
     def validate(self) -> None:
         positive_ints = {
-            "steps": self.steps,
             "num_online": self.num_online,
             "checkpoint_every": self.checkpoint_every,
             "log_every": self.log_every,
@@ -201,9 +197,6 @@ class Config:
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
-    output_dir: str = "runs/rxnflow"
-    seed: int = 0
-    device: str = "auto"
 
     def validate(self) -> None:
         self.data.validate()
@@ -225,12 +218,6 @@ class Config:
         self.training.validate()
         if not self.data.env_dir:
             raise ValueError("data.env_dir must point to a prepared synthon environment")
-        if not self.output_dir:
-            raise ValueError("run.output_dir must not be empty")
-        if self.device != "auto" and not (
-            self.device == "cpu" or self.device.startswith("cuda")
-        ):
-            raise ValueError("run.device must be 'auto', 'cpu', or a CUDA device")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -248,11 +235,6 @@ class Config:
             )
         return {
             "data": asdict(self.data),
-            "run": {
-                "output_dir": self.output_dir,
-                "seed": self.seed,
-                "device": self.device,
-            },
             "reward": reward,
             "property_penalty": dict(self.property_penalty),
             "subsampling": asdict(self.subsampling),
@@ -265,24 +247,6 @@ class Config:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         OmegaConf.save(OmegaConf.create(self.to_file_dict()), path)
-
-    @staticmethod
-    def _flatten_run_section(raw: dict[str, Any]) -> dict[str, Any]:
-        normalized = dict(raw)
-        root_run_fields = set(normalized) & set(RUN_FIELDS)
-        if root_run_fields:
-            raise ValueError(
-                f"run fields must be configured under run: {sorted(root_run_fields)}"
-            )
-        run = normalized.pop("run", {})
-        if not isinstance(run, dict):
-            raise ValueError("run must be a mapping")
-        unknown = set(run) - set(RUN_FIELDS)
-        if unknown:
-            raise ValueError(f"unknown run configuration fields: {sorted(unknown)}")
-        for name, value in run.items():
-            normalized[name] = value
-        return normalized
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Config:
@@ -302,21 +266,18 @@ class Config:
             generation=GenerationConfig(**raw["generation"]),
             model=ModelConfig(**raw["model"]),
             training=TrainingConfig(**raw["training"]),
-            output_dir=str(raw["output_dir"]),
-            seed=int(raw["seed"]),
-            device=str(raw["device"]),
         )
         cfg.validate()
         return cfg
 
     @classmethod
     def from_file(cls, path: str | Path) -> Config:
-        # 1. Load YAML and map the run section to the internal flat fields.
+        # 1. Load the user-facing YAML settings.
         base = OmegaConf.create(cls().to_dict())
         loaded = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
         if not isinstance(loaded, dict):
             raise ValueError("configuration file must contain a mapping")
-        normalized = cls._flatten_run_section(loaded)
+        normalized = loaded
         # 2. Parse condition strings once, before constructing numeric config.
         reward = normalized.get("reward")
         if reward is not None:

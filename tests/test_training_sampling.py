@@ -45,7 +45,7 @@ class CarbonReward(RewardFunction):
         ).reshape(-1, 1)
 
 
-def tiny_config(env_dir: Path, output_dir: Path) -> Config:
+def tiny_config(env_dir: Path) -> Config:
     return Config(
         data=DataConfig(env_dir=str(env_dir), max_atoms=20),
         reward=RewardConfig(beta=("fixed", [1.0])),
@@ -54,7 +54,6 @@ def tiny_config(env_dir: Path, output_dir: Path) -> Config:
         ),
         model=ModelConfig(num_emb=32, num_layers=1, dropout=0.0),
         training=TrainingConfig(
-            steps=1,
             num_online=2,
             num_replay=1,
             replay_capacity=16,
@@ -63,36 +62,64 @@ def tiny_config(env_dir: Path, output_dir: Path) -> Config:
             log_every=1,
             retrosynthesis_workers=0,
         ),
-        output_dir=str(output_dir),
-        seed=7,
-        device="cpu",
     )
 
 
 def test_training_restart_sampling_and_output_formats(
     prepared_env: Path, tmp_path: Path
 ) -> None:
-    config = tiny_config(prepared_env, tmp_path / "run")
-    checkpoint = RxnFlowTrainer(config, QEDReward()).run()
+    config = tiny_config(prepared_env)
+    checkpoint = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    ).run(1)
     assert checkpoint.is_file()
-    assert checkpoint.parent == Path(config.output_dir) / "checkpoints"
+    assert checkpoint.parent == (tmp_path / "run") / "checkpoints"
     assert checkpoint.name == "step_000001.ckpt"
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     assert payload["rxnflow_version"] == __version__
+    assert payload["run"] == {
+        "output_dir": str(tmp_path / "run"),
+        "device": "cpu",
+        "seed": 7,
+    }
+    assert not {"output_dir", "device", "seed", "run"} & payload["config"].keys()
+
+    with pytest.raises(FileExistsError, match="already exists"):
+        RxnFlowTrainer(config, QEDReward(), output_dir=tmp_path / "run")
 
     with pytest.raises(ValueError, match="reward implementation"):
-        RxnFlowTrainer(config, CarbonReward(), restart=checkpoint)
+        RxnFlowTrainer(
+            config,
+            CarbonReward(),
+            output_dir=tmp_path / "invalid_reward",
+            device="cpu",
+            seed=7,
+        ).run(1, resume_from_checkpoint=checkpoint)
 
-    restarted = RxnFlowTrainer(config, QEDReward(), restart=checkpoint)
-    restarted_checkpoint = restarted.run(1)
+    restarted = RxnFlowTrainer(
+        config,
+        QEDReward(),
+        output_dir=tmp_path / "resumed",
+        device="cpu",
+        seed=7,
+    )
+    restarted_checkpoint = restarted.run(1, resume_from_checkpoint=checkpoint)
     assert restarted.step == 2
     assert restarted_checkpoint.is_file()
 
     records = [
         json.loads(line)
-        for line in (Path(config.output_dir) / "training.jsonl").read_text().splitlines()
+        for directory in (tmp_path / "run", tmp_path / "resumed")
+        for line in (directory / "training.jsonl").read_text().splitlines()
     ]
-    sample_paths = sorted((Path(config.output_dir) / "samples").glob("*.jsonl"))
+    sample_paths = sorted(
+        [
+            path
+            for directory in (tmp_path / "run", tmp_path / "resumed")
+            for path in (directory / "samples").glob("*.jsonl")
+        ],
+        key=lambda path: path.name,
+    )
     assert [path.name for path in sample_paths] == [
         "step_000001.jsonl",
         "step_000002.jsonl",
@@ -174,14 +201,22 @@ def test_training_restart_sampling_and_output_formats(
     assert "*" not in rows[0]["smiles"]
     structured = json.loads(json_path.read_text())
     assert structured[0]["traj"]
-    assert json.loads(rows[0]["metadata"]) == structured[0]["metadata"]
+    assert set(rows[0]) == {"smiles", "traj", "beta", "preferences"}
+    assert float(rows[0]["beta"]) == structured[0]["metadata"]["beta"]
+    assert json.loads(rows[0]["preferences"]) == structured[0]["metadata"]["preferences"]
     assert "workflow" not in structured[0]
 
 
 def test_trajectory_balance_uses_backward_probability(
     prepared_env: Path, tmp_path: Path
 ) -> None:
-    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "tb"), QEDReward())
+    trainer = RxnFlowTrainer(
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
+    )
     trainer.model._logZ[-1].bias.data.zero_()
     trainer.policy.log_prob = lambda states, actions, beta, preferences: (
         trainer.model._logZ[-1].bias.expand(len(states)) * 0
@@ -206,9 +241,11 @@ def test_trajectory_balance_uses_backward_probability(
 
 
 def test_tb_diagnostics_separate_online_replay_and_invalid(prepared_env, tmp_path):
-    config = tiny_config(prepared_env, tmp_path / "diagnostics")
+    config = tiny_config(prepared_env)
     config.training.reward_floor = math.exp(-4)
-    trainer = RxnFlowTrainer(config, QEDReward())
+    trainer = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    )
     trainer.model._logZ[-1].bias.data.zero_()
     trainer.policy.log_prob = lambda states, actions, beta, preferences: (
         torch.tensor([-2.0, -3.0, -1.0]) + trainer.model._logZ[-1].bias * 0
@@ -269,10 +306,12 @@ def test_tb_diagnostics_separate_online_replay_and_invalid(prepared_env, tmp_pat
 def test_restart_reproduces_next_update_with_dropout(
     prepared_env: Path, tmp_path: Path
 ) -> None:
-    config = tiny_config(prepared_env, tmp_path / "dropout")
+    config = tiny_config(prepared_env)
     config.model.dropout = 0.2
-    trainer = RxnFlowTrainer(config, QEDReward())
-    first_checkpoint = trainer.run()
+    trainer = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    )
+    first_checkpoint = trainer.run(1)
     trainer.run(1)
     expected = {key: value.clone() for key, value in trainer.model.state_dict().items()}
     expected_schedule = trainer.lr_scheduler.state_dict()
@@ -281,8 +320,14 @@ def test_restart_reproduces_next_update_with_dropout(
         key: value.clone() for key, value in trainer.sampling_model.state_dict().items()
     }
 
-    restarted = RxnFlowTrainer(config, QEDReward(), restart=first_checkpoint)
-    restarted.run(1)
+    restarted = RxnFlowTrainer(
+        config,
+        QEDReward(),
+        output_dir=tmp_path / "restarted",
+        device="cpu",
+        seed=99,
+    )
+    restarted.run(1, resume_from_checkpoint=first_checkpoint)
     assert restarted.lr_scheduler.state_dict() == expected_schedule
     assert [group["lr"] for group in restarted.optimizer.param_groups] == expected_rates
     for key, value in restarted.model.state_dict().items():
@@ -296,7 +341,13 @@ def test_oriented_synthon_scoring_and_observed_action_log_probability(
 ):
     from rxnflow.core.errors import NoValidActions
 
-    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "sites"), QEDReward())
+    trainer = RxnFlowTrainer(
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
+    )
     state = State.from_smiles("[3*]C")
     from rxnflow.core.errors import InvalidTransition
 
@@ -338,9 +389,11 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
 
     from rxnflow.envs.features import PROPERTY_NAMES
 
-    config = tiny_config(prepared_env, tmp_path / "budget")
+    config = tiny_config(prepared_env)
     config.property_penalty = {"mw": 100.0}
-    trainer = RxnFlowTrainer(config, QEDReward())
+    trainer = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    )
     env = trainer.env
     name = next(n for n in env.brick_types if len(env.synthons[n]) > 1)
     mw = PROPERTY_NAMES.index("mw")
@@ -392,9 +445,11 @@ def test_subsampling_precedes_budget_mask_without_candidate_reactions(
 def test_failed_selected_action_is_retained_for_tb(
     prepared_env: Path, tmp_path: Path, monkeypatch
 ) -> None:
-    config = tiny_config(prepared_env, tmp_path / "invalid")
+    config = tiny_config(prepared_env)
     config.data.max_atoms = 5
-    trainer = RxnFlowTrainer(config, QEDReward())
+    trainer = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    )
     # Reactant budget fits (4 + 1), but the amidation inserts two more atoms.
     state = State.from_smiles("[1*]NCCN")
     index = trainer.env.synthons["3"].smiles.index("*C")
@@ -435,9 +490,11 @@ def test_batched_scores_and_gradients_match_scalar_reference(
 ):
     from rxnflow.envs.graph import GraphBatch, molecule_to_graph_data
 
-    config = tiny_config(prepared_env, tmp_path / "batched")
+    config = tiny_config(prepared_env)
     config.subsampling.sampling_ratio = sampling_ratio
-    trainer = RxnFlowTrainer(config, QEDReward())
+    trainer = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    )
     model = trainer.model.eval()
     states = [
         State(),
@@ -523,7 +580,13 @@ def test_batch_shares_library_subsamples_and_handles_dead_ends(
 ):
     from rxnflow.gflownet.policy import SubsamplingPolicy
 
-    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "shared"), QEDReward())
+    trainer = RxnFlowTrainer(
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
+    )
     trainer.model.eval()
     draws = []
     original = SubsamplingPolicy.sample
@@ -580,7 +643,11 @@ def test_only_selected_actions_are_materialized(prepared_env, tmp_path, monkeypa
     import rxnflow.core.types as policy_module
 
     trainer = RxnFlowTrainer(
-        tiny_config(prepared_env, tmp_path / "index-actions"), QEDReward()
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
     )
     initial = trainer.env.initial_state()
     observed = Action(ActionType.FIRST_SYNTHON, library_name="1", synthon_index=0)
@@ -619,7 +686,11 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
     from rxnflow.gflownet.policy import SubsamplingPolicy
 
     trainer = RxnFlowTrainer(
-        tiny_config(prepared_env, tmp_path / "numerator"), QEDReward()
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
     )
     trainer.model.eval()
     monkeypatch.setattr(
@@ -678,7 +749,11 @@ def test_observed_edge_outside_subsample_matches_reference_normalizer(
 
 def test_sampler_loads_checkpoint_once_on_cpu(prepared_env, tmp_path, monkeypatch):
     trainer = RxnFlowTrainer(
-        tiny_config(prepared_env, tmp_path / "single-load"), QEDReward()
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
     )
     checkpoint = trainer.save_checkpoint()
     assert (
@@ -700,7 +775,13 @@ def test_sampler_loads_checkpoint_once_on_cpu(prepared_env, tmp_path, monkeypatc
 def test_reverse_results_overlap_forward_and_terminal_batch_is_drained(
     prepared_env, tmp_path, monkeypatch
 ):
-    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "overlap"), QEDReward())
+    trainer = RxnFlowTrainer(
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
+    )
     policy = trainer.policy
     events, pending = [], []
     initial = trainer.env.initial_state()
@@ -769,7 +850,13 @@ def test_training_error_closes_analyzer_and_allows_reuse(
 ):
     from unittest.mock import Mock
 
-    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path), CarbonReward())
+    trainer = RxnFlowTrainer(
+        tiny_config(prepared_env),
+        CarbonReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
+    )
     analyzer = Mock()
     trainer.env.__dict__["retro_analyzer"] = analyzer
     with monkeypatch.context() as patch:
@@ -792,7 +879,13 @@ def test_extracted_ema_model_matches_checkpoint(prepared_env, tmp_path, capsys):
     import subprocess
     import sys
 
-    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "extract"), QEDReward())
+    trainer = RxnFlowTrainer(
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
+    )
     checkpoint = trainer.save_checkpoint()
     extracted = tmp_path / "model.pt"
     subprocess.run(
@@ -827,9 +920,11 @@ def test_extracted_ema_model_matches_checkpoint(prepared_env, tmp_path, capsys):
 
 
 def test_sampling_rejects_untrained_conditions(prepared_env, tmp_path):
-    config = tiny_config(prepared_env, tmp_path / "conditions")
+    config = tiny_config(prepared_env)
     config.reward.moo_preferences = ("fixed", [1.0])
-    trainer = RxnFlowTrainer(config, QEDReward())
+    trainer = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device="cpu", seed=7
+    )
     sampler = RxnFlowSampler(trainer.save_checkpoint())
     for beta in (("fixed", [2.0]), ("uniform", [1.0, 2.0])):
         with pytest.raises(ValueError, match="fixed-beta"):
@@ -850,7 +945,11 @@ def test_sampling_catalog_replacement_checks_templates(prepared_env, tmp_path):
     from rxnflow.envs.prepare import convert_stage, features_stage
 
     trainer = RxnFlowTrainer(
-        tiny_config(prepared_env, tmp_path / "original"), QEDReward()
+        tiny_config(prepared_env),
+        QEDReward(),
+        output_dir=tmp_path / "run",
+        device="cpu",
+        seed=7,
     )
     checkpoint = trainer.save_checkpoint()
     catalog = tmp_path / "catalog.smi"

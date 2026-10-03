@@ -1,4 +1,4 @@
-"""QED/SA product reward with beta conditioning: python examples/qed_sa.py --config configs/qed_sa.yaml."""
+"""QED/SA product reward with beta conditioning: python examples/qed_sa.py --config configs/qed_sa.yaml --steps 1000."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import argparse
 from pathlib import Path
 
 import numpy as np
-from numpy.typing import NDArray
+import torch
 from rdkit import Chem
 from rdkit.Chem import QED
 from rdkit.Contrib.SA_Score import sascorer
@@ -17,31 +17,44 @@ from rxnflow.trainer import RxnFlowTrainer
 
 
 class QEDSAReward(RewardFunction):
-    """Maximize QED and synthetic accessibility; objective order is QED, SA."""
-
     objectives = ("qed", "sa")
 
-    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
-        # SA score ranges from 1 (easy) to 10 (difficult); reward is larger-is-better.
-        return np.array(
-            [
-                [QED.qed(mol), (10.0 - sascorer.calculateScore(mol)) / 9.0]
-                for mol in mols
-            ],
-            dtype=np.float32,
-        ).reshape(-1, 2)
+    def score(self, mols: list[Chem.Mol]) -> np.ndarray:
+        qeds = [QED.qed(mol) for mol in mols]
+        sas = [(10.0 - sascorer.calculateScore(mol)) / 9 for mol in mols]
+        return np.array([qeds, sas], dtype=np.float32).T
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--restart", type=Path)
-    parser.add_argument("--steps", type=int)
+    parser.add_argument("--output-dir", type=Path, default=Path("runs/qed_sa"))
+    parser.add_argument(
+        "--steps", type=int, required=True, help="additional training updates"
+    )
+    parser.add_argument(
+        "--device", help="device, e.g. cpu or cuda; omitted selects CUDA when available"
+    )
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--resume-from-checkpoint", type=Path)
     args = parser.parse_args(argv)
+
+    device = args.device
+    if device is None:
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
     config = Config.from_file(args.config)
     reward = QEDSAReward(**config.reward.settings)
-    trainer = RxnFlowTrainer(config, reward, restart=args.restart)
-    checkpoint = trainer.run(args.steps)
+    trainer = RxnFlowTrainer(
+        config,
+        reward,
+        output_dir=args.output_dir,
+        device=device,
+        seed=args.seed,
+    )
+    checkpoint = trainer.run(
+        args.steps, resume_from_checkpoint=args.resume_from_checkpoint
+    )
     print(checkpoint)
 
 

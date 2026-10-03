@@ -23,8 +23,8 @@ class MyReward(RewardFunction):
 if __name__ == "__main__":
     config = Config.from_file("configs/qed.yaml")
     reward = MyReward()
-    trainer = RxnFlowTrainer(config, reward)
-    trainer.run()
+    trainer = RxnFlowTrainer(config, reward, output_dir="runs/custom_reward")
+    trainer.run(1000)
 ```
 
 - Return a float32 NumPy array of shape `[batch, num_objectives]`, including for an empty batch. Columns follow the order in `objectives`.

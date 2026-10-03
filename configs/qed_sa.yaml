@@ -2,11 +2,6 @@
 data:
   env_dir: /path/to/prepared/env/
 
-run:
-  output_dir: runs/qed_sa
-  device: auto
-  seed: 0
-
 reward:
   beta: "uniform(1,64)"
   moo_scalarization: mul
@@ -15,6 +10,3 @@ reward:
 
 property_penalty:
   mw: 500
-
-training:
-  steps: 3000

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import random
 import shutil
 from pathlib import Path
 from time import perf_counter
@@ -17,7 +16,7 @@ from rxnflow.config import Config
 from rxnflow.core.types import ActionType, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
-from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
+from rxnflow.gflownet.policy import RxnFlowPolicy
 from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.gflownet.rewards import scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
@@ -38,11 +37,18 @@ class RxnFlowTrainer:
         self,
         config: Config,
         reward: RewardFunction,
-        restart: str | Path | None = None,
+        *,
+        output_dir: str | Path,
+        device: str | torch.device = "cpu",
+        seed: int = 0,
     ):
         # 1. Resolve reward conditions and independent random-number streams.
         config.validate()
+        self.output_dir = Path(output_dir)
+        if self.output_dir.exists():
+            raise FileExistsError(f"output directory already exists: {self.output_dir}")
         self.config = config
+        self.seed = seed
         self.reward = reward
         self.objectives = tuple(reward.objectives)
         if not self.objectives or len(set(self.objectives)) != len(self.objectives):
@@ -53,10 +59,9 @@ class RxnFlowTrainer:
             len(self.objectives),
             config.reward.moo_scalarization,
         )
-        self.device = resolve_device(config.device)
-        torch.manual_seed(config.seed)
-        self.python_rng = random.Random(config.seed)
-        self.rng = np.random.default_rng(config.seed)
+        self.device = torch.device(device)
+        torch.manual_seed(seed)
+        self.rng = np.random.default_rng(seed)
         # 2. Load the environment and initialize training/EMA sampling models.
         self.env = SynthesisEnv(
             config.data.env_dir,
@@ -107,11 +112,10 @@ class RxnFlowTrainer:
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
             self.optimizer, lambda step: 2 ** (-step / config.training.lr_decay_steps)
         )
-        # 4. Initialize replay/output, then restore saved state for a restart.
+        # 4. Initialize replay, output directories and policies.
         self.replay = ReplayBuffer(config.training.replay_capacity)
         self.step = 0
-        self.output_dir = Path(config.output_dir)
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.output_dir.mkdir(parents=True)
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.sample_dir = self.output_dir / "samples"
         self.checkpoint_dir.mkdir(exist_ok=True)
@@ -121,8 +125,6 @@ class RxnFlowTrainer:
         self.sampling_policy = RxnFlowPolicy(
             self.env, self.sampling_model, config, self.device, self.rng
         )
-        if restart is not None:
-            self.load_checkpoint(restart)
 
     def _reward_class_name(self) -> str:
         return f"{type(self.reward).__module__}.{type(self.reward).__qualname__}"
@@ -141,6 +143,11 @@ class RxnFlowTrainer:
                 "rxnflow_version": __version__,
                 "step": self.step,
                 "config": self.config.to_dict(),
+                "run": {
+                    "output_dir": str(self.output_dir),
+                    "device": str(self.device),
+                    "seed": self.seed,
+                },
                 "environment": self.env.signature,
                 "templates": self.env.templates,
                 "model": self.model.state_dict(),
@@ -149,16 +156,12 @@ class RxnFlowTrainer:
                 "lr_scheduler": self.lr_scheduler.state_dict(),
                 "replay": self.replay.state_dict(),
                 "numpy_rng": self.rng.bit_generator.state,
-                # Library subsampling uses the NumPy generator above. Gumbel
-                # sampling and dropout use the model-device global generator.
-                # Beta/preference draws use the CPU global generator.
                 "torch_rng": torch.get_rng_state(),
                 "cuda_rng": (
                     torch.cuda.get_rng_state(self.device)
                     if self.device.type == "cuda"
                     else None
                 ),
-                "python_random": self.python_rng.getstate(),
                 "objectives": self.objectives,
                 "reward_class": self._reward_class_name(),
             },
@@ -206,7 +209,7 @@ class RxnFlowTrainer:
         torch.set_rng_state(checkpoint["torch_rng"])
         if self.device.type == "cuda":
             torch.cuda.set_rng_state(checkpoint["cuda_rng"], self.device)
-        self.python_rng.setstate(checkpoint["python_random"])
+        self.seed = checkpoint["run"]["seed"]
         self.step = int(checkpoint["step"])
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
@@ -375,12 +378,19 @@ class RxnFlowTrainer:
         """Release environment workers; model and replay remain available."""
         self.env.close()
 
-    def run(self, steps: int | None = None) -> Path:
+    def run(
+        self,
+        steps: int,
+        *,
+        resume_from_checkpoint: str | Path | None = None,
+    ) -> Path:
         """Run additional optimization steps and return the final checkpoint."""
         try:
-            final_step = self.step + (
-                steps if steps is not None else self.config.training.steps
-            )
+            if resume_from_checkpoint is not None:
+                self.load_checkpoint(resume_from_checkpoint)
+            if steps < 0:
+                raise ValueError("steps must be non-negative")
+            final_step = self.step + steps
             log_path = self.output_dir / "training.jsonl"
             last_saved_step = -1
             checkpoint = None
@@ -401,7 +411,7 @@ class RxnFlowTrainer:
                 # 2. Sample replay before insertion so online trajectories cannot be
                 # duplicated as replay entries in this same optimization batch.
                 batch = online_trajs + self.replay.sample(
-                    self.config.training.num_replay, self.python_rng
+                    self.config.training.num_replay, self.rng
                 )
                 self.replay.add(online_trajs)
                 # 3. Update the policy/logZ, learning rates, and EMA sampling weights.

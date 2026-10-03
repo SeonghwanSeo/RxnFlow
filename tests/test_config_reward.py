@@ -61,7 +61,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert Config.from_file(path) == config
     assert config.to_dict()["data"]["max_atoms"] == 50
     saved = yaml.safe_load(path.read_text())
-    assert saved["run"]["output_dir"] == "runs/rxnflow"
+    assert "run" not in saved
     assert saved["reward"]["beta"] == "fixed(32.0)"
     assert saved["property_penalty"] == {"mw": 500.0}
     assert "property_limits" not in saved["data"]
@@ -76,15 +76,13 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     minimal = tmp_path / "minimal.yaml"
     minimal.write_text(
         "data:\n  env_dir: example\n"
-        "run:\n  output_dir: run\n"
         "reward:\n  beta: '8'\n  settings:\n    scale: 2\n    options:\n      positive: true\n"
         "property_penalty:\n  tpsa: 140\n"
-        "training:\n  steps: 25\n"
+        "training:\n  num_online: 25\n"
     )
     loaded = Config.from_file(minimal)
-    assert loaded.training.steps == 25
+    assert loaded.training.num_online == 25
     assert loaded.training.learning_rate == 1e-4
-    assert loaded.output_dir == "run"
     assert loaded.reward.beta == ("fixed", [8.0])
     assert loaded.property_penalty == {"tpsa": 140.0}
     reward = ScaledAtomCountReward(**loaded.reward.settings)
@@ -122,9 +120,14 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="reward.settings must be a mapping"):
         Config.from_file(invalid_settings)
 
+    obsolete_run = tmp_path / "obsolete-run.yaml"
+    obsolete_run.write_text("data:\n  env_dir: example\nrun:\n  seed: 0\n")
+    with pytest.raises(ValueError, match="unknown configuration fields"):
+        Config.from_file(obsolete_run)
+
     root_run_field = tmp_path / "root-run-field.yaml"
     root_run_field.write_text("data:\n  env_dir: example\noutput_dir: run\n")
-    with pytest.raises(ValueError, match="must be configured under run"):
+    with pytest.raises(ValueError, match="unknown configuration fields"):
         Config.from_file(root_run_field)
 
 
@@ -141,7 +144,6 @@ def test_checked_in_minimal_and_complete_configs_load() -> None:
     assert QEDReward(**minimal.reward.settings).run([Chem.MolFromSmiles("CCO")])[0][0] > 0
     assert list(complete.to_file_dict()) == [
         "data",
-        "run",
         "reward",
         "property_penalty",
         "subsampling",
@@ -199,7 +201,6 @@ def test_qed_and_custom_reward_alignment() -> None:
 
 
 def test_replay_wraparound_matches_fifo_and_restarts() -> None:
-    import random
     from collections import deque
 
     buffer = ReplayBuffer(7)
@@ -217,10 +218,11 @@ def test_replay_wraparound_matches_fifo_and_restarts() -> None:
         ]
         buffer.add(items)
         reference.extend(items)
-        assert buffer.sample(20, random.Random(0)) == list(reference)
-        assert buffer.sample(3, random.Random(11)) == random.Random(11).sample(
-            list(reference), 3
-        )
+        assert buffer.sample(20, np.random.default_rng(0)) == list(reference)
+        indices = np.random.default_rng(11).choice(len(reference), 3, replace=False)
+        assert buffer.sample(3, np.random.default_rng(11)) == [
+            reference[i] for i in indices
+        ]
     restored = ReplayBuffer(7)
     restored.load_state_dict(buffer.state_dict())
     next_item = Trajectory(
@@ -228,12 +230,13 @@ def test_replay_wraparound_matches_fifo_and_restarts() -> None:
     )
     buffer.add([next_item])
     restored.add([next_item])
-    assert restored.sample(4, random.Random(7)) == buffer.sample(4, random.Random(7))
+    assert restored.sample(4, np.random.default_rng(7)) == buffer.sample(
+        4, np.random.default_rng(7)
+    )
 
 
 def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
     import json
-    import random
 
     from rxnflow.core.types import Action, ActionType, State, Transition
 
@@ -264,10 +267,10 @@ def test_replay_stores_serializable_snapshots_and_restores_molecules() -> None:
 
     restored = ReplayBuffer(2)
     restored.load_state_dict(saved)
-    sampled = restored.sample(1, random.Random(0))[0]
+    sampled = restored.sample(1, np.random.default_rng(0))[0]
     assert sampled.to_dict() == expected
     assert sampled.steps[0].state.mol is not state.mol
     assert sampled.steps[0].state.smiles == state.smiles
     sampled.steps[0].state.mol.GetAtomWithIdx(0).SetIsotope(9)
     sampled.reward = 0.0
-    assert restored.sample(1, random.Random(0))[0].to_dict() == expected
+    assert restored.sample(1, np.random.default_rng(0))[0].to_dict() == expected

@@ -14,7 +14,7 @@ from rxnflow.config import Config
 from rxnflow.core.types import SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
-from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
+from rxnflow.gflownet.policy import RxnFlowPolicy
 from rxnflow.models import RxnFlowModel
 
 
@@ -23,12 +23,12 @@ class RxnFlowSampler:
         self,
         checkpoint: str | Path,
         *,
-        device: str | None = None,
+        device: str | torch.device = "cpu",
         env_dir: str | Path | None = None,
     ) -> None:
         """Load EMA weights from a full checkpoint or extracted model.
 
-        device and env_dir override the checkpoint settings when supplied.
+        device selects the sampling device; env_dir overrides the saved catalog path.
         """
         # Load once on CPU: sampling needs only EMA weights, not the optimizer
         # and replay tensors copied to the GPU with the entire checkpoint.
@@ -38,14 +38,12 @@ class RxnFlowSampler:
                 f"checkpoint was created by RxnFlow {ckpt['rxnflow_version']!r}"
             )
         config = Config.from_dict(ckpt["config"])
-        if device is not None:
-            config.device = device
 
         if env_dir is not None:
             config.data.env_dir = str(env_dir)
         self.config = config
         self.objectives = tuple(ckpt["objectives"])
-        self.device = resolve_device(config.device)
+        self.device = torch.device(device)
         self.env = SynthesisEnv(
             config.data.env_dir,
             config.data.max_atoms,
@@ -72,7 +70,7 @@ class RxnFlowSampler:
         )
         self.model.load_state_dict(ckpt["sampling_model"])
         del ckpt  # Release optimizer/replay data when loading a full checkpoint.
-        self.rng = np.random.default_rng(config.seed)
+        self.rng = np.random.default_rng(0)
         self.policy = RxnFlowPolicy(self.env, self.model, config, self.device, self.rng)
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
@@ -96,7 +94,7 @@ class RxnFlowSampler:
         self,
         num_samples: int,
         *,
-        beta: tuple[str, list[float]],
+        beta: tuple[str, list[float]] | None = None,
         preferences: tuple[str, list[float]] | None = None,
         batch_size: int = 64,
         softmax_temperature: float = 1.0,
@@ -105,11 +103,13 @@ class RxnFlowSampler:
         """Generate num_samples valid trajectories, retaining duplicate molecules.
 
         beta and preferences are (distribution, parameters) tuples. Omitted
-        preferences use the training setting. batch_size is independent of the
+        conditions use their training settings. batch_size is independent of the
         training batch size; softmax_temperature scales the policy softmax.
         A supplied seed resets sampling RNGs; None continues their current state.
         """
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
+        if beta is None:
+            beta = self.config.reward.beta
         if preferences is None:
             preferences = self.config.reward.moo_preferences
         if (preferences[0] == "none") != (
@@ -219,7 +219,8 @@ class RxnFlowSampler:
                     fieldnames=[
                         "smiles",
                         "traj",
-                        "metadata",
+                        "beta",
+                        "preferences",
                     ],
                 )
                 writer.writeheader()
@@ -228,8 +229,9 @@ class RxnFlowSampler:
                         {
                             "smiles": result.smiles,
                             "traj": json.dumps(result.traj, separators=(",", ":")),
-                            "metadata": json.dumps(
-                                result.metadata, separators=(",", ":")
+                            "beta": result.metadata["beta"],
+                            "preferences": json.dumps(
+                                result.metadata["preferences"], separators=(",", ":")
                             ),
                         }
                     )

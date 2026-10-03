@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import torch
 
 from examples.qed import QEDReward
 from rxnflow.config import (
@@ -74,7 +75,6 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
         subsampling=SubsamplingConfig(sampling_ratio=0.001, min_sampling=50),
         model=ModelConfig(num_emb=64, num_layers=2),
         training=TrainingConfig(
-            steps=steps,
             num_online=4,
             num_replay=4,
             replay_capacity=100,
@@ -82,16 +82,22 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
             log_every=max(1, steps // 2),
             retrosynthesis_workers=4,
         ),
-        output_dir=str(tmp_path / "heavy_run"),
-        seed=0,
-        device="auto",
     )
-    checkpoint = RxnFlowTrainer(config, QEDReward()).run()
-    # Exercises CPU RNG restoration even when auto selects CUDA on gnode7.
-    restarted = RxnFlowTrainer(config, QEDReward(), restart=checkpoint)
-    checkpoint = restarted.run(1)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    checkpoint = RxnFlowTrainer(
+        config, QEDReward(), output_dir=tmp_path / "run", device=device, seed=0
+    ).run(steps)
+    # Exercises RNG restoration when resuming training.
+    restarted = RxnFlowTrainer(
+        config,
+        QEDReward(),
+        output_dir=tmp_path / "resumed",
+        device=device,
+        seed=0,
+    )
+    checkpoint = restarted.run(1, resume_from_checkpoint=checkpoint)
     assert restarted.step == steps + 1
     restarted.env.retro_analyzer.close()
-    assert RxnFlowSampler(checkpoint).sample(
+    assert RxnFlowSampler(checkpoint, device=device).sample(
         4, beta=("fixed", [1.0]), preferences=("fixed", [1.0])
     )

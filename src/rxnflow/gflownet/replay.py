@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import random
 from typing import Any
+
+import numpy as np
 
 from rxnflow.core.types import Trajectory
 
@@ -32,13 +33,13 @@ class ReplayBuffer:
                 self._items[self._next] = item
                 self._next = (self._next + 1) % self.capacity
 
-    def sample(self, count: int, rng: random.Random) -> list[Trajectory]:
+    def sample(self, count: int, rng: np.random.Generator) -> list[Trajectory]:
         size = len(self._items)
         if count <= 0 or not size:
             return []
         # Logical indices are oldest-first, including after wrap and restart.
         # Draw O(batch size) indices rather than copying the whole replay deque.
-        indices = range(size) if count >= size else rng.sample(range(size), count)
+        indices = range(size) if count >= size else rng.choice(size, count, replace=False)
         # Reconstruct only the sampled batch. Its molecule objects are not
         # retained by the buffer after the training update finishes.
         return [

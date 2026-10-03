@@ -15,8 +15,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        required=True,
-        help="Environment preparation YAML configuration",
+        default=Path(__file__).resolve().parents[1] / "data/templates/basic/config.yaml",
+        help="Environment preparation YAML (default: data/templates/basic/config.yaml)",
     )
     parser.add_argument(
         "--num-workers", type=int, default=1, help="Preparation processes (default: 1)"
@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter source building blocks with DeepDL extended (0-100; e.g. 60); omitted disables filtering",
     )
     parser.add_argument(
-        "--druglikeness-device", default="cpu", help="DeepDL device: cpu or cuda:0"
+        "--druglikeness-device", default="cpu", help="DeepDL device: cpu or cuda"
     )
     return parser
 
