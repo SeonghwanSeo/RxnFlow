@@ -4,6 +4,8 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
 
+<img src="image/overview.png" alt="RxnFlow synthesis pathway overview" width="600">
+
 RxnFlow uses generative flow networks to design molecules through synthesis pathways. Optimize molecular properties with your own reward function and generate molecules with their synthesis routes.
 
 This repository accompanies the ICLR paper **Generative Flows on Synthetic Pathway for Drug Design** by Seonghwan Seo, Minsu Kim, Tony Shen, Martin Ester, Jinkyu Park, Sungsoo Ahn, and Woo Youn Kim. [[Paper](https://arxiv.org/abs/2410.04542)]
