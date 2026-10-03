@@ -70,7 +70,7 @@ class SubsamplingPolicy:
 @dataclass
 class ActionCategorical:
     action_logits: list[ActionLogits]
-    graph_emb: torch.Tensor
+    state_emb: torch.Tensor
     logit_scale: torch.Tensor
 
     def log_partition(self) -> torch.Tensor:
@@ -78,7 +78,7 @@ class ActionCategorical:
         # A sampled space may be entirely masked. Floor its total mass so an
         # observed action can still be scored; log_prob caps the result at zero.
         if not self.action_logits:
-            return self.graph_emb.new_full((len(self.graph_emb),), math.log(1e-38))
+            return self.state_emb.new_full((len(self.state_emb),), math.log(1e-38))
         # Subtract one maximum per state across all subspaces for stability.
         weighted = [p.logits + p.log_importance for p in self.action_logits]
         maxima = torch.stack([x.max(1).values for x in weighted]).max(0).values
@@ -92,9 +92,9 @@ class ActionCategorical:
         """Draw one action per state; return None where every action is masked."""
         # 1. Choose which state rows use the random exploration distribution.
         if not self.action_logits:
-            return [None] * len(self.graph_emb)
+            return [None] * len(self.state_emb)
         random_rows = (
-            torch.rand(len(self.graph_emb), device=self.graph_emb.device)
+            torch.rand(len(self.state_emb), device=self.state_emb.device)
             < random_action_prob
         )
         # 2. Apply exploration/importance weights and sample within each subspace.
@@ -181,7 +181,7 @@ class RxnFlowPolicy:
         """Encode concatenated library rows with the same normalization everywhere."""
         fingerprints, properties, site_indices = zip(*features, strict=True)
         return F.normalize(
-            self.model.synthon_embedding(
+            self.model.encode_synthon(
                 torch.from_numpy(np.concatenate(fingerprints)).to(
                     self.device, dtype=torch.float32
                 ),
@@ -262,7 +262,7 @@ class RxnFlowPolicy:
         # Graph/property preprocessing is shared, but identical molecules may
         # have different beta/preferences and need separate neural encodings.
         cond_info = self.model.encode_cond(beta, preferences)
-        graph_emb = self.model.graph_embedding(
+        state_emb = self.model.encode_state(
             graph_batch,
             cond_info,
         )
@@ -277,16 +277,16 @@ class RxnFlowPolicy:
         for group, rows in action_rows.items():
             name, action_type = group
             row_indices = torch.tensor(sorted(rows), device=self.device)
-            state_emb = self.model.forward_mdp(
-                graph_emb[row_indices], name, logit_scale[row_indices], action_type
+            action_emb = self.model.forward_mdp(
+                state_emb[row_indices], name, logit_scale[row_indices], action_type
             )
             libraries = list(action_libraries.get(group, {}))
             if libraries:
                 # Compute the reaction query and matrix product once, then split
                 # columns into library subspaces without recomputing embeddings.
                 synthons = torch.cat([synthon_embs[n] for n in libraries])
-                scores = state_emb @ synthons.T
-                logits = graph_emb.new_full((len(states), len(synthons)), -torch.inf)
+                scores = action_emb @ synthons.T
+                logits = state_emb.new_full((len(states), len(synthons)), -torch.inf)
                 logits = logits.index_copy(0, row_indices, scores)
                 allowed: list[NDArray[np.bool_]] = []
                 weight_parts: list[torch.Tensor] = []
@@ -302,10 +302,10 @@ class RxnFlowPolicy:
                 )
                 weights = torch.cat(weight_parts).to(self.device)
             else:
-                logits = graph_emb.new_full((len(states), 1), -torch.inf).index_copy(
-                    0, row_indices, state_emb
+                logits = state_emb.new_full((len(states), 1), -torch.inf).index_copy(
+                    0, row_indices, action_emb
                 )
-                weights = graph_emb.new_full((len(samples[None]),), log_importance[None])
+                weights = state_emb.new_full((len(samples[None]),), log_importance[None])
             if libraries:
                 counts = [len(samples[n]) for n in libraries]
                 for library, library_logits, library_weights in zip(
@@ -334,10 +334,10 @@ class RxnFlowPolicy:
                         weights,
                     )
                 )
-        return ActionCategorical(action_logits, graph_emb, logit_scale)
+        return ActionCategorical(action_logits, state_emb, logit_scale)
 
     def get_action_logits(
-        self, graph_emb: torch.Tensor, actions: list[Action], logit_scale: torch.Tensor
+        self, state_emb: torch.Tensor, actions: list[Action], logit_scale: torch.Tensor
     ) -> torch.Tensor:
         """Score numerator edges independently of the denominator subsample.
 
@@ -372,23 +372,23 @@ class RxnFlowPolicy:
                     ),
                 )
             )
-        synthons = graph_emb.new_zeros((len(actions), self.config.model.num_synthon_emb))
+        synthons = state_emb.new_zeros((len(actions), self.config.model.num_synthon_emb))
         if features:
             values = self._encode_synthons(features)
             synthons = synthons.index_copy(
                 0, torch.tensor(synthon_rows, device=self.device), values
             )
         # 3. Score each reaction and restore the original action order.
-        logits = graph_emb.new_zeros(len(actions))
+        logits = state_emb.new_zeros(len(actions))
         for (name, action_type), rows in by_reaction.items():
             indices = torch.tensor(rows, device=self.device)
-            state_emb = self.model.forward_mdp(
-                graph_emb[indices], name, logit_scale[indices], action_type
+            action_emb = self.model.forward_mdp(
+                state_emb[indices], name, logit_scale[indices], action_type
             )
             values = (
-                state_emb.squeeze(1)
+                action_emb.squeeze(1)
                 if action_type.is_unirxn
-                else (state_emb * synthons[indices]).sum(1)
+                else (action_emb * synthons[indices]).sum(1)
             )
             logits = logits.index_copy(0, indices, values)
         return logits
@@ -434,7 +434,7 @@ class RxnFlowPolicy:
     ) -> torch.Tensor:
         fwd_cat = self.forward(states, beta, preferences)
         numerator = self.get_action_logits(
-            fwd_cat.graph_emb, actions, fwd_cat.logit_scale
+            fwd_cat.state_emb, actions, fwd_cat.logit_scale
         )
         # Independent denominator subsampling can underestimate total mass;
         # cap log probabilities at zero to keep estimated probabilities <= 1.

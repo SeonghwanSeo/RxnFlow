@@ -77,14 +77,12 @@ class RxnFlowTrainer:
             self.env,
             config.model,
             len(self.objectives),
-            preference_conditioning=config.reward.moo_preferences[0] != "none",
         ).to(self.device)
         self.sampling_model = (
             RxnFlowModel(
                 self.env,
                 config.model,
                 len(self.objectives),
-                preference_conditioning=config.reward.moo_preferences[0] != "none",
             )
             .to(self.device)
             .eval()

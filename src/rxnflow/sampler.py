@@ -63,7 +63,6 @@ class RxnFlowSampler:
                 self.env,
                 config.model,
                 len(self.objectives),
-                preference_conditioning=config.reward.moo_preferences[0] != "none",
             )
             .to(self.device)
             .eval()

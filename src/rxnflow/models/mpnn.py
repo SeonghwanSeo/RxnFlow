@@ -36,6 +36,10 @@ class GINELayer(nn.Module):
         dst_idx: torch.Tensor,
         edge_emb: torch.Tensor,
     ) -> torch.Tensor:
+        """x: [B, L, H], src_idx/dst_idx: [E], edge_emb: [E, H]; return [B, L, H].
+
+        Edge indices address flattened B*L nodes, including virtual nodes.
+        """
         batch, length, num_emb = x.shape
         node_emb = self.norm(x).reshape(-1, num_emb)
         msg = F.relu(node_emb[src_idx] + edge_emb)
@@ -47,23 +51,28 @@ class GINELayer(nn.Module):
 class MPNN(nn.Module):
     def __init__(
         self,
-        x_dim,
-        e_dim,
-        g_dim,
-        num_emb,
-        num_layers,
-    ):
+        x_dim: int,
+        e_dim: int,
+        g_dim: int,
+        num_emb: int,
+        num_layers: int,
+    ) -> None:
         super().__init__()
         self.x2h = mlp(x_dim, num_emb, num_emb, 2)
         self.e2h = mlp(e_dim, num_emb, num_emb, 2)
-        # Only molecular properties and atom capacity enter the virtual node.
-        self.c2h = mlp(g_dim + 1, num_emb, num_emb, 2)
+        # Project molecular features and external conditions separately.
+        self.g2h = mlp(g_dim + 1, num_emb, num_emb, 2)
+        self.cond2h = nn.Linear(num_emb, num_emb)
         self.layers = nn.ModuleList([GINELayer(num_emb) for _ in range(num_layers)])
+        # Normalize the two readouts separately before concatenating them.
+        self.norm_mean = nn.LayerNorm(num_emb)
+        self.norm_virtual = nn.LayerNorm(num_emb)
 
     def forward(self, batch: GraphBatch, cond_info: torch.Tensor) -> torch.Tensor:
+        """cond_info: [B, H]; return concatenated state readout [B, 2H]."""
         # 1. Initialize molecular nodes and the graph/condition virtual node.
         node_emb = self.x2h(batch.node_features)
-        virtual_emb = self.c2h(
+        virtual_emb = self.g2h(
             torch.cat(
                 [
                     batch.mol_features,
@@ -73,7 +82,7 @@ class MPNN(nn.Module):
             )
         )
         # External beta/preference conditioning enters once, at initialization.
-        virtual_emb = virtual_emb + cond_info
+        virtual_emb = virtual_emb + self.cond2h(cond_info)
         x = torch.cat([node_emb, virtual_emb[:, None]], 1)
         _, length, num_emb = x.shape
         # 2. Build directed bond edges and bidirectional atom/virtual-node edges.
@@ -95,5 +104,7 @@ class MPNN(nn.Module):
         # 4. Pool real molecular nodes, excluding padding; retain the virtual node.
         count = batch.node_mask.sum(1, keepdim=True).clamp_min(1)
         mean_emb = (x[:, :-1] * batch.node_mask[..., None]).sum(1) / count
-        # Empty states have zero molecular mean and a learned virtual embedding.
-        return torch.cat([mean_emb, x[:, -1]], -1)
+        # Empty states have zero molecular mean before the affine normalization.
+        return torch.cat(
+            [self.norm_mean(mean_emb), self.norm_virtual(x[:, -1])], dim=-1
+        )
