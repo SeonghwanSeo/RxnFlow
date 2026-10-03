@@ -7,6 +7,7 @@ from functools import cached_property
 from pathlib import Path
 
 import numpy as np
+import yaml
 from numpy.typing import NDArray
 from rdkit import Chem
 
@@ -68,7 +69,6 @@ class SynthesisEnv:
         self.synthons = load_synthon_libraries(self.env_dir)
         self.sources = json.loads((self.env_dir / "building_blocks.json").read_text())
         self.library_names = sorted(self.synthons)
-        self.library_to_index = {name: i for i, name in enumerate(self.library_names)}
         self.brick_types = [
             name for name in self.library_names if self.synthons[name].is_brick
         ]
@@ -77,6 +77,28 @@ class SynthesisEnv:
 
         specs = load_synthon_specs(self.env_dir / "synthon.yaml")
         self.synthon_types = {spec.type for spec in specs}
+        # Index zero represents an absent remaining site on a brick.
+        # Chemical types use stable indices independent of catalog membership.
+        self.synthon_type_to_index = {
+            t: i + 1 for i, t in enumerate(sorted(self.synthon_types))
+        }
+        self.library_site_indices = {
+            name: (
+                self.synthon_type_to_index[library.attachment_type],
+                self.synthon_type_to_index[library.synthon_types[1]]
+                if library.is_linker
+                else 0,
+            )
+            for name, library in self.synthons.items()
+        }
+        # Store parsed definitions: comments and YAML formatting do not affect
+        # compatibility, while chemical definitions and exclusions must match.
+        self.templates = {}
+        for name in ("reaction", "synthon", "exclude_smarts"):
+            path = self.env_dir / f"{name}.yaml"
+            self.templates[name] = (
+                yaml.safe_load(path.read_text()) if path.is_file() else None
+            )
         for library in self.synthons.values():
             if (
                 len(library.synthon_types) not in (1, 2)

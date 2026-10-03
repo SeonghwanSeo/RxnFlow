@@ -150,21 +150,16 @@ def test_training_restart_sampling_and_output_formats(
                     for library in restarted.env.synthons.values()
                 )
 
-    sampler = RxnFlowSampler(restarted_checkpoint, reward=QEDReward())
+    sampler = RxnFlowSampler(restarted_checkpoint)
     results = sampler.sample(3, seed=11, beta=("fixed", [1.0]))
     assert len(results) == 3
     assert all(result.metadata["preferences"] == [1.0] for result in results)
-    assert all(
-        result.smiles and result.trajectory and result.reward is not None
-        for result in results
-    )
+    assert all(result.smiles and result.traj for result in results)
     assert all("workflow" not in result.to_dict() for result in results)
-    assert all(len(result.intermediates) == len(result.trajectory) for result in results)
     for result in results:
-        assert [
-            step["product_smiles"] for step in result.trajectory
-        ] == result.intermediates
-        assert result.intermediates[-1] == result.smiles
+        assert set(result.to_dict()) == {"smiles", "traj", "metadata"}
+        assert set(result.metadata) == {"beta", "preferences"}
+        assert result.traj[-1]["product_smiles"] == result.smiles
 
     smi_path = tmp_path / "samples.smi"
     csv_path = tmp_path / "samples.csv"
@@ -175,10 +170,11 @@ def test_training_restart_sampling_and_output_formats(
     assert len(smi_path.read_text().splitlines()) == 3
     with csv_path.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
-    assert json.loads(rows[0]["trajectory"])[0]["action_type"] == "FIRST_SYNTHON"
+    assert json.loads(rows[0]["traj"])[0]["action_type"] == "FIRST_SYNTHON"
     assert "*" not in rows[0]["smiles"]
     structured = json.loads(json_path.read_text())
-    assert structured[0]["intermediates"]
+    assert structured[0]["traj"]
+    assert json.loads(rows[0]["metadata"]) == structured[0]["metadata"]
     assert "workflow" not in structured[0]
 
 
@@ -790,3 +786,100 @@ def test_training_error_closes_analyzer_and_allows_reuse(
     analyzer.close.assert_called_once()
     trainer.run(1)
     assert "retro_analyzer" not in trainer.env.__dict__
+
+
+def test_extracted_ema_model_matches_checkpoint(prepared_env, tmp_path, capsys):
+    import subprocess
+    import sys
+
+    trainer = RxnFlowTrainer(tiny_config(prepared_env, tmp_path / "extract"), QEDReward())
+    checkpoint = trainer.save_checkpoint()
+    extracted = tmp_path / "model.pt"
+    subprocess.run(
+        [
+            sys.executable,
+            "scripts/extract_model.py",
+            "--checkpoint",
+            str(checkpoint),
+            "--output",
+            str(extracted),
+        ],
+        check=True,
+    )
+    payload = torch.load(extracted, map_location="cpu", weights_only=False)
+    assert set(payload) == {
+        "config",
+        "sampling_model",
+        "objectives",
+        "templates",
+        "rxnflow_version",
+    }
+    full = RxnFlowSampler(checkpoint)
+    compact = RxnFlowSampler(extracted)
+    for name, value in trainer.sampling_model.state_dict().items():
+        torch.testing.assert_close(compact.model.state_dict()[name], value)
+    expected = full.sample(2, seed=11, beta=("fixed", [1.0]))
+    actual = compact.sample(2, seed=11, beta=("fixed", [1.0]))
+    assert [r.to_dict() for r in actual] == [r.to_dict() for r in expected]
+    output = capsys.readouterr().out
+    assert "Training reward config:" in output
+    assert "Sampling settings:" in output
+
+
+def test_sampling_rejects_untrained_conditions(prepared_env, tmp_path):
+    config = tiny_config(prepared_env, tmp_path / "conditions")
+    config.reward.moo_preferences = ("fixed", [1.0])
+    trainer = RxnFlowTrainer(config, QEDReward())
+    sampler = RxnFlowSampler(trainer.save_checkpoint())
+    for beta in (("fixed", [2.0]), ("uniform", [1.0, 2.0])):
+        with pytest.raises(ValueError, match="fixed-beta"):
+            sampler.sample(1, beta=beta)
+    with pytest.raises(ValueError, match="fixed-preference"):
+        sampler.sample(1, beta=("fixed", [1.0]), preferences=("dirichlet", [1.0]))
+    sampler.config.reward.beta = ("uniform", [1.0, 4.0])
+    with pytest.raises(ValueError, match="training range"):
+        sampler.sample(1, beta=("uniform", [2.0, 5.0]))
+    sampler.config.reward.moo_preferences = ("none", [])
+    with pytest.raises(ValueError, match="conditioning mode"):
+        sampler.sample(1, beta=("fixed", [2.0]), preferences=("fixed", [1.0]))
+    # A conditioned model can use fixed beta values within its training range.
+    assert len(sampler.sample(1, seed=11, beta=("fixed", [2.0]))) == 1
+
+
+def test_sampling_catalog_replacement_checks_templates(prepared_env, tmp_path):
+    from rxnflow.envs.prepare import convert_stage, features_stage
+
+    trainer = RxnFlowTrainer(
+        tiny_config(prepared_env, tmp_path / "original"), QEDReward()
+    )
+    checkpoint = trainer.save_checkpoint()
+    catalog = tmp_path / "catalog.smi"
+    catalog.write_text("CC(=O)O\tacid\nCCN\tamine\n")
+    replacement = tmp_path / "replacement"
+    convert_stage(
+        catalog, replacement, Path("tests/fixtures/templates.yaml"), min_library_size=1
+    )
+    features_stage(replacement)
+    sampler = RxnFlowSampler(checkpoint, env_dir=replacement)
+    assert sampler.env.signature != trainer.env.signature
+    assert sampler.env.synthon_type_to_index == trainer.env.synthon_type_to_index
+    assert len(sampler.sample(1, beta=("fixed", [1.0]), seed=11)) == 1
+
+    for name in ("reaction", "synthon", "exclude_smarts"):
+        original = sampler.env.templates[name]
+        changed = dict(sampler.env.templates)
+        changed[name] = {"different": True}
+        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        payload["templates"] = changed
+        incompatible = tmp_path / f"{name}.ckpt"
+        torch.save(payload, incompatible)
+        with pytest.raises(ValueError, match="definitions differ"):
+            RxnFlowSampler(incompatible, env_dir=replacement)
+        assert sampler.env.templates[name] == original
+    # YAML comments are not part of the chemical definitions.
+    with (replacement / "synthon.yaml").open("a") as handle:
+        handle.write("\n# catalog-specific comment\n")
+    assert (
+        RxnFlowSampler(checkpoint, env_dir=replacement).env.templates
+        == trainer.env.templates
+    )

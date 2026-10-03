@@ -1,17 +1,16 @@
 # QED/SA product reward with reward-exponent conditioning.
 data:
-  env_dir: /path/to/prepared/enamine
-  max_atoms: 50
+  env_dir: /path/to/prepared/env/
 
 run:
   output_dir: runs/qed_sa
-  device: cuda
+  device: auto
   seed: 0
 
 reward:
   beta: "uniform(1,64)"
-  moo_preferences: "none"
   moo_scalarization: mul
+  moo_preferences: "none"
   settings: {}
 
 property_penalty:

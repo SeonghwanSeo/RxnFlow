@@ -8,7 +8,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
@@ -16,34 +15,36 @@ from rxnflow.core.types import SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
-from rxnflow.gflownet.rewards import scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
-from rxnflow.reward import RewardFunction
 
 
 class RxnFlowSampler:
     def __init__(
         self,
         checkpoint: str | Path,
-        reward: RewardFunction | None = None,
+        *,
         device: str | None = None,
-    ):
+        env_dir: str | Path | None = None,
+    ) -> None:
+        """Load EMA weights from a full checkpoint or extracted model.
+
+        device and env_dir override the checkpoint settings when supplied.
+        """
         # Load once on CPU: sampling needs only EMA weights, not the optimizer
         # and replay tensors copied to the GPU with the entire checkpoint.
-        payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-        if payload["rxnflow_version"] != __version__:
+        ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
+        if ckpt["rxnflow_version"] != __version__:
             raise ValueError(
-                f"checkpoint was created by RxnFlow {payload['rxnflow_version']!r}"
+                f"checkpoint was created by RxnFlow {ckpt['rxnflow_version']!r}"
             )
-        config = Config.from_dict(payload["config"])
+        config = Config.from_dict(ckpt["config"])
         if device is not None:
             config.device = device
-        config.validate()
+
+        if env_dir is not None:
+            config.data.env_dir = str(env_dir)
         self.config = config
-        self.reward = reward
-        self.objectives = tuple(payload["objectives"])
-        if reward is not None and tuple(reward.objectives) != self.objectives:
-            raise ValueError("scoring reward objectives differ from the checkpoint")
+        self.objectives = tuple(ckpt["objectives"])
         self.device = resolve_device(config.device)
         self.env = SynthesisEnv(
             config.data.env_dir,
@@ -55,9 +56,9 @@ class RxnFlowSampler:
             max_synthons=config.generation.max_synthons,
             min_reactions=config.generation.min_reactions,
         )
-        if payload["environment"] != self.env.signature:
+        if ckpt["templates"] != self.env.templates:
             raise ValueError(
-                "prepared environment differs from the checkpoint environment"
+                "reaction, synthon or exclusion definitions differ from the checkpoint"
             )
         self.model = (
             RxnFlowModel(
@@ -69,7 +70,8 @@ class RxnFlowSampler:
             .to(self.device)
             .eval()
         )
-        self.model.load_state_dict(payload["sampling_model"])
+        self.model.load_state_dict(ckpt["sampling_model"])
+        del ckpt  # Release optimizer/replay data when loading a full checkpoint.
         self.rng = np.random.default_rng(config.seed)
         self.policy = RxnFlowPolicy(self.env, self.model, config, self.device, self.rng)
 
@@ -81,33 +83,38 @@ class RxnFlowSampler:
             }
             for step in trajectory.steps
         ]
-        intermediates = [step.product_smiles for step in trajectory.steps]
         return SamplingResult(
             smiles=trajectory.final_smiles,
-            trajectory=actions,
-            intermediates=intermediates,
+            traj=actions,
             metadata={
-                "valid": trajectory.valid,
                 "beta": trajectory.beta,
                 "preferences": trajectory.preferences,
-                "objectives": self.objectives,
             },
         )
 
     def sample(
         self,
-        count: int,
-        sampling_temperature: float = 1.0,
-        seed: int | None = None,
+        num_samples: int,
         *,
         beta: tuple[str, list[float]],
         preferences: tuple[str, list[float]] | None = None,
+        batch_size: int = 64,
+        softmax_temperature: float = 1.0,
+        seed: int | None = None,
     ) -> list[SamplingResult]:
-        """Return count valid trajectories, with optional post-generation scoring."""
+        """Generate num_samples valid trajectories, retaining duplicate molecules.
+
+        beta and preferences are (distribution, parameters) tuples. Omitted
+        preferences use the training setting. batch_size is independent of the
+        training batch size; softmax_temperature scales the policy softmax.
+        A supplied seed resets sampling RNGs; None continues their current state.
+        """
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
         if preferences is None:
             preferences = self.config.reward.moo_preferences
-        if (preferences[0] == "none") != (self.config.reward.moo_preferences[0] == "none"):
+        if (preferences[0] == "none") != (
+            self.config.reward.moo_preferences[0] == "none"
+        ):
             raise ValueError("preferences must match the checkpoint's conditioning mode")
         conditions = ConditionSampler(
             beta,
@@ -115,69 +122,89 @@ class RxnFlowSampler:
             len(self.objectives),
             self.config.reward.moo_scalarization,
         )
-        if count <= 0:
+        # Fixed training conditions support only the same value at inference.
+        # Variable beta supports fixed values or subranges inside its training range.
+        trained_beta = self.config.reward.beta
+        if trained_beta[0] == "fixed":
+            if beta != trained_beta:
+                raise ValueError("fixed-beta training requires the same fixed beta")
+        elif min(beta[1]) < trained_beta[1][0] or max(beta[1]) > trained_beta[1][1]:
+            raise ValueError("sampling beta must stay within the training range")
+        trained_preferences = self.config.reward.moo_preferences
+        if trained_preferences[0] == "fixed":
+            if preferences[0] != "fixed":
+                raise ValueError("fixed-preference training requires fixed preferences")
+            trained = np.asarray(trained_preferences[1])
+            requested = np.asarray(preferences[1])
+            if not np.allclose(trained / trained.sum(), requested / requested.sum()):
+                raise ValueError(
+                    "sampling preferences differ from fixed training weights"
+                )
+        if batch_size <= 0:
+            raise ValueError("batch size must be positive")
+        if num_samples <= 0:
             raise ValueError("sample count must be positive")
         if seed is not None:
             self.rng.bit_generator.state = np.random.default_rng(seed).bit_generator.state
             torch.manual_seed(seed)  # CPU conditions and device-side categorical draws.
-        if sampling_temperature <= 0:
+        if softmax_temperature <= 0:
             raise ValueError("softmax temperature must be positive")
+        print(
+            "Training reward config: "
+            + json.dumps(self.config.to_file_dict()["reward"], sort_keys=True),
+            flush=True,
+        )
+        print(
+            "Sampling settings: "
+            + json.dumps(
+                {
+                    "num_samples": num_samples,
+                    "batch_size": batch_size,
+                    "beta": beta,
+                    "preferences": preferences,
+                    "moo_scalarization": self.config.reward.moo_scalarization,
+                    "softmax_temperature": softmax_temperature,
+                    "seed": seed,
+                    "device": str(self.device),
+                    "env_dir": str(self.env.env_dir),
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
         # 2. Generate until enough valid terminal trajectories or the attempt limit.
         trajectories: list[Trajectory] = []
         attempts = 0
-        maximum_attempts = max(100, count * 100)
-        while len(trajectories) < count and attempts < maximum_attempts:
-            batch_size = min(
-                self.config.training.num_online,
-                count - len(trajectories),
+        maximum_attempts = max(100, num_samples * 100)
+        while len(trajectories) < num_samples and attempts < maximum_attempts:
+            batch_count = min(
+                batch_size,
+                num_samples - len(trajectories),
                 maximum_attempts - attempts,
             )
-            sampled_beta, weights = conditions.sample(batch_size)
+            sampled_beta, weights = conditions.sample(batch_count)
             batch = self.policy.sample_from_model(
-                batch_size,
-                sampling_temperature,
+                batch_count,
+                softmax_temperature,
                 0.0,
                 analyze_backward=False,
                 beta=sampled_beta,
                 preferences=weights,
             )
-            attempts += batch_size
+            attempts += batch_count
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
-        if len(trajectories) != count:
+        if len(trajectories) != num_samples:
             raise RuntimeError(
                 f"generated only {len(trajectories)} valid samples in {maximum_attempts} attempts"
             )
-        # 3. Attach provenance and optional rewards without changing the samples.
-        results = [self._result(trajectory) for trajectory in trajectories]
-        if self.reward is not None and results:
-            values = self.reward.run(
-                [Chem.MolFromSmiles(value.final_smiles) for value in trajectories],
-            )
-            preferences = np.array(
-                [t.preferences for t in trajectories], dtype=np.float32
-            )
-            scalar_rewards = (
-                scalarize_log_rewards(
-                    torch.from_numpy(values),
-                    torch.from_numpy(preferences),
-                    self.config.reward.moo_scalarization,
-                    self.config.training.reward_floor,
-                )
-                .exp()
-                .tolist()
-            )
-            for result, value, scalar in zip(
-                results, values.tolist(), scalar_rewards, strict=True
-            ):
-                result.reward = scalar
-                result.metadata["objective_rewards"] = dict(
-                    zip(self.objectives, value, strict=True)
-                )
-        return results
+        return [self._result(trajectory) for trajectory in trajectories]
 
     @staticmethod
     def write(
-        results: list[SamplingResult], path: str | Path, output_format: str | None = None
+        results: list[SamplingResult],
+        path: str | Path,
+        *,
+        output_format: str | None = None,
     ) -> None:
         destination = Path(path)
         format_name = (output_format or destination.suffix.lstrip(".")).lower()
@@ -191,8 +218,8 @@ class RxnFlowSampler:
                     handle,
                     fieldnames=[
                         "smiles",
-                        "trajectory",
-                        "intermediates",
+                        "traj",
+                        "metadata",
                     ],
                 )
                 writer.writeheader()
@@ -200,11 +227,9 @@ class RxnFlowSampler:
                     writer.writerow(
                         {
                             "smiles": result.smiles,
-                            "trajectory": json.dumps(
-                                result.trajectory, separators=(",", ":")
-                            ),
-                            "intermediates": json.dumps(
-                                result.intermediates, separators=(",", ":")
+                            "traj": json.dumps(result.traj, separators=(",", ":")),
+                            "metadata": json.dumps(
+                                result.metadata, separators=(",", ":")
                             ),
                         }
                     )

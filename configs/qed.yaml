@@ -1,11 +1,10 @@
 # Minimal QED training configuration.
 data:
-  env_dir: /path/to/prepared/enamine
-  max_atoms: 50
+  env_dir: /path/to/prepared/env/
 
 run:
   output_dir: runs/qed
-  device: cuda
+  device: auto
   seed: 0
 
 reward:

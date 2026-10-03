@@ -142,6 +142,7 @@ class RxnFlowTrainer:
                 "step": self.step,
                 "config": self.config.to_dict(),
                 "environment": self.env.signature,
+                "templates": self.env.templates,
                 "model": self.model.state_dict(),
                 "sampling_model": self.sampling_model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),

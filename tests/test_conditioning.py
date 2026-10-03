@@ -223,7 +223,7 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
             max(expected, config.training.reward_floor) if trajectory.valid else 0.0,
             abs=1e-6,
         )
-    sampler = RxnFlowSampler(restarted_checkpoint, reward=TwoObjectiveReward())
+    sampler = RxnFlowSampler(restarted_checkpoint)
     results = sampler.sample(
         2, beta=("fixed", [32.0]), preferences=("fixed", [0.25, 0.75]), seed=5
     )
@@ -232,15 +232,7 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
         assert result.metadata["preferences"] == (
             [0.5, 1.5] if method == "mul" else [0.25, 0.75]
         )
-        scores = result.metadata["objective_rewards"]
-        assert result.reward == pytest.approx(
-            max(
-                0.25 * scores["qed"] + 0.75 * scores["size"], config.training.reward_floor
-            )
-            if method == "sum"
-            else max(scores["qed"], config.training.reward_floor) ** 0.5
-            * max(scores["size"], config.training.reward_floor) ** 1.5
-        )
+        assert set(result.metadata) == {"beta", "preferences"}
     with pytest.raises(ValueError, match="preferences"):
         sampler.sample(1, beta=("fixed", [32.0]), preferences=("fixed", [1.0]))
 
@@ -249,17 +241,14 @@ def test_sampling_draws_preferences_when_omitted(prepared_env, tmp_path):
     trainer = RxnFlowTrainer(
         config_for(prepared_env, tmp_path / "dirichlet"), TwoObjectiveReward()
     )
-    sampler = RxnFlowSampler(trainer.run(1), reward=TwoObjectiveReward())
+    sampler = RxnFlowSampler(trainer.run(1))
     results = sampler.sample(4, beta=("fixed", [32.0]), seed=17)
     weights = [result.metadata["preferences"] for result in results]
     assert len({tuple(w) for w in weights}) == len(weights)
     for result, w in zip(results, weights, strict=True):
         assert all(value > 0 for value in w)
         assert sum(w) == pytest.approx(2)
-        scores = result.metadata["objective_rewards"]
-        assert result.reward == pytest.approx(
-            max(scores["qed"], 1e-4) ** w[0] * max(scores["size"], 1e-4) ** w[1]
-        )
+        assert set(result.metadata) == {"beta", "preferences"}
     repeated = sampler.sample(4, beta=("fixed", [32.0]), seed=17)
     assert [r.metadata["preferences"] for r in repeated] == weights
 
@@ -369,17 +358,14 @@ def test_qed_sa_example_unconditioned_training_and_sampling(prepared_env, tmp_pa
     cond = trainer.model.encode_cond(beta, torch.eye(2))
     torch.testing.assert_close(cond, trainer.model.encode_cond(beta, torch.ones(2, 2)))
     assert not torch.allclose(cond[0], cond[1])
-    sampler = RxnFlowSampler(trainer.run(1), reward=reward)
+    sampler = RxnFlowSampler(trainer.run(1))
     with pytest.raises(ValueError, match="conditioning mode"):
         sampler.sample(1, beta=("fixed", [32.0]), preferences=("fixed", [0.3, 0.7]))
     results = sampler.sample(2, beta=("fixed", [32.0]), seed=5)
     for result in results:
         assert result.metadata["beta"] == 32.0
         assert result.metadata["preferences"] == pytest.approx([1.0, 1.0])
-        scores = result.metadata["objective_rewards"]
-        assert result.reward == pytest.approx(
-            max(scores["qed"], 1e-4) * max(scores["sa"], 1e-4)
-        )
+        assert set(result.metadata) == {"beta", "preferences"}
 
 
 def test_unconditioned_config_roundtrip(tmp_path):

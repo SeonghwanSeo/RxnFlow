@@ -4,7 +4,7 @@ Choose [qed.yaml](../configs/qed.yaml) or [qed_sa.yaml](../configs/qed_sa.yaml),
 
 - `data.env_dir`: your prepared environment directory.
 - `run.output_dir`: where training results will be saved.
-- `run.device`: the examples use `cuda`; use `cpu` without a GPU, or `auto` to select automatically.
+- `run.device`: the examples use `auto` to select automatically; set `cpu` or a CUDA device explicitly when needed.
 
 Run the corresponding example from the [README](../README.md). See [template.yaml](../configs/template.yaml) for all settings.
 
@@ -60,18 +60,40 @@ python scripts/sample.py \
   --output samples.json
 ```
 
+- Sampling prints the training reward configuration and the requested sampling settings before generating molecules.
+- Fixed-beta training requires the same fixed beta at sampling. For uniform-beta training, use a fixed value or uniform subrange within the training range.
+- Fixed-preference training requires the same relative weights; varying preferences require a model trained with varying preferences.
+- `--env-dir` selects another prepared building-block catalog. Its reaction, synthon and exclusion definitions must match training; BB identities and library sizes may differ. New site types absent from training may have untrained embeddings.
+- `--batch-size` controls trajectories generated per batch (default 64), independently of the training batch size. Duplicate molecules are retained.
 - Formats: `.smi` for SMILES, `.csv` for molecules and paths, `.json` for structured trajectories and provenance.
 - Omitted preferences use the checkpoint setting. For a preference-conditioned model, add `--preferences "fixed(0.3,0.7)"`.
-- `--sampling-temperature` is an additional softmax temperature (default 1), separate from beta.
+- `--softmax-temperature` is an additional softmax temperature (default 1), separate from beta.
 
-The script does not evaluate rewards. To score samples, pass the reward explicitly:
+JSON records and CSV columns are `smiles`, `traj` and `metadata`. Metadata contains `beta` and `preferences`; `traj` records actions and their products. SMILES output contains only SMILES.
+
+Sampling does not evaluate rewards. Evaluate generated molecules separately when needed:
 
 ```python
+from rdkit import Chem
+
 from examples.qed_sa import QEDSAReward
 from rxnflow.sampler import RxnFlowSampler
 
-reward = QEDSAReward()
-sampler = RxnFlowSampler("runs/qed_sa/checkpoints/latest.ckpt", reward=reward)
+sampler = RxnFlowSampler("runs/qed_sa/checkpoints/latest.ckpt")
 results = sampler.sample(100, beta=("fixed", [32.0]), seed=0)
-sampler.write(results, "scored_samples.json")
+mols: list[Chem.Mol] = [Chem.MolFromSmiles(result.smiles) for result in results]
+reward = QEDSAReward()
+objective_rewards = reward(mols)
 ```
+
+## Extract a sampling model
+
+Extraction is optional: `--checkpoint` accepts either a full training checkpoint or an extracted model. Extract once to avoid loading optimizer and replay data on each sampling run:
+
+```bash
+python scripts/extract_model.py \
+  --checkpoint runs/qed_sa/checkpoints/latest.ckpt \
+  --output runs/qed_sa/model.pt
+```
+
+Use `--checkpoint runs/qed_sa/model.pt` in the sampling command. The file contains the configuration, EMA model weights and metadata needed for sampling. Use the configured environment path or select a compatible catalog with `--env-dir`. Extracted models cannot resume training.

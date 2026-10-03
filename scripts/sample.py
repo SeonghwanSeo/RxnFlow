@@ -14,9 +14,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--checkpoint", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--format", choices=("smi", "csv", "json"))
-    parser.add_argument("--num-samples", type=int, default=100)
+    parser.add_argument("--num-samples", type=int, default=1000)
     parser.add_argument(
-        "--sampling-temperature",
+        "--batch-size", type=int, default=64, help="trajectories per batch (default: 64)"
+    )
+    parser.add_argument(
+        "--softmax-temperature",
         type=float,
         default=1.0,
         help="softmax temperature (default: 1); independent of reward exponent beta",
@@ -31,18 +34,22 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument("--seed", type=int)
     parser.add_argument("--device")
+    parser.add_argument(
+        "--env-dir", type=Path, help="prepared catalog with the same template definitions"
+    )
     args = parser.parse_args(argv)
-    sampler = RxnFlowSampler(args.checkpoint, device=args.device)
+    sampler = RxnFlowSampler(args.checkpoint, device=args.device, env_dir=args.env_dir)
     results = sampler.sample(
         args.num_samples,
-        args.sampling_temperature,
-        args.seed,
+        softmax_temperature=args.softmax_temperature,
+        seed=args.seed,
         beta=parse_distribution(args.beta),
+        batch_size=args.batch_size,
         preferences=parse_distribution(args.preferences)
         if args.preferences is not None
         else None,
     )
-    sampler.write(results, args.output, args.format)
+    sampler.write(results, args.output, output_format=args.format)
     print(f"wrote {len(results)} valid samples to {args.output}")
 
 

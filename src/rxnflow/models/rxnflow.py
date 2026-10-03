@@ -55,13 +55,14 @@ class RxnFlowModel(nn.Module):
         self.norm_mean = nn.LayerNorm(num_emb)
         self.norm_virtual = nn.LayerNorm(num_emb)
         self.emb_rxn = nn.Embedding(len(env.action_names), num_emb)
-        self.emb_type = nn.Embedding(len(env.library_names), cfg.num_synthon_emb)
+        # Shared type vocabulary, concatenated in attachment/remaining order.
+        self.emb_type = nn.Embedding(len(env.synthon_types) + 1, cfg.num_synthon_emb)
         # Project each feature, then normalize only in the fusion MLP.
         # Properties are scaled before projection in synthon_embedding.
         self.lin_fp = nn.Linear(FINGERPRINT_DIM, cfg.num_synthon_emb)
         self.lin_prop = nn.Linear(PROPERTY_DIM, cfg.num_synthon_emb)
         self.mlp_synthon = mlp(
-            cfg.num_synthon_emb * 3,
+            cfg.num_synthon_emb * 4,
             cfg.num_synthon_emb,
             cfg.num_synthon_emb,
             cfg.num_mlp_layers_synthon,
@@ -135,7 +136,7 @@ class RxnFlowModel(nn.Module):
         return self._logZ(cond_info)
 
     def synthon_embedding(
-        self, fp: torch.Tensor, prop: torch.Tensor, library_indices: torch.Tensor
+        self, fp: torch.Tensor, prop: torch.Tensor, site_indices: torch.Tensor
     ) -> torch.Tensor:
         prop = prop / self.property_scale
         return self.mlp_synthon(
@@ -143,7 +144,8 @@ class RxnFlowModel(nn.Module):
                 [
                     self.lin_fp(fp),
                     self.lin_prop(prop),
-                    self.emb_type(library_indices),
+                    self.emb_type(site_indices[:, 0]),
+                    self.emb_type(site_indices[:, 1]),
                 ],
                 dim=-1,
             )

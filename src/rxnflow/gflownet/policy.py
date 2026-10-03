@@ -96,7 +96,7 @@ class ActionCategorical:
         return maxima + totals.clamp_min(1e-38).log()
 
     def sample(
-        self, sampling_temperature: float, random_action_prob: float, importance: float
+        self, softmax_temperature: float, random_action_prob: float, importance: float
     ) -> list[Action | None]:
         """Draw one action per state; return None where every action is masked."""
         # 1. Choose which state rows use the random exploration distribution.
@@ -121,7 +121,7 @@ class ActionCategorical:
             values = values.masked_fill(~torch.isfinite(group.logits), -torch.inf)
             # Gumbel-max samples from softmax without materializing probabilities.
             noise = torch.rand_like(values).clamp_min(torch.finfo(values.dtype).tiny)
-            values = values / sampling_temperature - (-noise.log()).log()
+            values = values / softmax_temperature - (-noise.log()).log()
             best, columns = values.max(1)
             best_values.append(best)
             best_columns.append(columns)
@@ -188,14 +188,14 @@ class RxnFlowPolicy:
         features: list[tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]],
     ) -> torch.Tensor:
         """Encode concatenated library rows with the same normalization everywhere."""
-        fingerprints, properties, library_indices = zip(*features, strict=True)
+        fingerprints, properties, site_indices = zip(*features, strict=True)
         return F.normalize(
             self.model.synthon_embedding(
                 torch.from_numpy(np.concatenate(fingerprints)).to(
                     self.device, dtype=torch.float32
                 ),
                 torch.from_numpy(np.concatenate(properties)).to(self.device),
-                torch.from_numpy(np.concatenate(library_indices)).to(self.device),
+                torch.from_numpy(np.concatenate(site_indices)).to(self.device),
             ),
             dim=-1,
         )
@@ -233,7 +233,7 @@ class RxnFlowPolicy:
         samples: dict[str | None, NDArray[np.int64]] = {}
         log_importance: dict[str | None, float] = {}
         masks: dict[str, NDArray[np.bool_]] = {}  # library -> [batch, sampled actions]
-        # Each entry contains fingerprints, properties and library embedding indices.
+        # Each entry contains fingerprints, properties and attachment/remaining type indices.
         features: list[
             tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]
         ] = []
@@ -258,8 +258,8 @@ class RxnFlowPolicy:
                     library_data.fingerprints[indices],
                     library_data.properties[indices],
                     np.full(
-                        (len(indices),),
-                        self.env.library_to_index[library_name],
+                        (len(indices), 2),
+                        self.env.library_site_indices[library_name],
                         dtype=np.int64,
                     ),
                 )
@@ -375,7 +375,9 @@ class RxnFlowPolicy:
                     library.fingerprints[indices],
                     library.properties[indices],
                     np.full(
-                        (len(rows),), self.env.library_to_index[name], dtype=np.int64
+                        (len(rows), 2),
+                        self.env.library_site_indices[name],
+                        dtype=np.int64,
                     ),
                 )
             )
@@ -404,13 +406,13 @@ class RxnFlowPolicy:
     def sample_actions(
         self,
         states: list[State],
-        sampling_temperature: float,
+        softmax_temperature: float,
         random_action_prob: float,
         beta: torch.Tensor,
         preferences: torch.Tensor,
     ) -> list[Action | None]:
         return self.forward(states, beta, preferences).sample(
-            sampling_temperature,
+            softmax_temperature,
             random_action_prob,
             self.config.subsampling.importance_temp,
         )
@@ -418,13 +420,13 @@ class RxnFlowPolicy:
     def sample_action(
         self,
         state: State,
-        sampling_temperature: float,
+        softmax_temperature: float,
         random_action_prob: float,
         beta: torch.Tensor,
         preferences: torch.Tensor,
     ) -> Action:
         action = self.sample_actions(
-            [state], sampling_temperature, random_action_prob, beta, preferences
+            [state], softmax_temperature, random_action_prob, beta, preferences
         )[0]
         if action is None:
             raise NoValidActions(
@@ -477,7 +479,7 @@ class RxnFlowPolicy:
 
     def sample_from_model_single(
         self,
-        sampling_temperature: float = 1.0,
+        softmax_temperature: float = 1.0,
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
         *,
@@ -486,7 +488,7 @@ class RxnFlowPolicy:
     ) -> Trajectory:
         return self.sample_from_model(
             1,
-            sampling_temperature,
+            softmax_temperature,
             random_action_prob,
             analyze_backward,
             beta=beta,
@@ -496,7 +498,7 @@ class RxnFlowPolicy:
     def sample_from_model(
         self,
         count: int,
-        sampling_temperature: float = 1.0,
+        softmax_temperature: float = 1.0,
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
         *,
@@ -546,7 +548,7 @@ class RxnFlowPolicy:
                 break
             selected = self.sample_actions(
                 [states[index] for index in active],
-                sampling_temperature,
+                softmax_temperature,
                 random_action_prob,
                 beta[active],
                 preferences[active],

@@ -205,9 +205,7 @@ class Trajectory:
 @dataclass
 class SamplingResult:
     smiles: str
-    trajectory: list[dict[str, Any]]
-    intermediates: list[str]
-    reward: float | None = None
+    traj: list[dict[str, Any]]
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:

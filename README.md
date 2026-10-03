@@ -66,6 +66,8 @@ python scripts/sample.py \
   --output samples.json
 ```
 
+Both full training checkpoints and optionally [extracted sampling models](docs/training.md#extract-a-sampling-model) are accepted.
+
 For preference-conditioned checkpoints, use `--preferences "fixed(0.3,0.7)"` to choose a trade-off. See the [sampling guide](docs/training.md#sampling) for formats and reward evaluation.
 
 ## Documentation

@@ -26,11 +26,10 @@ def get_synthon_emb(
         device, dtype=torch.float32
     )
     prop = torch.from_numpy(library.properties[cpu_indices]).to(device)
-    type_index = model.env.library_to_index[library_name]
-    library_indices = torch.full(
-        (len(indices),), type_index, dtype=torch.long, device=device
-    )
-    return model.synthon_embedding(fp, prop, library_indices)
+    site_indices = torch.tensor(
+        model.env.library_site_indices[library_name], device=device
+    ).expand(len(indices), 2)
+    return model.synthon_embedding(fp, prop, site_indices)
 
 
 def get_synthon_logits(
