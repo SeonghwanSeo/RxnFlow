@@ -1,3 +1,1 @@
-from .action import RxnAction, RxnActionType
-from .env import MolGraph, SynthesisEnv
-from .env_context import SynthesisEnvContext
+"""Synthon environment: chemistry, catalog preparation, and state transitions."""

@@ -1,0 +1,28 @@
+# These SMARTS patterns identify protecting groups and functional groups
+# that are allowed in intermediates but excluded from final products.
+#
+# N-Boc, N-Fmoc, N-Cbz; ordinary carbamates remain allowed.
+- '[NX3]C(=O)OC([CH3])([CH3])[CH3]'
+- '[NX3]C(=O)OCC1c2ccccc2-c2ccccc21'
+- '[NX3]C(=O)OCc1ccccc1'
+
+# Silyl ethers (TMS, TES, TBS, TIPS, TBDPS).
+- '[#6]-[OX2]-[Si]([#6])([#6])[#6]'
+
+# Acyl halides and haloformates.
+- '[CX3](=O)[F,Cl,Br,I]'
+# Sulfonyl fluoride is intentionally retained.
+- '[SX4](=O)(=O)[Cl,Br,I]'
+
+# Isocyanates, NHS esters, acid anhydrides, acyl azides, diazonium groups.
+- '[NX2]=[CX2]=[OX1]'
+- '[CX3](=O)ON1C(=O)CCC1=O'
+- '[CX3](=O)O[CX3](=O)'
+- '[CX3](=O)N=[N+]=[N-]'
+- '[#6]-[N+]#N'
+
+# Bpin, MIDA boronates (neutral or charge-separated N-B representation), R-BF3-.
+# Boronic acids and benzoxaboroles remain allowed; not a blanket boron-ester ban.
+- '[#5]1OC([CH3])([CH3])C([CH3])([CH3])O1'
+- '[#5]1OC(=O)CN([CH3])CC(=O)O1'
+- '[#6]-[B-](F)(F)F'

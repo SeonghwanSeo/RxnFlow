@@ -1,39 +1,31 @@
+"""Shared neural-network building blocks; weights are initialized by the model."""
+
 from torch import nn
 
 
-def init_weight_linear(m: nn.Module, act: type[nn.Module]):
-    if act is nn.LeakyReLU:
-        nn.init.kaiming_uniform_(m.weight, mode="fan_in", nonlinearity="leaky_relu", a=0.01)
-    elif act is nn.ReLU:
-        nn.init.kaiming_uniform_(m.weight, mode="fan_in", nonlinearity="relu")
-    elif act is nn.SiLU:
-        nn.init.kaiming_uniform_(m.weight, mode="fan_in", nonlinearity="relu")
-    else:
-        nn.init.kaiming_uniform_(m.weight, mode="fan_in", a=1e-5)
-    if m.bias is not None:
-        nn.init.zeros_(m.bias)
-
-
 def mlp(
-    n_in: int,
-    n_hid: int,
-    n_out: int,
-    n_layer: int,
-    act: type[nn.Module] = nn.LeakyReLU,
-    norm: bool = False,
+    d_in: int,
+    d_hid: int,
+    d_out: int,
+    n_layer: int = 2,
+    *,
+    activation: type[nn.Module] = nn.SiLU,
+    layernorm: bool = False,
     dropout: float = 0.0,
 ) -> nn.Sequential:
-    """Creates a fully-connected network with no activation after the last layer.
-    If `n_layer` is 0 then this corresponds to `nn.Linear(n_in, n_out)`.
+    """Build n_layer Linear layers, including the output layer.
+
+    Hidden blocks use Linear → optional LayerNorm → activation → optional
+    dropout. With n_layer=1, this is a single Linear(d_in, d_out).
     """
-    layers = []
-    for i in range(n_layer):
-        d_in = n_in if i == 0 else n_hid
-        d_out = n_hid
-        layers.append(nn.Linear(d_in, d_out))
-        if norm:
-            layers.append(nn.LayerNorm(d_out))
-        layers.append(act())
-        layers.append(nn.Dropout(dropout))
-    layers.append(nn.Linear(n_hid, n_out))
-    return nn.Sequential(*layers)
+    assert n_layer >= 1
+    modules = []
+    for _ in range(n_layer - 1):
+        modules.append(nn.Linear(d_in, d_hid))
+        if layernorm:
+            modules.append(nn.LayerNorm(d_hid))
+        modules.append(activation())
+        if dropout > 0:
+            modules.append(nn.Dropout(dropout))
+        d_in = d_hid
+    return nn.Sequential(*modules, nn.Linear(d_in, d_out))

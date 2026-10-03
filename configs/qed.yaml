@@ -1,0 +1,10 @@
+# Minimal QED training configuration.
+data:
+  env_dir: /path/to/prepared/env/
+
+reward:
+  beta: "32"
+  settings: {}
+
+property_penalty:
+  mw: 500

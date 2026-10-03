@@ -1,0 +1,253 @@
+UniReaction:
+  # These rules operate directly in synthon space. Reverse rules enumerate
+  # precursors; they are not experimental reverse protocols.
+  boc_deprotection:
+    input_type: 33
+    output_type: 1
+    forward: "[#7:1]-[33*]>>[#7:1]-[1*]"
+    reverse: "[#7:1]-[1*]>>[#7:1]-[33*]"
+  methyl_ester_hydrolysis:
+    input_type: 34
+    output_type: 3
+    forward: "[#6:1]-[34*]>>[#6:1]-[3*]"
+    reverse: "[#6:1]-[3*]>>[#6:1]-[34*]"
+  ethyl_ester_hydrolysis:
+    input_type: 35
+    output_type: 3
+    forward: "[#6:1]-[35*]>>[#6:1]-[3*]"
+    reverse: "[#6:1]-[3*]>>[#6:1]-[35*]"
+  nitrile_to_tetrazole:
+    input_type: 11
+    # Consuming the last handle terminates the trajectory immediately.
+    output_type: null
+    forward: "[#6:1]-[11*]>>[#6:1]-c1nnn[nH]1"
+    reverse: "[#6:1]-c1nnn[nH]1>>[#6:1]-[11*]"
+
+BiReaction:
+  amide_coupling:
+    forward: "[#7:1]-[1*].[#6:2]-[3*]>>[#7:1]-C(=O)-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):1]-C(=O)-[#6:2]>>[#7:1]-[1*].[#6:2]-[3*]"
+    synthon_types: [1, 3]
+    ordered: true
+  
+  amide_formation_acyl_halide_or_ester:
+    forward: "[#7:1]-[1*].[#6:2]-[5*]>>[#7:1]-C(=O)-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):1]C(=O)[#6:2]>>[#7:1]-[1*].[#6:2]-[5*]"
+    synthon_types: [1, 5]
+    ordered: true
+  
+  amine_halide_coupling:
+    forward: "[#7:1]-[1*].[#6:2]-[8*]>>[#7:1]-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=[N,O,S]))[C,S]=[N,O,S]):1]-[#6:2]>>[#7:1]-[1*].[#6:2]-[8*]"
+    synthon_types: [1, 8]
+    ordered: true
+  
+  sulfonamide_formation:
+    forward: "[#7:1]-[1*].[#6:2]-[13*]>>[#7:1]-S(=O)(=O)-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=[N,O,S]))[C,S]=[N,O,S]):1][SX4;$(S(=O)(=O))][#6:2]>>[#7:1]-[1*].[#6:2]-[13*]"
+    synthon_types: [1, 13]
+    ordered: true
+  
+  urea_formation:
+    forward: "[#7:1]-[1*].[#6:2]-[14*]>>[#7:1]-C(=O)N-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):1]-C(=O)[NH1+0]-[C;!$(C=[N,O,S]):2]>>[#7:1]-[1*].[#6:2]-[14*]"
+    synthon_types: [1, 14]
+    ordered: true
+  
+  oxamide_formation:
+    forward: "[#7:1]-[1*].[#7:2]-[1*]>>[#7:1]-C(=O)C(=O)-[#7:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):1]-C(=O)C(=O)-[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):2]>>[#7:1]-[1*].[#7:2]-[1*]"
+    synthon_types: [1, 1]
+    ordered: false
+  
+  reductive_amination_aldehyde:
+    forward: "[#7:1]-[1*].[#6:2]-[4*]>>[#7:1]-C-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):1]-[CH2]-[#6:2]>>[#7:1]-[1*].[#6:2]-[4*]"
+    synthon_types: [1, 4]
+    ordered: true
+  
+  reductive_amination_ketone:
+    forward: "[#7:1]-[1*].[CH0:2]=[7*]>>[#7:1]-[CH1:2]"
+    reverse: "[NX3;$(N[#6]);!$(N[#7]);!$(N[C,S]=[N,O,S]):1]-[CH1;$(C([#6])[#6]):2]>>[#7:1]-[1*].[CH0:2]=[7*]"
+    synthon_types: [1, 7]
+    ordered: true
+  
+  epoxide_opening_amine:
+    forward: "[#7:1]-[1*].[#6:2]-[20*]>>[#7:1]-[#6:2]"
+    reverse: "[NX3;$(N[#6]);!$(N[#7]);!$(N[C,S]=[N,O,S]):1]-[C;$(CC[OH]):2]>>[#7:1]-[1*].[#6:2]-[20*]"
+    synthon_types: [1, 20]
+    ordered: true
+  
+  aza_michael_addition:
+    forward: "[#7:1]-[1*].[#6:2]-[26*]>>[#7:1]-[#6:2]"
+    reverse: "[NX3;$(N[#6]);!$(N[#7]);!$(N[C,S]=[N,O,S]):1][C$(CC[$(C=O),$(C#N),$(S=O),$([N+](=O)[O-])]):2]>>[#7:1]-[1*].[#6:2]-[26*]"
+    synthon_types: [1, 26]
+    ordered: true
+  
+  dihydroquinazolinone_formation:
+    forward: "[C:1]=[28*].[#6:2]-[4*]>>[CH1:1]-[#6:2]"
+    reverse: "[CH1;$(C1NC(=O)cc[NX3;!$(N[C,S]=[N,O,S])]1):1]-[#6:2]>>[#6:1]=[28*].[#6:2]-[4*]"
+    synthon_types: [28, 4]
+    ordered: true
+  
+  sulfone_formation_two_electrophiles:
+    forward: "[#6:1]-[18*].[#6:2]-[18*]>>[#6:1]S(=O)(=O)[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[SX4;$(S(=O)(=O))]-[C;!$(C=[N,O,S]):2]>>[#6:1]-[18*].[#6:2]-[18*]"
+    synthon_types: [18, 18]
+    ordered: false
+  
+  sulfone_formation_thiol:
+    forward: "[#6:1]-[18*].[#6:2]-[16*]>>[#6:1]S(=O)(=O)[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[SX4;$(S(=O)(=O))]-[C;!$(C=[N,O,S]):2]>>[#6:1]-[18*].[#6:2]-[16*]"
+    synthon_types: [18, 16]
+    ordered: true
+  
+  sulfoxide_formation:
+    forward: "[#6:1]-[18*].[#6:2]-[16*]>>[#6:1]S(=O)[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[SX3;$(S=O)]-[C;!$(C=[N,O,S]):2]>>[#6:1]-[18*].[#6:2]-[16*]"
+    synthon_types: [18, 16]
+    ordered: true
+  
+  thioether_formation_two_halides:
+    forward: "[#6:1]-[17*].[#6:2]-[17*]>>[#6:1]-S-[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[SX2]-[C;!$(C=[N,O,S]):2]>>[#6:1]-[17*].[#6:2]-[17*]"
+    synthon_types: [17, 17]
+    ordered: false
+  
+  ester_formation_alkyl_halide:
+    forward: "[#6:1]-[17*].[#6:2]-[3*]>>[#6:1]-OC(=O)-[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-OC(=O)-[#6:2]>>[#6:1]-[17*].[#6:2]-[3*]"
+    synthon_types: [17, 3]
+    ordered: true
+  
+  esterification:
+    forward: "[#6:1]-[15*].[#6:2]-[3*]>>[#6:1]-OC(=O)-[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-OC(=O)-[#6:2]>>[#6:1]-[15*].[#6:2]-[3*]"
+    synthon_types: [15, 3]
+    ordered: true
+  
+  ether_formation:
+    forward: "[#6:1]-[15*].[#6:2]-[17*]>>[#6:1]-O-[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-O-[C;!$(C=[N,O,S]):2]>>[#6:1]-[15*].[#6:2]-[17*]"
+    synthon_types: [15, 17]
+    ordered: true
+  
+  thioether_formation_thiol:
+    forward: "[#6:1]-[16*].[#6:2]-[17*]>>[#6:1]-S-[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[SX2]-[C;!$(C=[N,O,S]):2]>>[#6:1]-[16*].[#6:2]-[17*]"
+    synthon_types: [16, 17]
+    ordered: true
+  
+  hydantoin_formation:
+    forward: "[#6:1]-[14*].[#7:2]-[27*]>>[#6:1]-[#7:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[N;$(N1C(=O)[NX3;!$(N[!#6])]CC(=O)1):2]>>[#6:1]-[14*].[#7:2]-[27*]"
+    synthon_types: [14, 27]
+    ordered: true
+  
+  aminopurine_formation:
+    forward: "[#6:1]-[14*].[#6:2]-[14*]>>[#6:1][NH]c1ncnc2c1nc[nH0]2[#6:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[NH]-[cH0]1[nH0][cH1][nH0]c2c1[nH0][cH1][nH0]2-[C;!$(C=[N,O,S]):2]>>[#6:1]-[14*].[#6:2]-[14*]"
+    synthon_types: [14, 14]
+    ordered: true
+  
+  dihydrouracil_formation:
+    forward: "[#6:1]-[14*].[#7:2]-[29*]>>[#6:1]-[#7:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[N;$(N1C(=O)C[C;!$(C=[N,O,S])][NH]C(=O)1):2]>>[#6:1]-[14*].[#7:2]-[29*]"
+    synthon_types: [14, 29]
+    ordered: true
+  
+  quinazolinedione_formation:
+    forward: "[#6:1]-[14*].[#7:2]-[32*]>>[#6:1]-[#7:2]"
+    reverse: "[C;!$(C=[N,O,S]):1]-[#7;$(n1c(=O)cc[nH]c(=O)1):2]>>[#6:1]-[14*].[#7:2]-[32*]"
+    synthon_types: [14, 32]
+    ordered: true
+  
+  aldehyde_condensation_single_ewg:
+    forward: "[#6:1]-[4*].[#6:2]=[24*]>>[#6:1]-[CH]=[#6:2]"
+    reverse: "[#6:1]-[CH]=[CH1,CH0&$(C(-[#6])-[#6]):2]-[$(C=O),$(C#N),$(S=O),$([N+](=O)[O-]):3]>>[#6:1]-[4*].[*:3]-[#6:2]=[24*]"
+    synthon_types: [4, 24]
+    ordered: true
+  
+  aldehyde_condensation_double_ewg:
+    forward: "[#6:1]-[4*].[#6:2]=[25*]>>[#6:1]-[CH]=[#6:2]"
+    reverse: "[#6:1]-[CH]=[C:2](-[$(C=O),$(C#N),$(S=O),$([N+](=O)[O-]):3])-[$(C=O),$(C#N),$(S=O),$([N+](=O)[O-]):4]>>[#6:1]-[4*].[25*]=[#6:2](-[*:3])-[*:4]"
+    synthon_types: [4, 25]
+    ordered: true
+  
+  hydrazone_formation:
+    forward: "[#6:1]-[4*].[#6:2]-[9*]>>[#6:1][CH]=NN[#6:2]"
+    reverse: "[#6:1]-[CH]=[NX2][NH1+0]-[#6:2]>>[#6:1]-[4*].[#6:2]-[9*]"
+    synthon_types: [4, 9]
+    ordered: true
+  
+  benzazole_formation_aldehyde:
+    forward: "[#6:1]-[4*].[#6:2]-[30*]>>[#6:1]-[#6:2]"
+    reverse: "[#6:1]-[c;$(c1[nH0+0][cX3;!$(c-*)][cX3;!$(c-*)][n,s,o]1):2]>>[#6:1]-[4*].[#6:2]-[30*]"
+    synthon_types: [4, 30]
+    ordered: true
+  
+  benzazole_formation_carboxylic_acid:
+    forward: "[#6:1]-[3*].[#6:2]-[30*]>>[#6:1]-[#6:2]"
+    reverse: "[#6:1]-[c;$(c1[nH0+0][cX3;!$(c-*)][cX3;!$(c-*)][n,s,o]1):2]>>[#6:1]-[3*].[#6:2]-[30*]"
+    synthon_types: [3, 30]
+    ordered: true
+  
+  oxadiazole_134_formation:
+    forward: "[#6:1]-[3*].[#6:2]-[6*]>>[#6:2]c1[nH0][nH0]c([#6:1])[oH0]1"
+    reverse: "[#6:2]-c1[nH0][nH0]c(-[#6:1])[oH0]1>>[#6:1]-[3*].[#6:2]-[6*]"
+    synthon_types: [3, 6]
+    ordered: true
+  
+  epoxide_opening_phenol:
+    forward: "[#6:1]-[22*].[#6:2]-[20*]>>[#6:1]-O-[#6:2]"
+    reverse: "[c:1]-O-[C$(CC[OH]):2]>>[#6:1]-[22*].[#6:2]-[20*]"
+    synthon_types: [22, 20]
+    ordered: true
+  
+  oxa_michael_addition:
+    forward: "[#6:1]-[22*].[#6:2]-[26*]>>[#6:1]-O-[#6:2]"
+    reverse: "[c:1]-O-[C:2]-[C;$(C[$(C=O),$(C#N),$(S=O),$([N+](=O)[O-])]):3]>>[#6:1]-[22*].[#6:3]-[#6:2]-[26*]"
+    synthon_types: [22, 26]
+    ordered: true
+  
+  quinazolinone_formation:
+    forward: "[#6:1]-[11*].[#6:2]-[31*]>>[#6:1]-[#6:2]"
+    reverse: "[#6:1]-[#6;$(c1n[c;!$(c-[*])][c;!$(c-[*])]c(=O)[nH1+0]1):2]>>[#6:1]-[11*].[#6:2]-[31*]"
+    synthon_types: [11, 31]
+    ordered: true
+  
+  oxadiazole_124_formation:
+    forward: "[#6:1]-[11*].[#6:2]-[3*]>>[#6:1]-c1[nH0+0][oH0+0]c(-[#6:2])[nH0]1"
+    reverse: "[#6:1]-c1[nH0+0][oH0+0]c(-[#6:2])[nH0]1>>[#6:1]-[11*].[#6:2]-[3*]"
+    synthon_types: [11, 3]
+    ordered: true
+  
+  suzuki_coupling:
+    forward: "[#6:1]-[23*].[#6:2]-[21*]>>[#6:1]-[#6:2]"
+    reverse: "[c:1]-[c:2]>>[c:1]-[23*].[c:2]-[21*]"
+    synthon_types: [23, 21]
+    ordered: true
+  
+  ketone_carboxylative_coupling:
+    forward: "[CH0:1]=[7*].[*:2]-[2*]>>[*:2]-[C:1]-C(=O)O"
+    reverse: "[#6:3][O,#7:2]-[C;$(C([#6])[#6]):1]-C(=O)[OH]>>[CH0:1]=[7*].[#6:3]-[*:2]-[2*]"
+    synthon_types: [7, 2]
+    ordered: true
+  
+  triazole_123_formation_halide:
+    forward: "[#6:1]-[19*].[#6:2]-[12*]>>[#6:2]-c1c[nH0](-[#6:1])[nH0][nH0]1"
+    reverse: "[#6:2]-c1[cH1][nH0](-[#6:1])[nH0][nH0]1>>[#6:1]-[19*].[#6:2]-[12*]"
+    synthon_types: [19, 12]
+    ordered: true
+  
+  triazole_123_formation_azide:
+    forward: "[#6:1]-[10*].[#6:2]-[12*]>>[#6:2]c1c[nH0]([#6:1])[nH0][nH0]1"
+    reverse: "[#6:2]c1[cH1][nH0]([#6:1])[nH0][nH0]1>>[#6:1]-[10*].[#6:2]-[12*]"
+    synthon_types: [10, 12]
+    ordered: true
+  
+  aminomethyl_triazole_formation:
+    forward: "[#6:1]-[10*].[#6:2]-[14*]>>[#6:2]-[NH1][CH2][cH0+0]1[cH1+0][nH0](-[#6:1])[nH0][nH0]1"
+    reverse: "[#6:2]-[NH1][CH2][cH0+0]1[cH1+0][nH0](-[#6:1])[nH0][nH0]1>>[#6:1]-[10*].[#6:2]-[14*]"
+    synthon_types: [10, 14]
+    ordered: true
