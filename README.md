@@ -20,14 +20,15 @@ pip install -e .
 
 ### Data preparation
 
-Prepare your Enamine building-block catalog with the supplied reaction templates:
+Prepare an eMolecules or Enamine building-block catalog with the supplied reaction templates:
 
 ```bash
 python scripts/prepare.py \
-  --building-blocks /path/to/enamine_stock.smi \
-  --template-dir data/templates \
-  --env-dir /path/to/prepared/enamine \
+  --building-blocks /path/to/building_blocks.smi \
+  --config data/templates/basic/config.yaml \
+  --env-dir /path/to/prepared/environment \
   --num-workers 16 \
+  --max-atoms 30 \
   --min-library-size 10
 ```
 
@@ -51,11 +52,11 @@ Train on QED and synthetic accessibility, with SA reward `(10 - SA score) / 9`:
 python examples/qed_sa.py --config configs/qed_sa.yaml
 ```
 
-The default reward is the product of QED and SA rewards, with beta sampled uniformly from 1 to 64. Preference conditioning is optional: set `reward.preferences: "uniform"` to train across trade-offs. See [MOO rewards and conditioning](docs/rewards.md).
+The default reward is the product of QED and SA rewards, with beta sampled uniformly from 1 to 64. Preference conditioning is optional: set `reward.moo_preferences: "uniform"` to train across trade-offs. See [MOO rewards and conditioning](docs/rewards.md).
 
 ## Sampling
 
-Sample using a beta value from the training range:
+Replace the checkpoint path with your trained model and choose a beta value from its training range:
 
 ```bash
 python scripts/sample.py \

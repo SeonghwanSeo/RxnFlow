@@ -30,7 +30,7 @@ def parse_distribution(value: str) -> tuple[str, list[float]]:
 
 @dataclass
 class DataConfig:
-    """Prepared Enamine synthon environment and graph capacity settings."""
+    """Prepared synthon environment and graph capacity settings."""
 
     env_dir: str = ""
     max_atoms: int = 50
@@ -63,13 +63,12 @@ class RewardConfig:
 
     # Reward exponent and preference sampling specifications.
     beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [32.0]))
-    preferences: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
-    scalarization: Literal["sum", "mul"] = "mul"
-    floor: float = 1e-4
+    moo_preferences: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
+    moo_scalarization: Literal["sum", "mul"] = "mul"
     settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        for spec in (self.beta, self.preferences):
+        for spec in (self.beta, self.moo_preferences):
             if (
                 not isinstance(spec, tuple)
                 or len(spec) != 2
@@ -79,10 +78,8 @@ class RewardConfig:
                 raise ValueError(
                     "internal conditions must be (distribution, parameters) tuples"
                 )
-        if self.scalarization not in ("sum", "mul"):
-            raise ValueError("reward.scalarization must be sum or mul")
-        if self.floor <= 0:
-            raise ValueError("reward.floor must be positive")
+        if self.moo_scalarization not in ("sum", "mul"):
+            raise ValueError("reward.moo_scalarization must be sum or mul")
         if not isinstance(self.settings, dict):
             raise ValueError("reward.settings must be a mapping")
 
@@ -132,15 +129,15 @@ class GenerationConfig:
 @dataclass
 class TrainingConfig:
     steps: int = 1_000
-    batch_size: int = 64
-    replay_batch_size: int = 64
+    num_online: int = 64
+    num_replay: int = 64
     replay_capacity: int = 10_000
     learning_rate: float = 1e-4
-    log_z_learning_rate: float = 1e-3
+    learning_rate_logZ: float = 1e-3
     lr_decay_steps: float = 20_000
     weight_decay: float = 1e-8
-    # Additional softmax temperature, separate from reward exponent beta.
-    sampling_temperature: float = 1.0
+    # Positive lower bound before taking reward logarithms.
+    reward_floor: float = 1e-5
     random_action_prob: float = 0.05
     ema_decay: float = 0.99
     checkpoint_every: int = 500
@@ -152,15 +149,15 @@ class TrainingConfig:
     def validate(self) -> None:
         positive_ints = {
             "steps": self.steps,
-            "batch_size": self.batch_size,
+            "num_online": self.num_online,
             "checkpoint_every": self.checkpoint_every,
             "log_every": self.log_every,
         }
         for name, value in positive_ints.items():
             if value <= 0:
                 raise ValueError(f"training.{name} must be positive")
-        if self.replay_batch_size < 0:
-            raise ValueError("training.replay_batch_size must be non-negative")
+        if self.num_replay < 0:
+            raise ValueError("training.num_replay must be non-negative")
         if self.replay_capacity < 0:
             raise ValueError("training.replay_capacity must be non-negative")
         if self.retrosynthesis_workers < 0:
@@ -176,14 +173,13 @@ class TrainingConfig:
             value <= 0
             for value in (
                 self.learning_rate,
-                self.log_z_learning_rate,
+                self.learning_rate_logZ,
                 self.lr_decay_steps,
-                self.sampling_temperature,
             )
         ):
-            raise ValueError(
-                "learning rates, decay steps and sampling temperature must be positive"
-            )
+            raise ValueError("learning rates and decay steps must be positive")
+        if not math.isfinite(self.reward_floor) or self.reward_floor <= 0:
+            raise ValueError("training.reward_floor must be finite and positive")
         if not 0 <= self.random_action_prob <= 1:
             raise ValueError("training.random_action_prob must be in [0, 1]")
         if not 0 <= self.ema_decay < 1:
@@ -228,9 +224,7 @@ class Config:
         self.model.validate()
         self.training.validate()
         if not self.data.env_dir:
-            raise ValueError(
-                "data.env_dir must point to a prepared Enamine synthon environment"
-            )
+            raise ValueError("data.env_dir must point to a prepared synthon environment")
         if not self.output_dir:
             raise ValueError("run.output_dir must not be empty")
         if self.device != "auto" and not (
@@ -245,7 +239,7 @@ class Config:
         """Return the shallow user-facing YAML representation."""
 
         reward = asdict(self.reward)
-        for name in ("beta", "preferences"):
+        for name in ("beta", "moo_preferences"):
             distribution, params = reward[name]
             reward[name] = (
                 "none"
@@ -297,7 +291,7 @@ class Config:
             raise ValueError(f"unknown configuration fields: {sorted(unknown)}")
         reward = dict(raw["reward"])
         # JSON/OmegaConf serialize tuples as sequences; restore the typed config.
-        for name in ("beta", "preferences"):
+        for name in ("beta", "moo_preferences"):
             dist, params = reward[name]
             reward[name] = (dist, list(params))
         cfg = cls(
@@ -328,7 +322,7 @@ class Config:
         if reward is not None:
             if not isinstance(reward, dict):
                 raise ValueError("reward must be a mapping")
-            for name in ("beta", "preferences"):
+            for name in ("beta", "moo_preferences"):
                 if name in reward:
                     reward[name] = parse_distribution(reward[name])
             if "settings" in reward and not isinstance(reward["settings"], dict):

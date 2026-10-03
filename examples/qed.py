@@ -20,8 +20,8 @@ class QEDReward(RewardFunction):
 
     objectives = ("qed",)
 
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
-        return np.array([QED.qed(mol) for mol in molecules], dtype=np.float32).reshape(
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array([QED.qed(mol) for mol in mols], dtype=np.float32).reshape(
             -1, 1
         )
 

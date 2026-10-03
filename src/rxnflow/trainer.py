@@ -19,8 +19,9 @@ from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
 from rxnflow.gflownet.replay import ReplayBuffer
+from rxnflow.gflownet.rewards import scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
-from rxnflow.reward import RewardFunction, evaluate_rewards, scalarize_log_rewards
+from rxnflow.reward import RewardFunction
 
 
 def sum_by_trajectory(
@@ -48,9 +49,9 @@ class RxnFlowTrainer:
             raise ValueError("reward.objectives must contain unique objective names")
         self.condition_sampler = ConditionSampler(
             config.reward.beta,
-            config.reward.preferences,
+            config.reward.moo_preferences,
             len(self.objectives),
-            config.reward.scalarization,
+            config.reward.moo_scalarization,
         )
         self.device = resolve_device(config.device)
         torch.manual_seed(config.seed)
@@ -71,14 +72,14 @@ class RxnFlowTrainer:
             self.env,
             config.model,
             len(self.objectives),
-            preference_conditioning=config.reward.preferences[0] != "none",
+            preference_conditioning=config.reward.moo_preferences[0] != "none",
         ).to(self.device)
         self.sampling_model = (
             RxnFlowModel(
                 self.env,
                 config.model,
                 len(self.objectives),
-                preference_conditioning=config.reward.preferences[0] != "none",
+                preference_conditioning=config.reward.moo_preferences[0] != "none",
             )
             .to(self.device)
             .eval()
@@ -92,12 +93,12 @@ class RxnFlowTrainer:
             if not name.startswith("_logZ.")
         ]
         self.log_z_parameters = list(self.model._logZ.parameters())
-        self.optimizer = torch.optim.AdamW(
+        self.optimizer = torch.optim.Adam(
             [
                 {"params": self.policy_parameters},
                 {
                     "params": self.log_z_parameters,
-                    "lr": config.training.log_z_learning_rate,
+                    "lr": config.training.learning_rate_logZ,
                 },
             ],
             lr=config.training.learning_rate,
@@ -207,10 +208,9 @@ class RxnFlowTrainer:
         self.python_rng.setstate(checkpoint["python_random"])
         self.step = int(checkpoint["step"])
 
-    def _assign_rewards(self, trajectories: list[Trajectory]) -> dict[str, float]:
+    def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
         """Attach raw objective values and preference-weighted scalar rewards."""
-        values, metrics = evaluate_rewards(
-            self.reward,
+        values = self.reward.run(
             [
                 Chem.MolFromSmiles(value.final_smiles) if value.valid else None
                 for value in trajectories
@@ -223,8 +223,8 @@ class RxnFlowTrainer:
             scalarize_log_rewards(
                 torch.from_numpy(values),
                 torch.from_numpy(preferences),
-                self.config.reward.scalarization,
-                self.config.reward.floor,
+                self.config.reward.moo_scalarization,
+                self.config.training.reward_floor,
             )
             .exp()
             .tolist()
@@ -234,7 +234,6 @@ class RxnFlowTrainer:
         ):
             trajectory.objective_rewards = objectives
             trajectory.reward = scalar if trajectory.valid else 0.0
-        return metrics
 
     def compute_batch_losses(
         self, trajectories: list[Trajectory], num_online: int
@@ -285,8 +284,8 @@ class RxnFlowTrainer:
             scalarize_log_rewards(
                 objective_rewards,
                 preferences,
-                self.config.reward.scalarization,
-                self.config.reward.floor,
+                self.config.reward.moo_scalarization,
+                self.config.training.reward_floor,
             )
             * beta
         )
@@ -388,21 +387,20 @@ class RxnFlowTrainer:
                 # 1. Generate online trajectories with the EMA model and score rewards.
                 started = perf_counter()
                 self.sampling_model.eval()
-                count = self.config.training.batch_size
+                count = self.config.training.num_online
                 beta, preferences = self.condition_sampler.sample(count)
                 online_trajs = self.sampling_policy.sample_from_model(
-                    self.config.training.batch_size,
-                    self.config.training.sampling_temperature,
-                    self.config.training.random_action_prob,
+                    self.config.training.num_online,
+                    random_action_prob=self.config.training.random_action_prob,
                     beta=beta,
                     preferences=preferences,
                 )
                 sample_time = perf_counter() - started
-                reward_metrics = self._assign_rewards(online_trajs)
+                self._assign_rewards(online_trajs)
                 # 2. Sample replay before insertion so online trajectories cannot be
                 # duplicated as replay entries in this same optimization batch.
                 batch = online_trajs + self.replay.sample(
-                    self.config.training.replay_batch_size, self.python_rng
+                    self.config.training.num_replay, self.python_rng
                 )
                 self.replay.add(online_trajs)
                 # 3. Update the policy/logZ, learning rates, and EMA sampling weights.
@@ -475,7 +473,6 @@ class RxnFlowTrainer:
                     # and a failed selected action. Empty action spaces add no step.
                     "traj_lens": sum(len(value.steps) for value in online_trajs)
                     / len(online_trajs),
-                    **reward_metrics,
                     "sampling_time": sample_time,
                     "iteration_time": perf_counter() - started,
                 }

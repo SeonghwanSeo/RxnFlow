@@ -16,8 +16,9 @@ from rxnflow.core.types import SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy, resolve_device
+from rxnflow.gflownet.rewards import scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
-from rxnflow.reward import RewardFunction, evaluate_rewards, scalarize_log_rewards
+from rxnflow.reward import RewardFunction
 
 
 class RxnFlowSampler:
@@ -63,7 +64,7 @@ class RxnFlowSampler:
                 self.env,
                 config.model,
                 len(self.objectives),
-                preference_conditioning=config.reward.preferences[0] != "none",
+                preference_conditioning=config.reward.moo_preferences[0] != "none",
             )
             .to(self.device)
             .eval()
@@ -105,14 +106,14 @@ class RxnFlowSampler:
         """Return count valid trajectories, with optional post-generation scoring."""
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
         if preferences is None:
-            preferences = self.config.reward.preferences
-        if (preferences[0] == "none") != (self.config.reward.preferences[0] == "none"):
+            preferences = self.config.reward.moo_preferences
+        if (preferences[0] == "none") != (self.config.reward.moo_preferences[0] == "none"):
             raise ValueError("preferences must match the checkpoint's conditioning mode")
         conditions = ConditionSampler(
             beta,
             preferences,
             len(self.objectives),
-            self.config.reward.scalarization,
+            self.config.reward.moo_scalarization,
         )
         if count <= 0:
             raise ValueError("sample count must be positive")
@@ -127,7 +128,7 @@ class RxnFlowSampler:
         maximum_attempts = max(100, count * 100)
         while len(trajectories) < count and attempts < maximum_attempts:
             batch_size = min(
-                self.config.training.batch_size,
+                self.config.training.num_online,
                 count - len(trajectories),
                 maximum_attempts - attempts,
             )
@@ -149,8 +150,7 @@ class RxnFlowSampler:
         # 3. Attach provenance and optional rewards without changing the samples.
         results = [self._result(trajectory) for trajectory in trajectories]
         if self.reward is not None and results:
-            values, metrics = evaluate_rewards(
-                self.reward,
+            values = self.reward.run(
                 [Chem.MolFromSmiles(value.final_smiles) for value in trajectories],
             )
             preferences = np.array(
@@ -160,8 +160,8 @@ class RxnFlowSampler:
                 scalarize_log_rewards(
                     torch.from_numpy(values),
                     torch.from_numpy(preferences),
-                    self.config.reward.scalarization,
-                    self.config.reward.floor,
+                    self.config.reward.moo_scalarization,
+                    self.config.training.reward_floor,
                 )
                 .exp()
                 .tolist()
@@ -173,7 +173,6 @@ class RxnFlowSampler:
                 result.metadata["objective_rewards"] = dict(
                     zip(self.objectives, value, strict=True)
                 )
-                result.metadata.update(metrics)
         return results
 
     @staticmethod

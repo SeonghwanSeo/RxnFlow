@@ -1,4 +1,4 @@
-"""Enamine synthon conversion and NumPy feature preparation."""
+"""Building-block synthon conversion and NumPy feature preparation."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from typing import cast
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import numpy as np
+import yaml
 from rdkit import Chem
 from rdkit.Chem.SaltRemover import SaltRemover
 
@@ -32,7 +33,6 @@ from rxnflow.envs.features import (
 )
 
 ALLOWED_ATOMIC_NUMBERS = {5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53, 85}
-MAX_BB_ATOMS = 50
 MANIFEST_NAME = "prepare_manifest.json"
 MANIFEST_FORMAT = "rxnflow-prepare"
 
@@ -76,17 +76,13 @@ def _clean_smiles(smiles: str, salt_remover: SaltRemover) -> str | None:
     stripped = salt_remover.StripMol(mol, dontRemoveEverything=True)
     if stripped is None or not stripped.GetNumAtoms():
         return None
-    # Apply the catalog size limit to the desalted source BB, before any
-    # functional groups are replaced by synthon handles.
-    if stripped.GetNumHeavyAtoms() > MAX_BB_ATOMS:
-        return None
     if {atom.GetAtomicNum() for atom in stripped.GetAtoms()} - ALLOWED_ATOMIC_NUMBERS:
         return None
     canonical = Chem.MolToSmiles(stripped)
     return None if "." in canonical else canonical
 
 
-def _read_enamine(path: Path) -> list[tuple[str, str]]:
+def _read_building_blocks(path: Path) -> list[tuple[str, str]]:
     records: list[tuple[str, str]] = []
     salt_remover = SaltRemover()
     with path.open(encoding="utf-8") as handle:
@@ -98,7 +94,7 @@ def _read_enamine(path: Path) -> list[tuple[str, str]]:
             if smiles is not None:
                 records.append((smiles, fields[1].strip()))
     if not records:
-        raise ValueError(f"no valid Enamine building blocks in {path}")
+        raise ValueError(f"no valid building blocks in {path}")
     return records
 
 
@@ -125,7 +121,10 @@ def _conversion_templates(
 
 
 def _convert_batch(
-    records: list[tuple[str, str]], specs: list[SynthonSpec]
+    records: list[tuple[str, str]],
+    specs: list[SynthonSpec],
+    exclude_patterns: tuple[Chem.Mol, ...] = (),
+    max_atoms: int = 30,
 ) -> dict[str, dict[str, set[str]]]:
     """Convert a source batch into oriented synthons with merged source IDs."""
     # 1. Reuse compiled conversions and collect one-handle products.
@@ -157,6 +156,13 @@ def _convert_batch(
                 for product_mol in right.run_mol(mol).values():
                     if typed_dummy_isotopes(product_mol) != expected:
                         continue
+                    # Filter completed linkers, never the intermediate bricks:
+                    # the second conversion may consume an excluded group.
+                    # RDKit heavy atoms exclude hydrogen and dummy handles.
+                    if product_mol.GetNumHeavyAtoms() > max_atoms:
+                        continue
+                    if any(product_mol.HasSubstructMatch(q) for q in exclude_patterns):
+                        continue
                     # Store each attachment direction as a separate library row.
                     # Isotope 0 marks the incoming attachment; the other handle
                     # keeps its type and becomes the next state's open site.
@@ -184,6 +190,10 @@ def _convert_batch(
         key = str(synthon_type)
         for original, identifiers in values.values():
             mol = Chem.Mol(original)
+            if mol.GetNumHeavyAtoms() > max_atoms:
+                continue
+            if any(mol.HasSubstructMatch(q) for q in exclude_patterns):
+                continue
             for atom in mol.GetAtoms():
                 if atom.GetAtomicNum() == 0:
                     atom.SetIsotope(0)
@@ -196,27 +206,84 @@ def _convert_batch(
 def convert_stage(
     building_blocks: str | Path,
     env_dir: str | Path,
-    template_dir: str | Path,
+    config_path: str | Path,
     num_workers: int = 1,
-    min_library_size: int = 1,
+    min_library_size: int = 10,
+    max_atoms: int = 30,
+    druglikeness_threshold: float | None = None,
+    druglikeness_device: str = "cpu",
 ) -> None:
-    """Write synthon libraries and source provenance from an Enamine stock file."""
-    # 1. Read templates and clean source BBs, including the 50-heavy-atom limit.
+    """Write synthon libraries and source provenance from a building-block catalog."""
+    # 1. Read templates and clean source BBs, before synthon conversion.
     if num_workers < 1:
         raise ValueError("num_workers must be at least 1")
     if min_library_size < 1:
         raise ValueError("min_library_size must be at least 1")
+    if max_atoms < 1:
+        raise ValueError("max_atoms must be at least 1")
     env_path = Path(env_dir)
     source_path = Path(building_blocks)
-    template_path = Path(template_dir)
+    config_path = Path(config_path)
+    template_path = config_path.parent
     if not source_path.is_file():
         raise FileNotFoundError(source_path)
-    for name in ("synthon.yaml", "reaction.yaml"):
-        if not (template_path / name).is_file():
-            raise FileNotFoundError(template_path / name)
+    with config_path.open(encoding="utf-8") as handle:
+        template_config = yaml.safe_load(handle)
+    synthon_path = template_path / template_config["synthon"]
+    reaction_path = template_path / template_config["reaction"]
+    exclusion_path = (
+        template_path / template_config["exclude_smarts"]
+        if template_config.get("exclude_smarts")
+        else None
+    )
+    exclude_smarts: list[str] = []
+    if exclusion_path is not None:
+        with exclusion_path.open(encoding="utf-8") as handle:
+            exclude_smarts = yaml.safe_load(handle)
+        if not isinstance(exclude_smarts, list):
+            raise ValueError("exclude_smarts must contain a YAML list of SMARTS strings")
+    exclude_patterns = []
+    for smarts in exclude_smarts:
+        query = Chem.MolFromSmarts(smarts)
+        if query is None:
+            raise ValueError(f"invalid exclusion SMARTS: {smarts}")
+        exclude_patterns.append(query)
+    if not reaction_path.is_file():
+        raise FileNotFoundError(reaction_path)
+    specs = load_synthon_specs(synthon_path)
+    records = _read_building_blocks(source_path)
+    # Screen cleaned source building blocks before creating their oriented synthons.
+    num_input = len(records)
+    if druglikeness_threshold is not None:
+        from druglikeness.deepdl import DeepDL
 
-    specs = load_synthon_specs(template_path / "synthon.yaml")
-    records = _read_enamine(source_path)
+        if not 0 <= druglikeness_threshold <= 100:
+            raise ValueError("druglikeness threshold must be between 0 and 100")
+        model = DeepDL.from_pretrained("extended", device=druglikeness_device)
+        batch_size = 256 if druglikeness_device.startswith("cuda") else 64
+        retained = []
+        for start in range(0, len(records), 100_000):
+            chunk = records[start : start + 100_000]
+            scores = model.screening(
+                [smiles for smiles, _ in chunk],
+                naive=True,
+                batch_size=batch_size,
+                verbose=True,
+            )
+            retained.extend(
+                record
+                for record, score in zip(chunk, scores, strict=True)
+                if score >= druglikeness_threshold
+            )
+        records = retained
+        print(
+            f"Druglikeness: retained {len(records)} / {num_input} building blocks",
+            flush=True,
+        )
+        if not records:
+            raise ValueError("no building blocks passed druglikeness filtering")
+        del model
+
     synthons: dict[str, dict[str, set[str]]] = {}
     sources: dict[str, str] = {}
 
@@ -230,7 +297,12 @@ def convert_stage(
     # catalog to every process. Ordered merging and sorted output keep row IDs
     # identical for serial and parallel preparation.
     batches = (records[i : i + 512] for i in range(0, len(records), 512))
-    convert = partial(_convert_batch, specs=specs)
+    convert = partial(
+        _convert_batch,
+        specs=specs,
+        exclude_patterns=tuple(exclude_patterns),
+        max_atoms=max_atoms,
+    )
     context = get_context("spawn").Pool(num_workers) if num_workers > 1 else nullcontext()
     with context as pool:
         results = (
@@ -278,8 +350,18 @@ def convert_stage(
     (env_path / "building_blocks.json").write_text(
         json.dumps(sources, sort_keys=True, indent=2) + "\n", encoding="utf-8"
     )
-    shutil.copyfile(template_path / "synthon.yaml", env_path / "synthon.yaml")
-    shutil.copyfile(template_path / "reaction.yaml", env_path / "reaction.yaml")
+    shutil.copyfile(synthon_path, env_path / "synthon.yaml")
+    shutil.copyfile(reaction_path, env_path / "reaction.yaml")
+    # Snapshot resolved inputs so the prepared environment is self-contained.
+    resolved_config = {"reaction": "reaction.yaml", "synthon": "synthon.yaml"}
+    if exclusion_path is not None:
+        shutil.copyfile(exclusion_path, env_path / "exclude_smarts.yaml")
+        resolved_config["exclude_smarts"] = "exclude_smarts.yaml"
+    else:
+        (env_path / "exclude_smarts.yaml").unlink(missing_ok=True)
+    (env_path / "config.yaml").write_text(
+        yaml.safe_dump(resolved_config, sort_keys=False), encoding="utf-8"
+    )
 
     # 5. Invalidate features because the library row indices may have changed.
     (env_path / "synthon_features.npz").unlink(missing_ok=True)
@@ -290,7 +372,14 @@ def convert_stage(
         "convert",
         {
             "synthon_counts": counts,
-            "max_bb_atoms": MAX_BB_ATOMS,
+            "max_synthon_atoms": max_atoms,
+            "exclude_smarts": exclude_smarts,
+            "druglikeness": {
+                "threshold": druglikeness_threshold,
+                "model": "extended" if druglikeness_threshold is not None else None,
+                "input_count": num_input,
+                "retained_count": len(records),
+            },
             "min_library_size": min_library_size,
             "excluded_synthon_counts": excluded_counts,
         },
@@ -418,6 +507,7 @@ def _write_signature(
     """Publish identity after templates, rows, features and eligibility are complete."""
     digest = hashlib.sha256()
     for name in (
+        "config.yaml",
         "action_space.json",
         "synthon.yaml",
         "reaction.yaml",
@@ -427,6 +517,8 @@ def _write_signature(
         with (env_path / name).open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
+    if (env_path / "exclude_smarts.yaml").exists():
+        digest.update((env_path / "exclude_smarts.yaml").read_bytes())
     for name in sorted(counts):
         digest.update(name.encode())
         with (env_path / "synthons" / f"{name}.smi").open("rb") as handle:

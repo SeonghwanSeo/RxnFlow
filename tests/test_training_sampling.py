@@ -35,11 +35,11 @@ from rxnflow.trainer import RxnFlowTrainer
 class CarbonReward(RewardFunction):
     objectives = ("score",)
 
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
         return np.array(
             [
                 float(sum(atom.GetAtomicNum() == 6 for atom in mol.GetAtoms())) / 10
-                for mol in molecules
+                for mol in mols
             ],
             dtype=np.float32,
         ).reshape(-1, 1)
@@ -55,8 +55,8 @@ def tiny_config(env_dir: Path, output_dir: Path) -> Config:
         model=ModelConfig(num_emb=32, num_layers=1, dropout=0.0),
         training=TrainingConfig(
             steps=1,
-            batch_size=2,
-            replay_batch_size=1,
+            num_online=2,
+            num_replay=1,
             replay_capacity=16,
             learning_rate=1e-3,
             checkpoint_every=1,
@@ -211,7 +211,7 @@ def test_trajectory_balance_uses_backward_probability(
 
 def test_tb_diagnostics_separate_online_replay_and_invalid(prepared_env, tmp_path):
     config = tiny_config(prepared_env, tmp_path / "diagnostics")
-    config.reward.floor = math.exp(-4)
+    config.training.reward_floor = math.exp(-4)
     trainer = RxnFlowTrainer(config, QEDReward())
     trainer.model._logZ[-1].bias.data.zero_()
     trainer.policy.log_prob = lambda states, actions, beta, preferences: (

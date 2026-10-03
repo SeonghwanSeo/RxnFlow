@@ -5,7 +5,7 @@ data:
 
 run:
   output_dir: runs/qed
-  device: auto
+  device: cuda
   seed: 0
 
 reward:
@@ -15,13 +15,5 @@ reward:
 property_penalty:
   mw: 500
 
-subsampling:
-  sampling_ratio: 0.05
-
-generation:
-  max_reactions: 3
-
 training:
   steps: 1000
-  batch_size: 64
-  replay_batch_size: 64

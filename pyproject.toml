@@ -23,6 +23,7 @@ dependencies = [
   "torch>=2.1",
   "omegaconf>=2.3",
   "rdkit>=2023.9.6",
+  "druglikeness>=0.2.2",
 ]
 
 [project.optional-dependencies]

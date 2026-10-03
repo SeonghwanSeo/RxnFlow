@@ -34,9 +34,9 @@ from rxnflow.trainer import RxnFlowTrainer
 class TwoObjectiveReward(RewardFunction):
     objectives = ("qed", "size")
 
-    def score(self, molecules):
+    def score(self, mols):
         return np.array(
-            [[QED.qed(mol), min(mol.GetNumHeavyAtoms() / 20, 1)] for mol in molecules],
+            [[QED.qed(mol), min(mol.GetNumHeavyAtoms() / 20, 1)] for mol in mols],
             dtype=np.float32,
         ).reshape(-1, 2)
 
@@ -45,17 +45,17 @@ def config_for(env_dir, output_dir):
     return Config(
         data=DataConfig(env_dir=str(env_dir), max_atoms=20),
         reward=RewardConfig(
-            beta=("uniform", [4.0, 128.0]), preferences=("dirichlet", [1.0])
+            beta=("uniform", [4.0, 128.0]), moo_preferences=("dirichlet", [1.0])
         ),
         model=ModelConfig(num_emb=16, num_layers=1, num_synthon_emb=16),
         training=TrainingConfig(
-            batch_size=4,
-            replay_batch_size=4,
+            num_online=4,
+            num_replay=4,
             replay_capacity=12,
             checkpoint_every=1,
             log_every=100,
             retrosynthesis_workers=0,
-            log_z_learning_rate=0.001,
+            learning_rate_logZ=0.001,
         ),
         output_dir=str(output_dir),
         device="cpu",
@@ -69,7 +69,7 @@ def test_sampling_configuration_is_independent_of_encoder_range(tmp_path):
             data=DataConfig(env_dir="example"),
             reward=RewardConfig(
                 beta=parse_distribution(beta),
-                preferences=("fixed", [0.25, 0.75]),
+                moo_preferences=("fixed", [0.25, 0.75]),
             ),
         )
         path = tmp_path / "config.yaml"
@@ -192,7 +192,7 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
     prepared_env, tmp_path, method
 ):
     config = config_for(prepared_env, tmp_path / "training")
-    config.reward.scalarization = method
+    config.reward.moo_scalarization = method
     trainer = RxnFlowTrainer(config, TwoObjectiveReward())
     checkpoint = trainer.run(2)
     before = trainer.replay.state_dict()
@@ -215,12 +215,13 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
             sum(w * r for w, r in zip(weights, scores, strict=True))
             if method == "sum"
             else math.prod(
-                max(r, config.reward.floor) ** w
+                max(r, config.training.reward_floor) ** w
                 for w, r in zip(weights, scores, strict=True)
             )
         )
         assert trajectory.reward == pytest.approx(
-            max(expected, config.reward.floor) if trajectory.valid else 0.0, abs=1e-6
+            max(expected, config.training.reward_floor) if trajectory.valid else 0.0,
+            abs=1e-6,
         )
     sampler = RxnFlowSampler(restarted_checkpoint, reward=TwoObjectiveReward())
     results = sampler.sample(
@@ -233,10 +234,12 @@ def test_multiobjective_training_restart_and_fixed_condition_sampling(
         )
         scores = result.metadata["objective_rewards"]
         assert result.reward == pytest.approx(
-            max(0.25 * scores["qed"] + 0.75 * scores["size"], config.reward.floor)
+            max(
+                0.25 * scores["qed"] + 0.75 * scores["size"], config.training.reward_floor
+            )
             if method == "sum"
-            else max(scores["qed"], config.reward.floor) ** 0.5
-            * max(scores["size"], config.reward.floor) ** 1.5
+            else max(scores["qed"], config.training.reward_floor) ** 0.5
+            * max(scores["size"], config.training.reward_floor) ** 1.5
         )
     with pytest.raises(ValueError, match="preferences"):
         sampler.sample(1, beta=("fixed", [32.0]), preferences=("fixed", [1.0]))
@@ -328,16 +331,16 @@ def test_condition_distributions():
 
 
 def test_reward_scalarization_zero_weights_and_floor():
-    from rxnflow.reward import scalarize_log_rewards
+    from rxnflow.gflownet.rewards import scalarize_log_rewards
 
     values = torch.tensor([[0.25, 1.0], [0.0, 0.5], [0.0, 0.0]])
     weights = torch.tensor([[0.5, 0.5], [0.0, 1.0], [0.5, 0.5]])
     for method, expected in (("sum", [0.625, 0.5, 1e-4]), ("mul", [0.5, 0.5, 1e-4])):
         log_rewards = scalarize_log_rewards(values, weights, method, 1e-4)
         torch.testing.assert_close(log_rewards.exp(), torch.tensor(expected))
-    assert RewardConfig().scalarization == "mul"
+    assert RewardConfig().moo_scalarization == "mul"
     with pytest.raises(ValueError, match="scalarization"):
-        RewardConfig(scalarization="unknown").validate()
+        RewardConfig(moo_scalarization="unknown").validate()
 
 
 def test_qed_sa_example_unconditioned_training_and_sampling(prepared_env, tmp_path):
@@ -359,9 +362,7 @@ def test_qed_sa_example_unconditioned_training_and_sampling(prepared_env, tmp_pa
     config.output_dir = str(tmp_path / "qed_sa")
     config.device = "cpu"
     config.model = ModelConfig(num_emb=16, num_layers=1, num_synthon_emb=16)
-    config.training = TrainingConfig(
-        batch_size=4, replay_batch_size=0, retrosynthesis_workers=0
-    )
+    config.training = TrainingConfig(num_online=4, num_replay=0, retrosynthesis_workers=0)
     trainer = RxnFlowTrainer(config, reward)
     assert trainer.model.emb_preferences is None
     beta = torch.tensor([1.0, 64.0])
@@ -388,9 +389,11 @@ def test_unconditioned_config_roundtrip(tmp_path):
     path = tmp_path / "config.yaml"
     cfg.save(path)
     assert Config.from_file(path) == cfg
-    assert cfg.reward.preferences == ("none", [])
+    assert cfg.reward.moo_preferences == ("none", [])
     assert parse_distribution("none") == ("none", [])
-    _, weights = ConditionSampler(cfg.reward.beta, cfg.reward.preferences, 2).sample(3)
+    _, weights = ConditionSampler(cfg.reward.beta, cfg.reward.moo_preferences, 2).sample(
+        3
+    )
     torch.testing.assert_close(weights, torch.ones(3, 2))
 
 

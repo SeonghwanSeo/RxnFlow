@@ -1,9 +1,11 @@
 # Custom rewards and MOO
 
-Implement `RewardFunction.score()` and pass the reward to `RxnFlowTrainer`:
+Implement `RewardFunction.score()` to return one score per objective for each molecule, then pass your reward to the trainer:
 
 ```python
 import numpy as np
+from numpy.typing import NDArray
+from rdkit import Chem
 from rdkit.Chem import QED
 
 from rxnflow.config import Config
@@ -14,49 +16,54 @@ from rxnflow.trainer import RxnFlowTrainer
 class MyReward(RewardFunction):
     objectives = ("qed",)
 
-    def score(self, molecules):
-        return np.array([QED.qed(mol) for mol in molecules], dtype=np.float32).reshape(-1, 1)
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array([QED.qed(mol) for mol in mols], dtype=np.float32).reshape(-1, 1)
 
 
-trainer = RxnFlowTrainer(Config.from_file("configs/qed.yaml"), MyReward())
-trainer.run()
+if __name__ == "__main__":
+    config = Config.from_file("configs/qed.yaml")
+    reward = MyReward()
+    trainer = RxnFlowTrainer(config, reward)
+    trainer.run()
 ```
 
-- Return `[batch, num_objectives]`, including empty batches, as a float32 NumPy array.
-- Scores must be finite, non-negative and larger-is-better; normalize each objective yourself.
-- Columns follow `objectives` order.
-- Optional `filter_object(mol)` skips evaluation and assigns zero objective values; the reward floor still applies.
+- Return a float32 NumPy array of shape `[batch, num_objectives]`, including for an empty batch. Columns follow the order in `objectives`.
+- Scores must be finite, non-negative and larger-is-better. Transform or scale each objective to reflect your optimization goal.
+- Return the individual objective scores; RxnFlow applies preference weights and the reward exponent separately.
+- Assign zero scores to unwanted molecules inside `score()`, preserving the input order and batch size. This lowers their reward; it does not remove them from sample outputs.
 
-See [QED/SA](../examples/qed_sa.py) for a two-objective example: `[QED, (10 - SA score) / 9]`.
+For direct evaluation, use `reward.run(mols)` or `reward(mols)`. See [QED/SA](../examples/qed_sa.py) for a two-objective example returning `[QED, (10 - SA score) / 9]`.
 
-## Combining objectives
+## Combine multiple objectives
+
+Choose how objective scores contribute to the combined reward:
 
 ```yaml
 reward:
-  beta: "uniform(1,64)"
-  preferences: "none"
-  scalarization: mul
-  floor: 0.0001
+  moo_scalarization: mul
+  moo_preferences: "none"
+  beta: "32"
 ```
 
-| Mode | Effective weight sum | Log reward | Without preference conditioning |
-| --- | --- | --- | --- |
-| `mul` (default) | Number of objectives N | `sum(w_i * log(max(r_i, floor)))` | Simple product. |
-| `sum` | 1 | `log(max(sum(w_i * r_i), floor))` | Arithmetic mean. |
+- **`mul` (default):** weighted product, `R = product(r_i ** w_i)`. With equal weights, this is the simple product of the objective scores. A low score in one objective reduces the combined reward even when another is high.
+- **`sum`:** weighted sum, `R = sum(w_i * r_i)`. With equal weights, this is the arithmetic mean. A high score in one objective can compensate for a low score in another.
 
-Training uses `beta * log R`; logged scalar rewards are before beta.
+RxnFlow normalizes weights to sum to the number of objectives for `mul`, or to one for `sum`. For example, `moo_preferences: "fixed(0.3,0.7)"` gives weights `[0.6, 1.4]` for `mul` and `[0.3, 0.7]` for `sum`.
 
-## Conditions
+## Set the reward exponent
 
-| Setting | Behavior |
-| --- | --- |
-| `beta: "32"` | Fixed reward exponent. |
-| `beta: "uniform(1,64)"` | Sample the exponent for each trajectory. |
-| `preferences: "none"` (default) | Equal weights, no preference encoder. Beta conditioning remains active. |
-| `preferences: "uniform"` | Sample a simplex-uniform direction, then normalize for the selected scalarization. |
-| `preferences: "dirichlet(0.5)"` | Change the preference distribution's concentration. |
-| `preferences: "fixed(0.3,0.7)"` | Fixed relative importance: `[0.6, 1.4]` for `mul`, `[0.3, 0.7]` for `sum`. |
+`beta` controls how strongly sampling favors high rewards through `R ** beta`. Larger values put more emphasis on high-reward molecules.
 
-Replay retains the original beta and effective weights. To select trade-offs during sampling, train with preference conditioning enabled; it cannot be enabled only at sampling time.
+- `beta: "32"`: train with a fixed exponent.
+- `beta: "uniform(1,64)"`: train across exponents sampled uniformly between 1 and 64. You can then choose a fixed beta within that range when sampling.
 
-YAML/CLI use the strings above. Python uses tuples such as `beta=("fixed", [32.0])` and `preferences=("fixed", [0.3, 0.7])`. Omitted sampling preferences use the checkpoint setting.
+## Choose objective trade-offs
+
+Use `moo_preferences` to set the relative importance of the objectives, in `objectives` order:
+
+- **`"none"` (default):** use equal weights without preference conditioning.
+- **`"fixed(0.3,0.7)"`:** use one fixed trade-off throughout training.
+- **`"uniform"`:** sample uniformly over non-negative weight vectors that sum to one, covering different trade-offs.
+- **`"dirichlet(0.5)"`:** favor weights closer to the extremes, emphasizing individual objectives more often than `"uniform"`.
+
+To choose different trade-offs at sampling time, train with varying preferences such as `"uniform"` or `"dirichlet(0.5)"`. A model trained with `"none"` cannot enable preference conditioning only at sampling time. See the [sampling guide](training.md#sampling) for how to select beta and preferences.

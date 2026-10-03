@@ -72,8 +72,8 @@ def test_pipeline_is_aligned_and_preserves_sources(prepared_env: Path) -> None:
                 str(prepared_env),
                 "--building-blocks",
                 str(root / "tests/fixtures/enamine_stock.smi"),
-                "--template-dir",
-                str(root / "data/templates"),
+                "--config",
+                str(root / "tests/fixtures/templates.yaml"),
             ]
         )
     env = SynthesisEnv(prepared_env, max_atoms=30)
@@ -288,7 +288,8 @@ def test_reconversion_invalidates_features(prepared_env: Path, tmp_path: Path) -
     convert_stage(
         root / "tests/fixtures/enamine_stock.smi",
         env_dir,
-        root / "data/templates",
+        root / "tests/fixtures/templates.yaml",
+        min_library_size=1,
     )
     assert not (env_dir / "synthon_features.npz").exists()
     assert not (env_dir / "action_space.json").exists()
@@ -405,8 +406,8 @@ def test_parallel_preparation_matches_serial(
             str(stock),
             "--env-dir",
             str(parallel),
-            "--template-dir",
-            str(root / "data/templates"),
+            "--config",
+            str(root / "tests/fixtures/templates.yaml"),
             "--num-workers",
             "2",
             "--min-library-size",
@@ -500,43 +501,51 @@ def test_batched_budgets_match_individual_masks(prepared_env):
         )
 
 
-def test_conversion_filters_source_bbs_at_50_heavy_atoms(tmp_path: Path) -> None:
+@pytest.mark.parametrize("max_atoms", [30, 12])
+def test_conversion_limits_completed_synthons(tmp_path: Path, max_atoms: int) -> None:
     root = Path(__file__).parents[1]
     stock = tmp_path / "stock.smi"
-    records = [
-        ("C" * 49 + "Cl.[Na+]", "brick-50"),
-        ("C" * 50 + "Cl", "brick-51"),
-        ("Cl" + "C" * 48 + "Cl", "linker-50"),
-        ("Cl" + "C" * 49 + "Cl", "linker-51"),
-    ]
     stock.write_text(
-        "".join(f"{smiles}\t{identifier}\n" for smiles, identifier in records)
+        "C" * max_atoms
+        + "Cl.[Na+]\tbrick-fit\n"
+        + "C" * (max_atoms + 1)
+        + "Cl\tbrick-large\n"
+        + "Cl"
+        + "C" * max_atoms
+        + "Cl\tlinker-fit\n"
+        + "Cl"
+        + "C" * (max_atoms + 1)
+        + "Cl\tlinker-large\n"
     )
     env_dir = tmp_path / "env"
-    convert_stage(stock, env_dir, root / "data/templates")
+    convert_stage(
+        stock,
+        env_dir,
+        root / "tests/fixtures/templates.yaml",
+        min_library_size=1,
+        max_atoms=max_atoms,
+    )
     features_stage(env_dir)
     from rxnflow.envs.library import load_synthon_libraries
 
     libraries = load_synthon_libraries(env_dir)
-    assert any(library.is_brick for library in libraries.values())
-    assert any(library.is_linker for library in libraries.values())
+    assert any(lib.is_brick for lib in libraries.values())
+    assert any(lib.is_linker for lib in libraries.values())
     for library in libraries.values():
-        assert library.heavy_atoms.dtype == np.uint8
-        expected_count = 49 if library.is_brick else 48
-        assert (library.heavy_atoms == expected_count).all()
+        assert (library.heavy_atoms == max_atoms).all()
         ids = {identifier for row in library.identifiers for identifier in row}
-        assert ids <= {"brick-50", "linker-50"}
-    # Reject 51-atom sources even when synthon conversion would remove atoms.
-    # Desalting precedes the limit, so the sodium counterion does not count.
+        assert ids == ({"brick-fit"} if library.is_brick else {"linker-fit"})
+    # The linker fits only after BOTH halides are removed; do not discard
+    # its oversized intermediate brick. Source provenance retains larger BBs.
     sources = json.loads((env_dir / "building_blocks.json").read_text())
-    assert set(sources) == {"brick-50", "linker-50"}
+    assert len(sources) == 4
     assert all(
-        Chem.MolFromSmiles(smiles).GetNumHeavyAtoms() == 50 for smiles in sources.values()
+        Chem.MolFromSmiles(s).GetNumHeavyAtoms() > max_atoms for s in sources.values()
     )
     stage = json.loads((env_dir / "prepare_manifest.json").read_text())["stages"][
         "convert"
     ]
-    assert stage["max_bb_atoms"] == 50
+    assert stage["max_synthon_atoms"] == max_atoms
 
 
 def test_prepared_action_spaces_and_signature(prepared_env, monkeypatch):
@@ -645,3 +654,164 @@ def test_min_synthons_masks_terminal_unary_but_allows_later_closure(
     assert ("nitrile_to_tetrazole", None) not in {
         s.name for s in stricter.get_action_space(eligible)
     }
+
+
+def test_druglikeness_filters_clean_source_before_synthon_conversion(
+    tmp_path, monkeypatch
+):
+    import sys
+    from types import ModuleType
+    from unittest.mock import Mock
+
+    model = Mock()
+    model.screening.return_value = [60.0, 59.9]
+    deepdl = ModuleType("druglikeness.deepdl")
+    deepdl.DeepDL = Mock()
+    deepdl.DeepDL.from_pretrained.return_value = model
+    monkeypatch.setitem(sys.modules, "druglikeness", ModuleType("druglikeness"))
+    monkeypatch.setitem(sys.modules, "druglikeness.deepdl", deepdl)
+    stock = tmp_path / "stock.smi"
+    stock.write_text("CCN.[Na+]\tkeep\nCCCN\tdrop\n")
+    env_dir = tmp_path / "env"
+    convert_stage(
+        stock,
+        env_dir,
+        Path(__file__).parents[1] / "tests/fixtures/templates.yaml",
+        druglikeness_threshold=60,
+        druglikeness_device="cpu",
+        min_library_size=1,
+    )
+    deepdl.DeepDL.from_pretrained.assert_called_once_with("extended", device="cpu")
+    model.screening.assert_called_once_with(
+        ["CCN", "CCCN"], naive=True, batch_size=64, verbose=True
+    )
+    assert json.loads((env_dir / "building_blocks.json").read_text()) == {"keep": "CCN"}
+    details = json.loads((env_dir / "prepare_manifest.json").read_text())["stages"][
+        "convert"
+    ]["druglikeness"]
+    assert details == {
+        "threshold": 60,
+        "model": "extended",
+        "input_count": 2,
+        "retained_count": 1,
+    }
+    model.screening.return_value = [0.0, 0.0]
+    with pytest.raises(ValueError, match="no building blocks passed"):
+        convert_stage(
+            stock,
+            tmp_path / "empty",
+            Path(__file__).parents[1] / "tests/fixtures/templates.yaml",
+            druglikeness_threshold=60,
+            min_library_size=1,
+        )
+
+
+def test_basic_exclusions_preserve_converted_handles(tmp_path):
+    import yaml
+
+    root = Path(__file__).parents[1]
+    templates = root / "data/templates/basic"
+    stock = tmp_path / "stock.smi"
+    stock.write_text(
+        "NCc1ccc(B2OC(C)(C)C(C)(C)O2)cc1\tbpin\nCC(C)(C)OC(=O)NCC(=O)O\tboc\n"
+    )
+    env_dir = tmp_path / "basic"
+    convert_stage(
+        stock, env_dir, templates / "config.yaml", num_workers=2, min_library_size=1
+    )
+    queries = [
+        Chem.MolFromSmarts(s)
+        for s in yaml.safe_load((templates / "exclude_smarts.yaml").read_text())
+    ]
+    rows = {}
+    for path in (env_dir / "synthons").glob("*.smi"):
+        rows[path.stem] = [line.split("\t")[0] for line in path.read_text().splitlines()]
+        for smiles in rows[path.stem]:
+            assert not any(
+                Chem.MolFromSmiles(smiles).HasSubstructMatch(q) for q in queries
+            )
+    # Filtering intermediate bricks would lose these linkers.
+    assert "1-23" in rows and "23-1" in rows
+    assert "3-33" in rows and "33-3" in rows
+    assert "23" in rows and "33" in rows
+    assert "1" not in rows and "3" not in rows
+    features_stage(env_dir)
+    assert (env_dir / "exclude_smarts.yaml").read_bytes() == (
+        templates / "exclude_smarts.yaml"
+    ).read_bytes()
+    assert (
+        yaml.safe_load((env_dir / "config.yaml").read_text())["exclude_smarts"]
+        == "exclude_smarts.yaml"
+    )
+    # Rebuilding without exclusions must remove the stale exclusion snapshot.
+    convert_stage(
+        stock, env_dir, root / "tests/fixtures/templates.yaml", min_library_size=1
+    )
+    assert not (env_dir / "exclude_smarts.yaml").exists()
+    assert (env_dir / "synthons/1.smi").exists()
+
+
+@pytest.mark.parametrize(
+    "smiles",
+    [
+        "CNC(=O)OC(C)(C)C",
+        "CNC(=O)OCC1c2ccccc2-c2ccccc21",
+        "CNC(=O)OCc1ccccc1",
+        "CO[Si](C)(C)C",
+        "CC(=O)F",
+        "CC(=O)I",
+        "CS(=O)(=O)Cl",
+        "CN=C=O",
+        "CC(=O)ON1C(=O)CCC1=O",
+        "CC(=O)OC(C)=O",
+        "CC(=O)N=[N+]=[N-]",
+        "c1ccccc1[N+]#N",
+        "CB1OC(C)(C)C(C)(C)O1",
+        "CB1OC(=O)CN(C)CC(=O)O1",
+        "C[B-](F)(F)F",
+        "C[B-]12OC(=O)C[N+]1(C)CC(=O)O2",
+    ],
+)
+def test_basic_patterns_exclude_synthetic_groups(smiles):
+    import yaml
+
+    patterns = yaml.safe_load(
+        (
+            Path(__file__).parents[1] / "data/templates/basic/exclude_smarts.yaml"
+        ).read_text()
+    )
+    mol = Chem.MolFromSmiles(smiles)
+    assert mol is not None
+    assert any(mol.HasSubstructMatch(Chem.MolFromSmarts(s)) for s in patterns)
+
+
+@pytest.mark.parametrize(
+    "smiles",
+    [
+        "CB(O)O",
+        "OB1OCc2ccccc21",
+        "CS(=O)(=O)F",
+        "CC(=O)OC",
+        "CNC(=O)OC",
+        "COCc1ccccc1",
+        "CNCc1ccccc1",
+        "CC=O",
+        "CC1CO1",
+        "CCN=[N+]=[N-]",
+        "CCC#N",
+        "CCS",
+        "C=CC(=O)N",
+        "[33*]NCC[3*]",
+    ],
+)
+def test_basic_patterns_retain_allowed_groups(smiles):
+    import yaml
+
+    patterns = yaml.safe_load(
+        (
+            Path(__file__).parents[1] / "data/templates/basic/exclude_smarts.yaml"
+        ).read_text()
+    )
+    mol = Chem.MolFromSmiles(smiles)
+    assert mol is not None
+    assert not any(mol.HasSubstructMatch(Chem.MolFromSmarts(s)) for s in patterns)

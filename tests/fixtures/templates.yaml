@@ -1,0 +1,3 @@
+# Exercise all reaction paths without residual-group exclusions.
+reaction: ../../data/templates/basic/reaction.yaml
+synthon: ../../data/templates/basic/synthon.yaml

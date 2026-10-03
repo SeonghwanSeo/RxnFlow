@@ -1,85 +1,59 @@
-"""Injectable, local reward functions."""
+"""Molecular objective evaluation."""
 
 from __future__ import annotations
 
-import math
 from abc import ABC, abstractmethod
 
 import numpy as np
-import torch
 from numpy.typing import NDArray
 from rdkit import Chem
 
 
 class RewardFunction(ABC):
-    """Base API for in-process molecular rewards.
-
-    Implementations receive RDKit molecules. Treat them as read-only and use
-    ``Chem.MolToSmiles`` if a reward needs strings. ``score`` must return
-    a float32 NumPy array of shape [batch, len(objectives)], including empty batches.
-    Values must be finite, non-negative and larger-is-better. Implementations
-    define the objective order and scale; preferences are applied by the trainer.
+    """Abstract base class for reward functions.
+    Define ``objectives`` and implement ``score()`` to define a reward function.
     """
 
     objectives: tuple[str, ...]
 
     @abstractmethod
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
+        """Return float32 scores of shape ``(len(mols), len(objectives))``.
+
+        Scores must be finite, non-negative and larger-is-better. Preserve input
+        order, support empty batches, and do not modify the input molecules.
+        """
         raise NotImplementedError
 
-    def filter_object(self, mol: Chem.Mol) -> bool:
-        """Return False to skip scoring and assign zero objective rewards."""
-        return True
+    def __call__(self, mols: list[Chem.Mol | None]) -> NDArray[np.float32]:
+        """Evaluate molecules through ``run``."""
+        return self.run(mols)
 
-    def metrics(self) -> dict[str, float]:
-        return {}
+    def run(self, mols: list[Chem.Mol | None]) -> NDArray[np.float32]:
+        """Validate objective scores and return them in input order.
 
+        ``None`` entries receive zero scores and are not passed to ``score``.
+        """
 
-def evaluate_rewards(
-    reward: RewardFunction,
-    molecules: list[Chem.Mol | None],
-) -> tuple[NDArray[np.float32], dict[str, float]]:
-    """Filter molecules and align rewards; failed trajectories pass None."""
-
-    # 1. Filter valid molecules, retaining positions in the original batch.
-    accepted: list[Chem.Mol] = []
-    accepted_indices: list[int] = []
-    for index, mol in enumerate(molecules):
-        if mol is None:
-            continue
-        eligible = reward.filter_object(mol)
-        if type(eligible) is not bool:
-            raise ValueError("RewardFunction.filter_object must return bool")
-        if eligible:
+        # 1. Collect valid molecules, retaining positions in the original batch.
+        accepted: list[Chem.Mol] = []
+        accepted_indices: list[int] = []
+        for index, mol in enumerate(mols):
+            if mol is None:
+                continue
             accepted.append(mol)
             accepted_indices.append(index)
 
-    # 2. Score accepted molecules once, including an empty accepted batch.
-    scores = reward.score(accepted)
-    if scores.shape != (len(accepted), len(reward.objectives)):
-        raise ValueError("RewardFunction.score must return [batch, num_objectives]")
-    if scores.dtype != np.float32:
-        raise ValueError("RewardFunction.score must return float32")
-    if not np.isfinite(scores).all() or (scores < 0).any():
-        raise ValueError("rewards must be finite and non-negative")
-    # 3. Scatter objectives back; invalid and filtered molecules keep zero reward.
-    result = np.zeros((len(molecules), len(reward.objectives)), dtype=np.float32)
-    result[accepted_indices] = scores
+        # 2. Score accepted molecules once, including an empty accepted batch.
+        scores = self.score(accepted)
+        if scores.shape != (len(accepted), len(self.objectives)):
+            raise ValueError("RewardFunction.score must return [batch, num_objectives]")
+        if scores.dtype != np.float32:
+            raise ValueError("RewardFunction.score must return float32")
+        if not np.isfinite(scores).all() or (scores < 0).any():
+            raise ValueError("rewards must be finite and non-negative")
+        # 3. Scatter objectives back; invalid trajectories keep zero reward.
+        result = np.zeros((len(mols), len(self.objectives)), dtype=np.float32)
+        result[accepted_indices] = scores
 
-    metrics = {name: float(value) for name, value in reward.metrics().items()}
-    if any(not math.isfinite(value) for value in metrics.values()):
-        raise ValueError("reward metrics must be finite")
-    return result, metrics
-
-
-def scalarize_log_rewards(
-    values: torch.Tensor, preferences: torch.Tensor, method: str, floor: float
-) -> torch.Tensor:
-    """Combine objectives before beta using normalized weights from ConditionSampler.
-
-    Floor each objective for mul, so zero rewards and zero preference weights
-    remain finite. For sum, floor only the combined reward.
-    """
-    if method == "mul":
-        return (values.clamp_min(floor).log() * preferences).sum(-1)
-    return (values * preferences).sum(-1).clamp_min(floor).log()
+        return result

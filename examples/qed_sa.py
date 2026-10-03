@@ -21,12 +21,12 @@ class QEDSAReward(RewardFunction):
 
     objectives = ("qed", "sa")
 
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
         # SA score ranges from 1 (easy) to 10 (difficult); reward is larger-is-better.
         return np.array(
             [
                 [QED.qed(mol), (10.0 - sascorer.calculateScore(mol)) / 9.0]
-                for mol in molecules
+                for mol in mols
             ],
             dtype=np.float32,
         ).reshape(-1, 2)

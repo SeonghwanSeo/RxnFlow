@@ -15,14 +15,14 @@ class HeavyAtomReward(RewardFunction):
     def __init__(self, scale: float = 40.0):
         self.scale = scale
 
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
-        return np.array(
-            [[mol.GetNumHeavyAtoms() / self.scale] for mol in molecules],
-            dtype=np.float32,
-        ).reshape(-1, 1)
-
-    def filter_object(self, mol: Chem.Mol) -> bool:
-        return mol.GetNumHeavyAtoms() <= 40
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
+        values = np.zeros((len(mols), 1), dtype=np.float32)
+        for i, mol in enumerate(mols):
+            num_atoms = mol.GetNumHeavyAtoms()
+            # Leave molecules outside the reward's domain at zero.
+            if num_atoms <= 40:
+                values[i, 0] = num_atoms / self.scale
+        return values
 
 
 if __name__ == "__main__":

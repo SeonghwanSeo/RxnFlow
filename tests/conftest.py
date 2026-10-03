@@ -12,7 +12,8 @@ def prepared_env(tmp_path_factory: pytest.TempPathFactory) -> Path:
     convert_stage(
         root / "tests/fixtures/enamine_stock.smi",
         env_dir,
-        root / "data/templates",
+        root / "tests/fixtures/templates.yaml",
+        min_library_size=1,
     )
     features_stage(env_dir)
     return env_dir

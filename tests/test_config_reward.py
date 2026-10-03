@@ -17,23 +17,23 @@ from rxnflow.config import (
 )
 from rxnflow.core.types import Trajectory
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.reward import RewardFunction, evaluate_rewards
+from rxnflow.reward import RewardFunction
 
 
 class AtomCountReward(RewardFunction):
     objectives = ("score",)
 
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
         return np.array(
-            [float(mol.GetNumHeavyAtoms()) for mol in molecules], dtype=np.float32
+            [float(mol.GetNumHeavyAtoms()) for mol in mols], dtype=np.float32
         ).reshape(-1, 1)
 
 
 class BrokenReward(RewardFunction):
     objectives = ("score",)
 
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
-        return np.array([-1.0 for _ in molecules], dtype=np.float32).reshape(-1, 1)
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
+        return np.array([-1.0 for _ in mols], dtype=np.float32).reshape(-1, 1)
 
 
 class ScaledAtomCountReward(RewardFunction):
@@ -43,10 +43,10 @@ class ScaledAtomCountReward(RewardFunction):
         self.scale = scale
         self.options = options
 
-    def score(self, molecules: list[Chem.Mol]) -> NDArray[np.float32]:
+    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
         sign = 1.0 if self.options["positive"] else -1.0
         return np.array(
-            [sign * self.scale * mol.GetNumHeavyAtoms() for mol in molecules],
+            [sign * self.scale * mol.GetNumHeavyAtoms() for mol in mols],
             dtype=np.float32,
         ).reshape(-1, 1)
 
@@ -88,7 +88,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     assert loaded.reward.beta == ("fixed", [8.0])
     assert loaded.property_penalty == {"tpsa": 140.0}
     reward = ScaledAtomCountReward(**loaded.reward.settings)
-    assert evaluate_rewards(reward, [Chem.MolFromSmiles("CCO")])[0].tolist() == [[6.0]]
+    assert reward.run([Chem.MolFromSmiles("CCO")]).tolist() == [[6.0]]
     with pytest.raises(ValueError):
         DataConfig(max_atoms=0).validate()
     with pytest.raises(ValueError):
@@ -98,7 +98,7 @@ def test_config_round_trip_and_validation(tmp_path: Path) -> None:
     with pytest.raises(ValueError):
         RewardConfig(beta=0).validate()
     with pytest.raises(ValueError):
-        RewardConfig(floor=0).validate()
+        TrainingConfig(reward_floor=0).validate()
     with pytest.raises(ValueError, match="min_reactions"):
         GenerationConfig(max_reactions=0).validate()
     with pytest.raises(ValueError, match="mapping"):
@@ -133,19 +133,12 @@ def test_checked_in_minimal_and_complete_configs_load() -> None:
     minimal = Config.from_file(root / "configs" / "qed.yaml")
     complete = Config.from_file(root / "configs" / "template.yaml")
     assert minimal.reward == RewardConfig(beta=("fixed", [32.0]))
-    assert complete.reward == RewardConfig(
-        beta=("fixed", [32.0]), floor=1e-4, settings={}
-    )
+    assert complete.reward == RewardConfig(beta=("fixed", [32.0]), settings={})
     assert minimal.property_penalty == {"mw": 500.0}
     assert complete.property_penalty == {}
-    assert minimal.training.batch_size == 64
-    assert minimal.training.replay_batch_size == 64
-    assert (
-        evaluate_rewards(
-            QEDReward(**minimal.reward.settings), [Chem.MolFromSmiles("CCO")]
-        )[0][0]
-        > 0
-    )
+    assert minimal.training.num_online == 64
+    assert minimal.training.num_replay == 64
+    assert QEDReward(**minimal.reward.settings).run([Chem.MolFromSmiles("CCO")])[0][0] > 0
     assert list(complete.to_file_dict()) == [
         "data",
         "run",
@@ -177,30 +170,32 @@ def test_zero_replay_capacity_disables_storage() -> None:
 
 
 def test_qed_and_custom_reward_alignment() -> None:
-    values, _ = evaluate_rewards(QEDReward(), [Chem.MolFromSmiles("CCO"), None])
+    values = QEDReward().run([Chem.MolFromSmiles("CCO"), None])
     assert isinstance(values, np.ndarray)
     assert values.dtype == np.float32
     assert values.shape == (2, 1)
     assert 0 < values[0] <= 1
     assert values[1] == 0
-    custom, _ = evaluate_rewards(AtomCountReward(), [Chem.MolFromSmiles("CCO")])
+    custom = AtomCountReward().run([Chem.MolFromSmiles("CCO")])
     assert custom.tolist() == [[3.0]]
+    np.testing.assert_array_equal(AtomCountReward()([Chem.MolFromSmiles("CCO")]), custom)
 
     class FilteredReward(AtomCountReward):
-        def filter_object(self, mol):
-            return mol.GetNumHeavyAtoms() <= 3
+        def score(self, mols):
+            values = super().score(mols)
+            values[values > 3] = 0
+            return values
 
-    filtered, _ = evaluate_rewards(
-        FilteredReward(),
-        [Chem.MolFromSmiles("CCO"), Chem.MolFromSmiles("CCCC")],
+    filtered = FilteredReward().run(
+        [Chem.MolFromSmiles("CCO"), Chem.MolFromSmiles("CCCC")]
     )
     assert filtered.tolist() == [[3.0], [0.0]]
-    empty, _ = evaluate_rewards(QEDReward(), [])
+    empty = QEDReward().run([])
     assert empty.shape == (0, 1) and empty.dtype == np.float32
-    rejected, _ = evaluate_rewards(FilteredReward(), [None, Chem.MolFromSmiles("CCCC")])
+    rejected = FilteredReward().run([None, Chem.MolFromSmiles("CCCC")])
     np.testing.assert_array_equal(rejected, np.zeros((2, 1), dtype=np.float32))
     with pytest.raises(ValueError, match="non-negative"):
-        evaluate_rewards(BrokenReward(), [Chem.MolFromSmiles("CCO")])
+        BrokenReward().run([Chem.MolFromSmiles("CCO")])
 
 
 def test_replay_wraparound_matches_fifo_and_restarts() -> None:

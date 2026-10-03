@@ -47,7 +47,12 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
                 stock_path, tmp_path / "enamine_stock.smi", limit
             )
         env_dir = tmp_path / "enamine_env"
-        convert_stage(stock_path, env_dir, root / "data/templates")
+        convert_stage(
+            stock_path,
+            env_dir,
+            root / "data/templates/basic/config.yaml",
+            min_library_size=1,
+        )
         features_stage(env_dir)
     else:
         pytest.skip("set RXNFLOW_ENV_DIR or RXNFLOW_ENAMINE_STOCK")
@@ -70,8 +75,8 @@ def test_representative_enamine_and_longer_smoke(tmp_path: Path) -> None:
         model=ModelConfig(num_emb=64, num_layers=2),
         training=TrainingConfig(
             steps=steps,
-            batch_size=4,
-            replay_batch_size=4,
+            num_online=4,
+            num_replay=4,
             replay_capacity=100,
             checkpoint_every=steps,
             log_every=max(1, steps // 2),

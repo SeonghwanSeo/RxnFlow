@@ -1,34 +1,35 @@
 # Complete RxnFlow configuration template.
-
 data:
-  env_dir: /path/to/prepared/enamine
+  env_dir: /path/to/prepared/environment
+  # Heavy-atom capacity
   max_atoms: 50
 
 run:
-  output_dir: runs/qed
+  output_dir: runs/example
   device: auto
   seed: 0
 
 reward:
-  # Reward exponent: "32" or "uniform(1,64)" per online trajectory.
+  # Reward exponent: "32" for a fixed value, "uniform(1,64)" to vary it.
   beta: "32"
-  # none: no preference conditioning; uniform/dirichlet/fixed enable it.
-  preferences: "none"
-  # mul: weights sum to objective count; sum: weights sum to 1.
-  scalarization: mul
-  floor: 0.0001
+  # Combine objectives with a product or sum.
+  moo_scalarization: mul # mul | sum
+  # "none" uses equal weights without preference conditioning.
+  # Alternatives: "uniform", "dirichlet(0.5)"
+  moo_preferences: "none" # none | uniform | dirichlet(alpha)
+  # Keyword arguments passed to the reward constructor in the example scripts.
   settings: {}
 
-# Optional upper bounds on additive state + synthon property estimates.
+# Property penalty configuration.
 property_penalty: {}
 
-# Uniform sampling within each compatible synthon library.
+# Action space subsampling
 subsampling:
-  sampling_ratio: 0.05
+  sampling_ratio: 0.1
   min_sampling: 50
   importance_temp: 1.0
 
-# Synthon counts include FirstSynthon; reaction counts exclude it.
+# Generative trajectory constraints.
 generation:
   min_synthons: 2
   max_synthons: 3
@@ -39,24 +40,30 @@ model:
   num_emb: 128
   num_layers: 4
   num_synthon_emb: 128
-  num_mlp_layers: 2  # Total Linear layers, including output.
+  num_mlp_layers: 2
   num_mlp_layers_synthon: 2
   dropout: 0.0
 
 training:
   steps: 1000
-  batch_size: 64
-  replay_batch_size: 64
+  checkpoint_every: 1000
+  log_every: 10
+  # New trajectories and replay trajectories per update.
+  num_online: 64
+  num_replay: 64
+  # Set capacity to 0 to disable replay storage.
   replay_capacity: 10000
   learning_rate: 0.0001
-  log_z_learning_rate: 0.001
-  lr_decay_steps: 20000
-  weight_decay: 0.00000001
-  sampling_temperature: 1.0
-  random_action_prob: 0.05
+  learning_rate_logZ: 0.01
+  # Number of updates over which learning rates halve.
+  lr_decay_steps: 1000
+  weight_decay: 1e-8
+  reward_floor: 0.00001
+  # Probability of taking a random exploration action during training.
+  random_action_prob: 0.1
+  # EMA coefficient for the model used to generate training trajectories.
   ema_decay: 0.99
-  checkpoint_every: 500
-  log_every: 10
+  # Set to 0 for synchronous backward analysis.
   retrosynthesis_workers: 4
-  # Each additional synthon divides reverse-route mass by this factor.
+  # Divide backward-route weight by this factor for each additional synthon.
   backward_synthon_penalty: 100.0
