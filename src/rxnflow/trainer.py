@@ -207,7 +207,8 @@ class RxnFlowTrainer:
         self.replay.load_state_dict(checkpoint["replay"])
         self.rng.bit_generator.state = checkpoint["numpy_rng"]
         torch.set_rng_state(checkpoint["torch_rng"])
-        if self.device.type == "cuda":
+        # CPU checkpoints have no CUDA RNG state; keep the initialized device RNG.
+        if self.device.type == "cuda" and checkpoint["cuda_rng"] is not None:
             torch.cuda.set_rng_state(checkpoint["cuda_rng"], self.device)
         self.seed = checkpoint["run"]["seed"]
         self.step = int(checkpoint["step"])

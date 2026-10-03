@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from rdkit import Chem
+from rdkit import Chem, rdBase
 from rdkit.Chem.rdChemReactions import (
     ChemicalReaction,
     ReactionFromSmarts,
@@ -35,9 +35,13 @@ def _run(
         keys: list[str] = []
         for product in product_set:
             try:
-                Chem.SanitizeMol(product)
-                product = Chem.RemoveHs(product)
-                key = Chem.MolToSmiles(product)
+                # Enumerated matches can yield invalid valence/aromaticity.
+                # These candidates are discarded below; silence only their
+                # product validation, leaving input/template diagnostics visible.
+                with rdBase.BlockLogs():
+                    Chem.SanitizeMol(product)
+                    product = Chem.RemoveHs(product)
+                    key = Chem.MolToSmiles(product)
             except (ValueError, RuntimeError, Chem.rdchem.KekulizeException):
                 break
             molecules.append(product)
