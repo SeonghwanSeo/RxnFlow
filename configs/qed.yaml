@@ -1,6 +1,6 @@
 # Minimal QED training configuration.
 data:
-  env_dir: /path/to/prepared/env/
+  env_dir: ./data/envs/example_5k/
 
 reward:
   beta: "32"

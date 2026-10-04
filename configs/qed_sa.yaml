@@ -1,11 +1,11 @@
 # QED/SA product reward with reward-exponent conditioning.
 data:
-  env_dir: /path/to/prepared/env/
+  env_dir: ./data/envs/example_5k/
 
 reward:
   beta: "uniform(1,64)"
   moo_scalarization: mul
-  moo_preferences: "none"
+  moo_preferences: "dirichlet(1.5)"
   settings: {}
 
 property_penalty:
