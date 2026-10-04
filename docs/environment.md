@@ -16,7 +16,7 @@ IDs identify the original building blocks in generated routes. A building block 
 
 ```bash
 python scripts/prepare.py \
-  --building-blocks /path/to/building_blocks.smi \
+  --block-smi /path/to/building_blocks.smi \
   --env-dir /path/to/prepared/environment \
   --num-workers 16
 ```
@@ -29,8 +29,7 @@ python scripts/prepare.py \
 Use a new output directory. Once preparation finishes, set the training configuration to:
 
 ```yaml
-data:
-  env_dir: /path/to/prepared/environment
+env_dir: /path/to/prepared/environment
 ```
 
 ## Customize the templates

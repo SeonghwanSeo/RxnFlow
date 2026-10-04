@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from pathlib import Path
 from time import perf_counter
 
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 from rdkit import Chem
 
 from rxnflow import __version__
@@ -22,14 +24,27 @@ from rxnflow.gflownet.rewards import scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction
 
+logger = logging.getLogger(__name__)
 
-def sum_by_trajectory(
-    values: torch.Tensor, indices: torch.Tensor, count: int
-) -> torch.Tensor:
-    """Aggregate transition values by trajectory with native tensor indexing."""
 
-    result = torch.zeros(count, dtype=values.dtype, device=values.device)
-    return result.index_add(0, indices, values)
+def init_logger(log_path: Path) -> None:
+    """Configure the logger to write to both console and file."""
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+        handler.close()
+    formatter = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    # File handler
+    file_handler = logging.FileHandler(log_path, mode="a", encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
 
 
 class RxnFlowTrainer:
@@ -39,57 +54,97 @@ class RxnFlowTrainer:
         reward: RewardFunction,
         *,
         output_dir: str | Path,
-        device: str | torch.device = "cpu",
-        seed: int = 0,
+        device: str | torch.device = "cuda",
+        seed: int = 1,
     ):
-        # 1. Resolve reward conditions and independent random-number streams.
+        # Validate the configuration
         config.validate()
+        self.config: Config = config
+
+        # Set up the output directory
         self.output_dir = Path(output_dir)
         if self.output_dir.exists():
             raise FileExistsError(f"output directory already exists: {self.output_dir}")
-        self.config = config
-        self.seed = seed
-        self.reward = reward
-        self.objectives = tuple(reward.objectives)
-        if not self.objectives or len(set(self.objectives)) != len(self.objectives):
-            raise ValueError("reward.objectives must contain unique objective names")
-        self.condition_sampler = ConditionSampler(
-            config.reward.beta,
-            config.reward.moo_preferences,
-            len(self.objectives),
-            config.reward.moo_scalarization,
-        )
-        self.device = torch.device(device)
+        self.output_dir.mkdir(parents=True)
+        self.config.save(self.output_dir / "config.yaml")
+        self.checkpoint_dir = self.output_dir / "checkpoints"
+        self.checkpoint_dir.mkdir()
+        self.sample_dir = self.output_dir / "samples"
+        self.sample_dir.mkdir()
+        self.log_file = self.output_dir / "training.log"
+        init_logger(self.log_file)
+
+        self.device: torch.device = torch.device(device)
+        self.seed: int = seed
         torch.manual_seed(seed)
         self.rng = np.random.default_rng(seed)
-        # 2. Load the environment and initialize training/EMA sampling models.
-        self.env = SynthesisEnv(
-            config.data.env_dir,
-            config.data.max_atoms,
-            config.generation.max_reactions,
-            config.training.retrosynthesis_workers,
-            config.property_penalty,
-            min_synthons=config.generation.min_synthons,
-            max_synthons=config.generation.max_synthons,
-            min_reactions=config.generation.min_reactions,
+
+        logger.info("Initializing trainer: device=%s, seed=%d", device, seed)
+        logger.info(
+            "Config:\n%s",
+            OmegaConf.to_yaml(OmegaConf.create(config.to_file_dict())).rstrip(),
         )
-        self.model = RxnFlowModel(
-            self.env,
-            config.model,
-            len(self.objectives),
-        ).to(self.device)
+        logger.info("Output directory: %s", self.output_dir)
+
+        # Reward function and objectives
+        self.reward: RewardFunction = reward
+        self.objectives: tuple[str, ...] = tuple(reward.objectives)
+        self.num_objectives: int = len(self.objectives)
+        if not self.objectives or len(set(self.objectives)) != len(self.objectives):
+            raise ValueError("reward.objectives must contain unique objective names")
+        logger.info("Objectives: %s", ", ".join(self.objectives))
+
+        self.setup()
+
+    def setup(self) -> None:
+        self._setup_env()
+        self._setup_model()
+        self._setup_optimizer()
+        self._setup_replay()
+        self._setup_training()
+
+    def _setup_env(self) -> None:
+        cfg = self.config
+        # Initialize the environment
+        logger.info("Loading environment: %s", cfg.env_dir)
+        self.env = SynthesisEnv(
+            cfg.env_dir,
+            cfg.generation.max_atoms,
+            cfg.generation.max_reactions,
+            cfg.generation.min_synthons,
+            cfg.generation.max_synthons,
+            cfg.generation.min_reactions,
+            cfg.property_penalty,
+            cfg.training.retrosynthesis_workers,
+        )
+        logger.info(
+            "Environment loaded: %s libraries, %s synthons.",
+            format(len(self.env.synthons), ","),
+            format(sum(len(lib) for lib in self.env.synthons.values()), ","),
+        )
+
+    def _setup_model(self) -> None:
+        """Initialize the model and policy for online training"""
+        cfg = self.config
+        self.model = RxnFlowModel(self.env, cfg.model, self.num_objectives).to(
+            self.device
+        )
         self.sampling_model = (
-            RxnFlowModel(
-                self.env,
-                config.model,
-                len(self.objectives),
-            )
-            .to(self.device)
-            .eval()
+            RxnFlowModel(self.env, cfg.model, self.num_objectives).to(self.device).eval()
         )
         self.sampling_model.load_state_dict(self.model.state_dict())
-        # 3. Give the logZ head its own learning rate and exclude its parameters
-        # from policy gradient clipping. The condition encoder stays in policy.
+        self.policy = RxnFlowPolicy(self.env, self.model, cfg, self.device, self.rng)
+        self.sampling_policy = RxnFlowPolicy(
+            self.env, self.sampling_model, cfg, self.device, self.rng
+        )
+        logger.info(
+            "Model initialized: %s parameters",
+            format(sum(p.numel() for p in self.model.parameters()), ","),
+        )
+
+    def _setup_optimizer(self) -> None:
+        """Initialize the optimizer and learning rate scheduler"""
+        cfg = self.config
         self.policy_parameters = [
             parameter
             for name, parameter in self.model.named_parameters()
@@ -101,27 +156,35 @@ class RxnFlowTrainer:
                 {"params": self.policy_parameters},
                 {
                     "params": self.log_z_parameters,
-                    "lr": config.training.learning_rate_logZ,
+                    "lr": cfg.training.learning_rate_logZ,
                 },
             ],
-            lr=config.training.learning_rate,
-            weight_decay=config.training.weight_decay,
+            lr=cfg.training.learning_rate,
+            weight_decay=cfg.training.weight_decay,
         )
         self.lr_scheduler = torch.optim.lr_scheduler.LambdaLR(
-            self.optimizer, lambda step: 2 ** (-step / config.training.lr_decay_steps)
+            self.optimizer, lambda step: 2 ** (-step / cfg.training.lr_decay_steps)
         )
-        # 4. Initialize replay, output directories and policies.
-        self.replay = ReplayBuffer(config.training.replay_capacity)
+
+    def _setup_replay(self) -> None:
+        """Initialize the replay buffer."""
+        cfg = self.config
+        self.replay = ReplayBuffer(
+            cfg.training.replay_capacity,
+            cfg.training.num_replay_insert,
+            cfg.training.replay_insert_priority,
+        )
+
+    def _setup_training(self) -> None:
+        """Initialize the gfn training components"""
+        cfg = self.config
+
         self.step = 0
-        self.output_dir.mkdir(parents=True)
-        self.checkpoint_dir = self.output_dir / "checkpoints"
-        self.sample_dir = self.output_dir / "samples"
-        self.checkpoint_dir.mkdir(exist_ok=True)
-        self.sample_dir.mkdir(exist_ok=True)
-        self.config.save(self.output_dir / "config.yaml")
-        self.policy = RxnFlowPolicy(self.env, self.model, config, self.device, self.rng)
-        self.sampling_policy = RxnFlowPolicy(
-            self.env, self.sampling_model, config, self.device, self.rng
+        self.condition_sampler: ConditionSampler = ConditionSampler(
+            cfg.reward.beta,
+            cfg.reward.moo_preferences,
+            self.num_objectives,
+            cfg.reward.moo_scalarization,
         )
 
     def _reward_class_name(self) -> str:
@@ -134,6 +197,8 @@ class RxnFlowTrainer:
             if path is not None
             else self.checkpoint_dir / f"step_{self.step:06d}.ckpt"
         )
+        started = perf_counter()
+        logger.info("Saving checkpoint at step %d: %s", self.step, destination)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(".tmp")
         torch.save(
@@ -172,15 +237,18 @@ class RxnFlowTrainer:
         # just to serialize the identical checkpoint again.
         shutil.copyfile(destination, latest_temporary)
         latest_temporary.replace(latest)
+        logger.info("Checkpoint saved: %s (%.1fs)", destination, perf_counter() - started)
         return destination
 
     def load_checkpoint(self, path: str | Path) -> None:
         # RNG states are CPU byte tensors even for a CUDA model. Parameter and
         # optimizer loaders move their own tensors to the model device.
+        logger.info("Loading checkpoint: %s", path)
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         if checkpoint.get("rxnflow_version") != __version__:
             raise ValueError(
-                f"checkpoint was created by RxnFlow {checkpoint.get('rxnflow_version')!r}; "
+                "checkpoint was created by RxnFlow "
+                f"{checkpoint.get('rxnflow_version')!r}; "
                 f"this installation is RxnFlow {__version__}"
             )
         if checkpoint.get("config") != self.config.to_dict():
@@ -210,6 +278,11 @@ class RxnFlowTrainer:
             torch.cuda.set_rng_state(checkpoint["cuda_rng"], self.device)
         self.seed = checkpoint["run"]["seed"]
         self.step = int(checkpoint["step"])
+        logger.info(
+            "Checkpoint restored: step=%d, replay=%s",
+            self.step,
+            format(len(self.replay), ","),
+        )
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
         """Attach raw objective values and preference-weighted scalar rewards."""
@@ -274,7 +347,8 @@ class RxnFlowTrainer:
                 beta[batch_idx],
                 preferences[batch_idx],
             )
-            traj_log_p_F = sum_by_trajectory(log_p_F, batch_idx, len(trajectories))
+            traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
+            traj_log_p_F.index_add_(0, batch_idx, log_p_F)
         else:
             traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
         # 3. Scalarize objectives, floor before log, and apply the reward exponent.
@@ -314,7 +388,6 @@ class RxnFlowTrainer:
                 "scaled_log_R": scaled_log_R.mean(),
                 "tb_residual": tb_residual.mean(),
                 "online_loss": traj_losses[:num_online].mean(),
-                # No replay on the first update (or when disabled).
                 "replay_loss": traj_losses[num_online:].sum()
                 / max(1, len(trajectories) - num_online),
                 "valid_losses": (traj_losses * is_valid).sum()
@@ -379,20 +452,22 @@ class RxnFlowTrainer:
 
     def run(
         self,
-        steps: int,
+        num_steps: int,
         *,
         resume_from_checkpoint: str | Path | None = None,
     ) -> Path:
         """Run additional optimization steps and return the final checkpoint."""
+        run_started = perf_counter()
         try:
             if resume_from_checkpoint is not None:
                 self.load_checkpoint(resume_from_checkpoint)
-            if steps < 0:
+            if num_steps < 0:
                 raise ValueError("steps must be non-negative")
-            final_step = self.step + steps
+            final_step = self.step + num_steps
             log_path = self.output_dir / "training.jsonl"
             last_saved_step = -1
             checkpoint = None
+            logger.info("Starting training; full log at %s", log_path)
             while self.step < final_step:
                 # 1. Generate online trajectories with the EMA model and score rewards.
                 started = perf_counter()
@@ -412,7 +487,7 @@ class RxnFlowTrainer:
                 batch = online_trajs + self.replay.sample(
                     self.config.training.num_replay, self.rng
                 )
-                self.replay.add(online_trajs)
+                self.replay.add(online_trajs, self.rng)
                 # 3. Update the policy/logZ, learning rates, and EMA sampling weights.
                 self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
@@ -451,13 +526,19 @@ class RxnFlowTrainer:
                         strict=True,
                     )
                 )
+                # Generation statistics describe fresh online attempts, excluding replay.
+                num_valid = sum(value.valid for value in online_trajs)
+                num_unique = len(
+                    {value.final_smiles for value in online_trajs if value.valid}
+                )
                 record = {
                     "step": self.step,
                     **loss_metrics,
                     "num_online": len(online_trajs),
                     "num_replay": len(batch) - len(online_trajs),
-                    "num_valid": sum(value.valid for value in batch),
-                    "num_invalid": sum(not value.valid for value in batch),
+                    "num_valid": num_valid,
+                    "num_invalid": len(online_trajs) - num_valid,
+                    "num_unique": num_unique,
                     "learning_rate": self.optimizer.param_groups[0]["lr"],
                     "reward": sum(value.reward for value in online_trajs)
                     / len(online_trajs),
@@ -466,25 +547,10 @@ class RxnFlowTrainer:
                         / len(online_trajs)
                         for i, name in enumerate(self.objectives)
                     },
-                    "preferences": {
-                        name: sum(t.preferences[i] for t in online_trajs)
-                        / len(online_trajs)
-                        for i, name in enumerate(self.objectives)
-                    },
-                    "online_valid_fraction": sum(value.valid for value in online_trajs)
-                    / len(online_trajs),
-                    # Unique fraction uses chemically valid online terminal molecules;
-                    # reward filtering does not change their validity.
-                    "online_unique_fraction": len(
-                        {value.final_smiles for value in online_trajs if value.valid}
-                    )
-                    / max(1, sum(value.valid for value in online_trajs)),
-                    # Selected actions per generated trajectory, including FirstSynthon
-                    # and a failed selected action. Empty action spaces add no step.
                     "traj_lens": sum(len(value.steps) for value in online_trajs)
                     / len(online_trajs),
                     "sampling_time": sample_time,
-                    "iteration_time": perf_counter() - started,
+                    "time": perf_counter() - started,
                 }
                 # Keep all online attempts, including invalid ones. This readable
                 # path log omits replay-only state flags and backward probabilities;
@@ -494,14 +560,43 @@ class RxnFlowTrainer:
                 record["logging_time"] = perf_counter() - log_started
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record, sort_keys=True) + "\n")
-                if self.step % self.config.training.log_every == 0:
-                    print(json.dumps(record, sort_keys=True), flush=True)
+                if (
+                    self.step == final_step
+                    or self.step % self.config.training.log_every == 0
+                ):
+                    objectives = " ".join(
+                        f"{name}={value:.4f}"
+                        for name, value in record["objective_rewards"].items()
+                    )
+                    logger.info(
+                        "Step %d/%d: loss=%.4f reward=%.4f valid=%.1f%% "
+                        "unique=%.1f%% replay=%d time=%.2fs | %s",
+                        self.step,
+                        final_step,
+                        record["loss"],
+                        record["reward"],
+                        100 * record["num_valid"] / record["num_online"],
+                        100 * record["num_unique"] / max(1, record["num_valid"]),
+                        len(self.replay),
+                        record["time"],
+                        objectives,
+                    )
                 if self.step % self.config.training.checkpoint_every == 0:
                     checkpoint = self.save_checkpoint()
                     last_saved_step = self.step
             if last_saved_step != self.step:
                 checkpoint = self.save_checkpoint()
             assert checkpoint is not None
+            logger.info(
+                "Training complete: step=%d, elapsed=%.1fs",
+                self.step,
+                perf_counter() - run_started,
+            )
             return checkpoint
+        except BaseException:
+            logger.info(
+                "Training interrupted at step %d; see traceback for details", self.step
+            )
+            raise
         finally:
             self.close()

@@ -34,7 +34,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--preferences",
         default=None,
-        help="defaults to checkpoint setting; none, uniform, dirichlet(alpha), or fixed(w1,...)",
+        help=(
+            "defaults to checkpoint setting; none, uniform, dirichlet(alpha), or "
+            "fixed(w1,...)"
+        ),
     )
     parser.add_argument("--seed", type=int)
     parser.add_argument(

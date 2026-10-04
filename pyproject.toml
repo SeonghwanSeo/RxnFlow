@@ -22,6 +22,7 @@ dependencies = [
   "numpy>=2.0",
   "torch>=2.1",
   "omegaconf>=2.3",
+  "tqdm",
   "rdkit>=2023.9.6",
   "druglikeness>=0.2.2",
 ]
@@ -38,7 +39,6 @@ line-length = 90
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "UP", "I"]
-ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]

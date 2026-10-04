@@ -27,22 +27,10 @@ def parse_distribution(value: str) -> tuple[str, list[float]]:
 
 
 @dataclass
-class DataConfig:
-    """Prepared synthon environment and graph capacity settings."""
-
-    env_dir: str = ""
-    max_atoms: int = 50
-
-    def validate(self) -> None:
-        if self.max_atoms <= 0:
-            raise ValueError("data.max_atoms must be positive")
-
-
-@dataclass
 class SubsamplingConfig:
     """Uniform synthon action-space sampling."""
 
-    sampling_ratio: float = 0.05
+    sampling_ratio: float = 0.1
     min_sampling: int = 50
     importance_temp: float = 1.0
 
@@ -84,38 +72,42 @@ class RewardConfig:
 
 @dataclass
 class ModelConfig:
-    # Residual GINE width/depth; readout concatenates mean and virtual-node features.
-    num_emb: int = 128
-    num_layers: int = 4
-    num_synthon_emb: int = 128
-    # Total Linear layers, including the output layer.
-    num_mlp_layers: int = 2
-    num_mlp_layers_synthon: int = 2
+    """GFN model hyperparameters."""
+
+    state_dim: int = 256
+    num_state_layers: int = 4
+    synthon_dim: int = 256
+    num_synthon_layers: int = 3
+    hidden_dim: int = 256
+    num_action_layers: int = 3
     dropout: float = 0.0
 
     def validate(self) -> None:
-        if self.num_emb <= 0 or self.num_layers <= 0:
-            raise ValueError("model dimensions must be positive")
-        if (
-            self.num_synthon_emb <= 0
-            or self.num_mlp_layers < 1
-            or self.num_mlp_layers_synthon < 1
+        for name, value in (
+            ("state_dim", self.state_dim),
+            ("num_state_layers", self.num_state_layers),
+            ("synthon_dim", self.synthon_dim),
+            ("num_synthon_layers", self.num_synthon_layers),
+            ("hidden_dim", self.hidden_dim),
+            ("num_action_layers", self.num_action_layers),
         ):
-            raise ValueError("invalid synthon dimension or MLP depth")
-        if not 0 <= self.dropout < 1:
-            raise ValueError("model.dropout must be in [0, 1)")
+            if value <= 0:
+                raise ValueError(f"model.{name} must be positive")
 
 
 @dataclass
 class GenerationConfig:
     """Dynamic synthesis trajectory limits."""
 
+    max_atoms: int = 50
     min_synthons: int = 2
     max_synthons: int = 3
     min_reactions: int = 1
     max_reactions: int = 3
 
     def validate(self) -> None:
+        if self.max_atoms <= 0:
+            raise ValueError("generation.max_atoms must be positive")
         if not 1 <= self.min_synthons <= self.max_synthons:
             raise ValueError("generation requires 1 <= min_synthons <= max_synthons")
         if not 1 <= self.min_reactions <= self.max_reactions:
@@ -126,22 +118,22 @@ class GenerationConfig:
 
 @dataclass
 class TrainingConfig:
+    log_every: int = 10
+    checkpoint_every: int = 1000
     num_online: int = 64
     num_replay: int = 64
-    replay_capacity: int = 10_000
-    learning_rate: float = 1e-4
-    learning_rate_logZ: float = 1e-3
-    lr_decay_steps: float = 20_000
-    weight_decay: float = 1e-8
-    # Positive lower bound before taking reward logarithms.
-    reward_floor: float = 1e-5
-    random_action_prob: float = 0.05
     ema_decay: float = 0.99
-    checkpoint_every: int = 500
-    log_every: int = 10
-    retrosynthesis_workers: int = 4
-    # Route mass is divided by this factor for each additional synthon.
+    replay_capacity: int = 100_000
+    num_replay_insert: int | None = None
+    replay_insert_priority: Literal["uniform", "reward"] = "uniform"
+    learning_rate: float = 1e-4
+    learning_rate_logZ: float = 1e-2
+    lr_decay_steps: float = 10_000
+    weight_decay: float = 1e-8
+    reward_floor: float = 1e-5
+    random_action_prob: float = 0.1
     backward_synthon_penalty: float = 100.0
+    retrosynthesis_workers: int = 4
 
     def validate(self) -> None:
         positive_ints = {
@@ -156,6 +148,10 @@ class TrainingConfig:
             raise ValueError("training.num_replay must be non-negative")
         if self.replay_capacity < 0:
             raise ValueError("training.replay_capacity must be non-negative")
+        if self.num_replay_insert is not None and self.num_replay_insert < 0:
+            raise ValueError("training.num_replay_insert must be non-negative or None")
+        if self.replay_insert_priority not in ("uniform", "reward"):
+            raise ValueError("training.replay_insert_priority must be uniform or reward")
         if self.retrosynthesis_workers < 0:
             raise ValueError("training.retrosynthesis_workers must be non-negative")
         if (
@@ -190,7 +186,7 @@ class Config:
     heavy-atom capacity and action-space subsampling parameters.
     """
 
-    data: DataConfig = field(default_factory=DataConfig)
+    env_dir: str = ""
     reward: RewardConfig = field(default_factory=RewardConfig)
     property_penalty: dict[str, float] = field(default_factory=dict)
     subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)
@@ -199,16 +195,15 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
 
     def validate(self) -> None:
-        self.data.validate()
         self.reward.validate()
-        from rxnflow.envs.features import PROPERTY_NAMES
+        from rxnflow.envs.features import PROPERTY_PENALTY_INDICES
 
         if not isinstance(self.property_penalty, dict):
             raise ValueError("property_penalty must be a mapping")
-        unknown = set(self.property_penalty) - set(PROPERTY_NAMES)
+        unknown = set(self.property_penalty) - set(PROPERTY_PENALTY_INDICES)
         if unknown:
             raise ValueError(f"unknown property_penalty properties: {sorted(unknown)}")
-        # Zero is useful for counts (e.g. no rings/HBD); logP may be negative.
+        # Zero is useful for counts (e.g. no rings/HBD).
         # These are upper bounds, so positivity is not a general requirement.
         if any(not math.isfinite(value) for value in self.property_penalty.values()):
             raise ValueError("property_penalty values must be finite")
@@ -216,8 +211,8 @@ class Config:
         self.generation.validate()
         self.model.validate()
         self.training.validate()
-        if not self.data.env_dir:
-            raise ValueError("data.env_dir must point to a prepared synthon environment")
+        if not self.env_dir:
+            raise ValueError("env_dir must point to a prepared synthon environment")
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -234,7 +229,7 @@ class Config:
                 else f"{distribution}({','.join(str(x) for x in params)})"
             )
         return {
-            "data": asdict(self.data),
+            "env_dir": self.env_dir,
             "reward": reward,
             "property_penalty": dict(self.property_penalty),
             "subsampling": asdict(self.subsampling),
@@ -259,7 +254,7 @@ class Config:
             dist, params = reward[name]
             reward[name] = (dist, list(params))
         cfg = cls(
-            data=DataConfig(**raw["data"]),
+            env_dir=raw["env_dir"],
             reward=RewardConfig(**reward),
             property_penalty=dict(raw["property_penalty"]),
             subsampling=SubsamplingConfig(**raw["subsampling"]),

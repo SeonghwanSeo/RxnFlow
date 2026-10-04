@@ -1,12 +1,10 @@
-# Minimal QED training configuration.
+# Target molecular-weight reward with constructor settings.
 env_dir: ./data/envs/example_5k/
 
 reward:
   beta: "32"
-  settings: {}
+  settings:
+    target_mw: 300.0
 
 subsampling:
   sampling_ratio: 0.2 # small library -> increase ratio for less variance
-
-property_penalty:
-  mw: 500

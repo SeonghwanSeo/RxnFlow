@@ -13,11 +13,11 @@ from .nn import mlp
 class ConditionEncoder(nn.Module):
     """Encode beta and objective weights, including fixed equal weights."""
 
-    def __init__(self, num_emb: int, num_objectives: int) -> None:
+    def __init__(self, hidden_dim: int, num_objectives: int) -> None:
         super().__init__()
         # Normalized beta plus four sine/cosine pairs.
-        self.emb_beta = mlp(9, num_emb, num_emb, 2)
-        self.emb_preferences = mlp(num_objectives, num_emb, num_emb, 2)
+        self.emb_beta = mlp(9, hidden_dim, hidden_dim, 2)
+        self.emb_preferences = mlp(num_objectives, hidden_dim, hidden_dim, 2)
 
     def forward(self, beta: torch.Tensor, preferences: torch.Tensor) -> torch.Tensor:
         """beta: [B], preferences: [B, num_objectives]; return [B, H]."""
@@ -33,22 +33,22 @@ class ConditionEncoder(nn.Module):
 class SynthonEncoder(nn.Module):
     """Fuse fingerprints, properties, and attachment/remaining type embeddings."""
 
-    def __init__(self, num_types: int, num_emb: int, num_layers: int) -> None:
+    def __init__(self, num_types: int, hidden_dim: int, num_layers: int) -> None:
         super().__init__()
         self.register_buffer(
             "property_scale", torch.tensor(PROPERTY_SCALE), persistent=False
         )
         # The two positions share a vocabulary, but retain their ordered roles.
-        self.emb_type = nn.Embedding(num_types, num_emb)
-        self.lin_fp = nn.Linear(FINGERPRINT_DIM, num_emb)
-        self.lin_prop = nn.Linear(PROPERTY_DIM, num_emb)
+        self.emb_type = nn.Embedding(num_types, hidden_dim)
+        self.lin_fp = nn.Linear(FINGERPRINT_DIM, hidden_dim)
+        self.lin_prop = nn.Linear(PROPERTY_DIM, hidden_dim)
         # Normalize in the fusion MLP after the separate linear projections.
-        self.mlp = mlp(4 * num_emb, num_emb, num_emb, num_layers, layernorm=True)
+        self.mlp = mlp(4 * hidden_dim, hidden_dim, hidden_dim, num_layers, layernorm=True)
 
     def forward(
-        self, fp: torch.Tensor, prop: torch.Tensor, site_indices: torch.Tensor
+        self, fp: torch.Tensor, prop: torch.Tensor, site_types: torch.Tensor
     ) -> torch.Tensor:
-        """fp: [N, F], prop: [N, P], site_indices: [N, 2]; return [N, S].
+        """fp: [N, F], prop: [N, P], site_types: [N, 2]; return [N, S].
 
         F/P are fingerprint/property dimensions; S is the synthon embedding size.
         """
@@ -58,8 +58,8 @@ class SynthonEncoder(nn.Module):
                 [
                     self.lin_fp(fp),
                     self.lin_prop(prop),
-                    self.emb_type(site_indices[:, 0]),
-                    self.emb_type(site_indices[:, 1]),
+                    self.emb_type(site_types[:, 0]),
+                    self.emb_type(site_types[:, 1]),
                 ],
                 dim=-1,
             )

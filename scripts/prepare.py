@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from rxnflow.envs.prepare import convert_stage, features_stage
@@ -11,7 +12,7 @@ from rxnflow.envs.prepare import convert_stage, features_stage
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--env-dir", type=Path, required=True)
-    parser.add_argument("--building-blocks", type=Path, required=True)
+    parser.add_argument("--block-smi", type=Path, required=True)
     parser.add_argument(
         "--config",
         type=Path,
@@ -36,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--druglikeness-threshold",
         type=float,
-        help="Filter source building blocks with DeepDL extended (0-100; e.g. 60); omitted disables filtering",
+        help=(
+            "Filter source building blocks with DeepDL extended (0-100; e.g. 60); "
+            "omitted disables filtering"
+        ),
     )
     parser.add_argument(
         "--druglikeness-device", default="cpu", help="DeepDL device: cpu or cuda"
@@ -45,13 +49,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
     args = build_parser().parse_args(argv)
     if args.num_workers < 1:
         raise SystemExit("--num-workers must be at least 1")
     if args.env_dir.exists():
         raise SystemExit(f"{args.env_dir} already exists")
     convert_stage(
-        args.building_blocks,
+        args.block_smi,
         args.env_dir,
         args.config,
         num_workers=args.num_workers,

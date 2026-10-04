@@ -198,8 +198,8 @@ class RxnFlowPolicy:
 
         Each library draw is shared across states and reactions. Each reaction
         shares one query/matmul across libraries of the same action type, then
-        exposes one logit matrix per (reaction, library). Observed actions do not affect these draws or
-        their importance weights.
+        exposes one logit matrix per (reaction, library). Observed actions do not
+        affect these draws or their importance weights.
         """
         assert states
         # 1. Build state features and collect compatible reaction/library rows.
@@ -224,7 +224,8 @@ class RxnFlowPolicy:
         samples: dict[str | None, NDArray[np.int64]] = {}
         log_importance: dict[str | None, float] = {}
         masks: dict[str, NDArray[np.bool_]] = {}  # library -> [batch, sampled actions]
-        # Each entry contains fingerprints, properties and attachment/remaining type indices.
+        # Each entry contains fingerprints, properties and attachment/remaining type
+        # indices.
         features: list[
             tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]
         ] = []
@@ -272,13 +273,14 @@ class RxnFlowPolicy:
             encoded = self._encode_synthons(features)
             synthon_embs = dict(zip(library_names, encoded.split(sizes), strict=True))
 
-        # 4. Score by reaction and action type, apply masks, and split columns into subspaces.
+        # 4. Score by reaction and action type, apply masks, and split columns into
+        # subspaces.
         action_logits: list[ActionLogits] = []
         for group, rows in action_rows.items():
-            name, action_type = group
+            action_name, action_type = group
             row_indices = torch.tensor(sorted(rows), device=self.device)
             action_emb = self.model.forward_mdp(
-                state_emb[row_indices], name, logit_scale[row_indices], action_type
+                action_type, action_name, state_emb[row_indices], logit_scale[row_indices]
             )
             libraries = list(action_libraries.get(group, {}))
             if libraries:
@@ -317,7 +319,7 @@ class RxnFlowPolicy:
                     action_logits.append(
                         ActionLogits(
                             ActionSubspace(
-                                (name, library),
+                                (action_name, library),
                                 action_type,
                                 self.subsampling[library].num_actions,
                                 samples[library],
@@ -329,7 +331,9 @@ class RxnFlowPolicy:
             else:
                 action_logits.append(
                     ActionLogits(
-                        ActionSubspace((name, None), action_type, 1, samples[None]),
+                        ActionSubspace(
+                            (action_name, None), action_type, 1, samples[None]
+                        ),
                         logits,
                         weights,
                     )
@@ -372,7 +376,7 @@ class RxnFlowPolicy:
                     ),
                 )
             )
-        synthons = state_emb.new_zeros((len(actions), self.config.model.num_synthon_emb))
+        synthons = state_emb.new_zeros((len(actions), self.config.model.synthon_dim))
         if features:
             values = self._encode_synthons(features)
             synthons = synthons.index_copy(
@@ -380,10 +384,10 @@ class RxnFlowPolicy:
             )
         # 3. Score each reaction and restore the original action order.
         logits = state_emb.new_zeros(len(actions))
-        for (name, action_type), rows in by_reaction.items():
+        for (action_name, action_type), rows in by_reaction.items():
             indices = torch.tensor(rows, device=self.device)
             action_emb = self.model.forward_mdp(
-                state_emb[indices], name, logit_scale[indices], action_type
+                action_type, action_name, state_emb[indices], logit_scale[indices]
             )
             values = (
                 action_emb.squeeze(1)
@@ -453,7 +457,8 @@ class RxnFlowPolicy:
     ) -> float | None:
         """Normalize synthon-count-weighted route mass for the observed reverse edge."""
         # This is an explicit route preference, independent of catalog size.
-        # TODO: Review backward consistency with trajectory limits and search approximation.
+        # TODO: Review backward consistency with trajectory limits and search
+        # approximation.
         log_penalty = math.log(self.config.training.backward_synthon_penalty)
         numerator = denominator = -math.inf
         for trajectory in trajectories:

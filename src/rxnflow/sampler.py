@@ -40,19 +40,19 @@ class RxnFlowSampler:
         config = Config.from_dict(ckpt["config"])
 
         if env_dir is not None:
-            config.data.env_dir = str(env_dir)
+            config.env_dir = str(env_dir)
         self.config = config
         self.objectives = tuple(ckpt["objectives"])
         self.device = torch.device(device)
         self.env = SynthesisEnv(
-            config.data.env_dir,
-            config.data.max_atoms,
+            config.env_dir,
+            config.generation.max_atoms,
             config.generation.max_reactions,
-            0,
+            config.generation.min_synthons,
+            config.generation.max_synthons,
+            config.generation.min_reactions,
             config.property_penalty,
-            min_synthons=config.generation.min_synthons,
-            max_synthons=config.generation.max_synthons,
-            min_reactions=config.generation.min_reactions,
+            0,
         )
         if ckpt["templates"] != self.env.templates:
             raise ValueError(
@@ -114,7 +114,7 @@ class RxnFlowSampler:
         if (preferences[0] == "none") != (
             self.config.reward.moo_preferences[0] == "none"
         ):
-            raise ValueError("preferences must match the checkpoint's conditioning mode")
+            raise ValueError("preferences 'none' must match the checkpoint setting")
         conditions = ConditionSampler(
             beta,
             preferences,
@@ -194,7 +194,8 @@ class RxnFlowSampler:
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
         if len(trajectories) != num_samples:
             raise RuntimeError(
-                f"generated only {len(trajectories)} valid samples in {maximum_attempts} attempts"
+                f"generated only {len(trajectories)} valid samples in "
+                f"{maximum_attempts} attempts"
             )
         return [self._result(trajectory) for trajectory in trajectories]
 

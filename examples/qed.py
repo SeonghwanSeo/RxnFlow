@@ -1,4 +1,7 @@
-"""Local QED reward and training example: python examples/qed.py --config configs/qed.yaml --steps 1000."""
+"""Local QED reward and training example.
+
+Run: python examples/qed.py --config configs/qed.yaml --steps 1000.
+"""
 
 from __future__ import annotations
 

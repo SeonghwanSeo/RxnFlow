@@ -17,6 +17,7 @@ from rxnflow.core.synthon import load_synthon_specs, typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionSpace, ActionSubspace, ActionType, State
 from rxnflow.envs.features import (
     PROPERTY_NAMES,
+    PROPERTY_PENALTY_INDICES,
     heavy_atom_count,
     parse_molecule,
 )
@@ -32,12 +33,11 @@ class SynthesisEnv:
         env_dir: str | Path,
         max_atoms: int = 50,
         max_reactions: int = 3,
-        retrosynthesis_workers: int = 0,
-        property_penalty: dict[str, float] | None = None,
-        *,
         min_synthons: int = 2,
         max_synthons: int = 3,
         min_reactions: int = 1,
+        property_penalty: dict[str, float] | None = None,
+        retrosynthesis_workers: int = 0,
     ):
         self.env_dir = Path(env_dir)
         self.max_atoms = max_atoms
@@ -55,7 +55,7 @@ class SynthesisEnv:
         if max_atoms <= 0 or max_reactions < 1:
             raise ValueError("invalid synthesis environment limits")
         self.property_limits = {
-            PROPERTY_NAMES.index(name): limit
+            PROPERTY_PENALTY_INDICES[name]: limit
             for name, limit in (property_penalty or {}).items()
         }
         self.retrosynthesis_workers = retrosynthesis_workers

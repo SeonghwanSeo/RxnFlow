@@ -27,6 +27,12 @@ PROPERTY_NAMES = (
     "aromatic_rings",
     "heavy_atoms",
 )
+# logP is not additive; heavy-atom capacity is controlled by generation.max_atoms.
+PROPERTY_PENALTY_INDICES = {
+    name: index
+    for index, name in enumerate(PROPERTY_NAMES)
+    if name not in ("logp", "heavy_atoms")
+}
 PROPERTY_SCALE_DICT = {
     "mw": 100.0,
     "tpsa": 100.0,
