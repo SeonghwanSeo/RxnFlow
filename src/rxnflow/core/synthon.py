@@ -26,9 +26,10 @@ class SynthonConversion:
             raise ValueError(f"invalid synthon conversion {spec.type}: {template}")
         reaction.Initialize()
         self.reaction: ChemicalReaction = reaction
+        self.product_pattern = reaction.GetProductTemplate(0)
 
     def run_mol(self, mol: Chem.Mol) -> dict[str, Chem.Mol]:
-        """Return connected, sanitized conversions keyed by canonical SMILES."""
+        """Return sanitized conversions matching the convert pattern, by SMILES."""
         products: dict[str, Chem.Mol] = {}
         for product_tuple in self.reaction.RunReactants((mol,), 0):
             if len(product_tuple) != 1:
@@ -37,6 +38,9 @@ class SynthonConversion:
             try:
                 Chem.SanitizeMol(product)
                 product = Chem.RemoveHs(product)
+                # Sanitization can change aromaticity or H counts at the handle.
+                if not product.HasSubstructMatch(self.product_pattern):
+                    continue
                 smiles = Chem.MolToSmiles(product)
             except (ValueError, RuntimeError, Chem.rdchem.KekulizeException):
                 continue
