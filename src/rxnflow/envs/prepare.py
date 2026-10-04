@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from functools import lru_cache, partial
 from multiprocessing import get_context
 from pathlib import Path
+from time import perf_counter
 from typing import cast
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -17,6 +19,7 @@ import numpy as np
 import yaml
 from rdkit import Chem
 from rdkit.Chem.SaltRemover import SaltRemover
+from tqdm import tqdm
 
 from rxnflow import __version__
 from rxnflow.core.reaction import load_reactions
@@ -31,6 +34,8 @@ from rxnflow.envs.features import (
     PROPERTY_DIM,
     synthon_feature_row,
 )
+
+logger = logging.getLogger(__name__)
 
 ALLOWED_ATOMIC_NUMBERS = {5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53, 85}
 MANIFEST_NAME = "prepare_manifest.json"
@@ -85,14 +90,26 @@ def _clean_smiles(smiles: str, salt_remover: SaltRemover) -> str | None:
 def _read_building_blocks(path: Path) -> list[tuple[str, str]]:
     records: list[tuple[str, str]] = []
     salt_remover = SaltRemover()
+    logger.info(f"Reading and cleaning building blocks: {path}")
+    line_number = 0
     with path.open(encoding="utf-8") as handle:
-        for line_number, raw_line in enumerate(handle, start=1):
+        for line_number, raw_line in enumerate(
+            tqdm(
+                handle,
+                desc="Cleaning building blocks",
+                unit="row",
+            ),
+            start=1,
+        ):
             fields = raw_line.rstrip("\n").split("\t")
             if len(fields) != 2 or not fields[0] or not fields[1]:
                 raise ValueError(f"{path}:{line_number}: expected SMILES<TAB>identifier")
             smiles = _clean_smiles(fields[0], salt_remover)
             if smiles is not None:
                 records.append((smiles, fields[1].strip()))
+    logger.info(
+        f"Building blocks: read={line_number:,}, retained={len(records):,}, rejected={line_number - len(records):,}"
+    )
     if not records:
         raise ValueError(f"no valid building blocks in {path}")
     return records
@@ -214,6 +231,10 @@ def convert_stage(
     druglikeness_device: str = "cpu",
 ) -> None:
     """Write synthon libraries and source provenance from a building-block catalog."""
+    started = perf_counter()
+    logger.info(
+        f"Preparing synthons: workers={num_workers}, min_library_size={min_library_size}, max_atoms={max_atoms}"
+    )
     # 1. Read templates and clean source BBs, before synthon conversion.
     if num_workers < 1:
         raise ValueError("num_workers must be at least 1")
@@ -251,6 +272,9 @@ def convert_stage(
     if not reaction_path.is_file():
         raise FileNotFoundError(reaction_path)
     specs = load_synthon_specs(synthon_path)
+    logger.info(
+        f"Templates loaded: {len(specs)} synthon types, {len(exclude_patterns)} exclusion patterns"
+    )
     records = _read_building_blocks(source_path)
     # Screen cleaned source building blocks before creating their oriented synthons.
     num_input = len(records)
@@ -259,6 +283,9 @@ def convert_stage(
 
         if not 0 <= druglikeness_threshold <= 100:
             raise ValueError("druglikeness threshold must be between 0 and 100")
+        logger.info(
+            f"Loading DeepDL extended: device={druglikeness_device}, threshold={druglikeness_threshold}"
+        )
         model = DeepDL.from_pretrained("extended", device=druglikeness_device)
         batch_size = 256 if druglikeness_device.startswith("cuda") else 64
         retained = []
@@ -276,10 +303,7 @@ def convert_stage(
                 if score >= druglikeness_threshold
             )
         records = retained
-        print(
-            f"Druglikeness: retained {len(records)} / {num_input} building blocks",
-            flush=True,
-        )
+        logger.info(f"Druglikeness: retained {len(records):,} / {num_input:,} building blocks")
         if not records:
             raise ValueError("no building blocks passed druglikeness filtering")
         del model
@@ -296,6 +320,7 @@ def convert_stage(
     # Small batches distribute expensive conversions without sending the entire
     # catalog to every process. Ordered merging and sorted output keep row IDs
     # identical for serial and parallel preparation.
+    logger.info(f"Converting {len(records):,} building blocks in 512-row batches")
     batches = (records[i : i + 512] for i in range(0, len(records), 512))
     convert = partial(
         _convert_batch,
@@ -308,7 +333,12 @@ def convert_stage(
         results = (
             pool.imap(convert, batches) if pool is not None else map(convert, batches)
         )
-        for result in results:
+        for result in tqdm(
+            results,
+            total=(len(records) + 511) // 512,
+            desc="Converting synthons",
+            unit="batch",
+        ):
             for library_name, values in result.items():
                 target = synthons.setdefault(library_name, {})
                 for smiles, identifiers in values.items():
@@ -325,6 +355,10 @@ def convert_stage(
     if len(excluded_counts) == len(synthons):
         raise ValueError("no synthon libraries meet min_library_size")
 
+    logger.info(
+        f"Conversion produced {sum(len(v) for v in synthons.values()):,} unique oriented synthons in {len(synthons)} libraries; excluded {len(excluded_counts)} libraries below min_library_size"
+    )
+    logger.info(f"Writing synthon libraries and provenance: {env_path}")
     # 4. Write sorted library rows, source provenance, and the active templates.
     env_path.mkdir(parents=True, exist_ok=True)
     (env_path / "signature.json").unlink(missing_ok=True)
@@ -345,6 +379,7 @@ def convert_stage(
                 handle.write(f"{smiles}\t{identifiers}\n")
         temporary.replace(output)
         counts[library_name] = len(values)
+        logger.info(f"Library {library_name}: {len(values):,} synthons -> {output}")
     # One source record can map to many synthons, and identical synthons may
     # have several suppliers' IDs. Keep this provenance outside the MDP state.
     (env_path / "building_blocks.json").write_text(
@@ -385,9 +420,15 @@ def convert_stage(
         },
     )
 
+    logger.info(
+        f"Synthon preparation complete: {sum(counts.values()):,} synthons, {len(counts)} libraries ({perf_counter() - started:.1f}s)"
+    )
+
 
 def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     """Write properties, fingerprints, and atom counts in each library's row order."""
+    started = perf_counter()
+    logger.info(f"Preparing features: env={env_dir}, workers={num_workers}")
     # 1. Enumerate converted libraries before opening the replacement archive.
     if num_workers < 1:
         raise ValueError("num_workers must be at least 1")
@@ -419,6 +460,7 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
             counts[path.stem] = count
             if not count:
                 raise ValueError(f"empty synthon file: {path}")
+            logger.info(f"Features for library {path.stem}: {count:,} synthons")
             properties = np.empty((count, PROPERTY_DIM), dtype=np.float32)
             fingerprints = np.empty((count, FINGERPRINT_DIM), dtype=np.uint8)
             heavy_atoms = np.empty(count, dtype=np.uint8)
@@ -427,10 +469,18 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
                 if pool is not None
                 else map(synthon_feature_row, smiles)
             )
-            for index, (prop, fingerprint, atom_count) in enumerate(rows):
+            for index, (prop, fingerprint, atom_count) in enumerate(
+                tqdm(
+                    rows,
+                    total=count,
+                    desc=f"Features {path.stem}",
+                    unit="synthon",
+                )
+            ):
                 properties[index] = prop
                 fingerprints[index] = fingerprint
                 heavy_atoms[index] = atom_count
+            logger.info(f"Writing features for library {path.stem}")
             for name, array in (
                 ("smiles", np.array(smiles)),
                 ("properties", properties),
@@ -444,12 +494,17 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     # 3. Publish the archive only after every library has been written.
     temporary.replace(output)
     # 4. Finalize static eligibility and identity before marking the stage complete.
+    logger.info("Building action spaces and computing environment signature")
     action_names = _write_action_space(env_path, counts)
     _write_signature(env_path, counts, action_names)
     _complete_stage(
         env_path,
         "features",
         {"library_names": sorted(path.stem for path in synthon_dir.glob("*.smi"))},
+    )
+
+    logger.info(
+        f"Feature preparation complete: {sum(counts.values()):,} synthons, {len(action_names)} actions -> {output} ({perf_counter() - started:.1f}s)"
     )
 
 

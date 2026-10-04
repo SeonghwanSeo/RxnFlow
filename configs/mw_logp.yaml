@@ -1,0 +1,10 @@
+# Minimize molecular weight and maximize logP with beta/preference conditioning.
+env_dir: ./data/envs/example_5k/
+
+reward:
+  beta: "uniform(1,64)"
+  moo_scalarization: mul
+  moo_preferences: "dirichlet(1.5)"
+
+subsampling:
+  sampling_ratio: 0.2 # small library -> increase ratio for less variance

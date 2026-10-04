@@ -20,7 +20,11 @@ cd RxnFlow/
 pip install -e .
 ```
 
-## Prepare a synthesis environment
+## Quick start
+
+Start with the supplied [example SMILES file](data/building_blocks/example_5k.smi), containing 5,000 ZINC building blocks.
+
+### Prepare a synthesis environment
 
 To construct a synthesis environment, you need a building-block library and reaction templates. The default set in `data/templates/basic/` includes 38 bimolecular reaction templates and 4 unimolecular transformations.
 
@@ -29,15 +33,17 @@ Prepare a building-block library, for example from [eMolecules](https://www.emol
 Example command with 5k ZINC building blocks:
 ```bash
 python scripts/prepare.py \
-  --building-blocks ./data/building_blocks/example_5k.smi \
+  --block-smi ./data/building_blocks/example_5k.smi \
   --env-dir ./data/envs/example_5k/ \
   --config ./data/templates/basic/config.yaml \
   --num-workers 16
 ```
 
-Set `data.env_dir` in your training configuration to the prepared directory. See [environment preparation](docs/environment.md) for more details.
+Set `env_dir` in your training configuration to the prepared directory. See [environment preparation](docs/environment.md) for more details.
 
-## Single-objective optimization
+### Train a GFlowNet
+
+**Single-objective optimization**
 
 Train with QED as the reward:
 
@@ -47,23 +53,23 @@ python examples/qed.py --config configs/qed.yaml --steps 1000 --output-dir runs/
 
 See [define your own reward](docs/rewards.md) and [training](docs/training.md) for more details on training and reward configuration.
 
-## Multi-objective optimization
+**Multi-objective optimization**
 
-Train on QED and SA score:
+Minimize molecular weight and maximize logP with beta and preference conditioning:
 
 ```bash
-python examples/qed_sa.py --config configs/qed_sa.yaml --steps 3000 --output-dir runs/qed_sa
+python examples/mw_logp.py --config configs/mw_logp.yaml --steps 3000 --output-dir runs/mw_logp
 ```
 
-This example jointly optimizes QED and SA score with temperature and preference conditioning. See [multi-objective optimization](docs/rewards.md#combine-multiple-objectives) for details.
+See [reward implementation](docs/rewards.md#define-multiple-objectives) and [conditioning](docs/conditioning.md) for details.
 
-## Sampling
+### Sampling
 
 Generate molecules and their synthesis routes from a trained checkpoint:
 
 ```bash
 python scripts/sample.py \
-  --checkpoint runs/qed_sa/checkpoints/latest.ckpt \
+  --checkpoint runs/mw_logp/checkpoints/latest.ckpt \
   --num-samples 100 \
   --output samples.csv
 ```

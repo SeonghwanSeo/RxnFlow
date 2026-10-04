@@ -18,7 +18,7 @@ from .nn import mlp
 
 
 class RxnFlowModel(nn.Module):
-    """Shapes use B=batch size, H=num_emb, S=num_synthon_emb."""
+    """RxnFlow model"""
 
     def __init__(
         self,
@@ -27,43 +27,60 @@ class RxnFlowModel(nn.Module):
         num_objectives: int,
     ):
         super().__init__()
-        num_emb = cfg.num_emb
+        # Action name to index mapping for embedding lookup
         self.action_to_index = dict(env.action_to_index)
+
+        # Number of objectives for multi-objective optimization
         self.num_objectives = num_objectives
-        # One condition is shared by the graph encoder, logit scale, and logZ.
-        self.condition_encoder = ConditionEncoder(num_emb, num_objectives)
+
+        # Condition encoders
+        self.condition_encoder = ConditionEncoder(cfg.hidden_dim, num_objectives)
+        cond_dim = cfg.hidden_dim
+
+        # State graph encoder
         self.state_encoder = MPNN(
             x_dim=NODE_FEATURE_DIM,
             e_dim=BOND_FEATURE_DIM,
             g_dim=PROPERTY_DIM,
-            num_emb=num_emb,
-            num_layers=cfg.num_layers,
+            cond_dim=cond_dim,
+            model_dim=cfg.state_dim,
+            num_layers=cfg.num_state_layers,
         )
-        self.emb_rxn = nn.Embedding(len(env.action_names), num_emb)
+        state_dim = 2 * cfg.state_dim
+
+        # Action type embeddings
+        self.emb_rxn = nn.Embedding(len(env.action_names), cfg.hidden_dim)
+        rxn_dim = cfg.hidden_dim
+
+        # Synthon encoder
         self.synthon_encoder = SynthonEncoder(
-            len(env.synthon_types) + 1, cfg.num_synthon_emb, cfg.num_mlp_layers_synthon
+            num_types=len(env.synthon_types) + 1,
+            hidden_dim=cfg.synthon_dim,
+            num_layers=cfg.num_synthon_layers,
         )
-        # Concatenate the 2H state and H reaction embeddings. Each head learns
-        # their joint projection while the graph encoding is shared by reactions.
-        # Unary heads emit scalar logits; FirstSynthon and binary heads emit
-        # query vectors for the shared synthon embeddings. All actions still
-        # compete in one categorical distribution.
-        self.action_heads = nn.ModuleDict(
-            {
-                action_type.name: mlp(
-                    3 * num_emb,
-                    num_emb,
-                    1 if action_type.is_unirxn else cfg.num_synthon_emb,
-                    cfg.num_mlp_layers,
-                    layernorm=True,
-                    dropout=cfg.dropout,
-                )
-                for action_type in ActionType
-            }
-        )
-        # One condition-dependent multiplier controls the scale of all action logits.
-        self._logit_scale = mlp(num_emb, num_emb, 1, 2)
-        self._logZ = mlp(num_emb, num_emb, 1, 2)
+        synthon_dim = cfg.synthon_dim
+
+        # Action heads
+        hidden_dim = cfg.hidden_dim
+        action_heads = {}
+        for action_type in ActionType:
+            out_dim = 1 if action_type.is_unirxn else synthon_dim
+            action_heads[action_type.name] = mlp(
+                state_dim + rxn_dim,
+                hidden_dim,
+                out_dim,
+                cfg.num_action_layers,
+                layernorm=True,
+                dropout=cfg.dropout,
+            )
+        self.action_heads = nn.ModuleDict(action_heads)
+
+        # Logit scaling (LogitGFN)
+        self._logit_scale = mlp(hidden_dim, hidden_dim, 1, 2)
+
+        # Trajectory-balance (TB)
+        self._logZ = mlp(hidden_dim, hidden_dim, 1, 2)
+
         self.init_weight()
 
     def init_weight(self) -> None:
@@ -72,7 +89,8 @@ class RxnFlowModel(nn.Module):
         for module in self.modules():
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
-                nn.init.zeros_(module.bias)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
             elif isinstance(module, nn.LayerNorm):
                 module.reset_parameters()
             elif isinstance(module, nn.Embedding):
@@ -85,38 +103,42 @@ class RxnFlowModel(nn.Module):
         nn.init.zeros_(self._logZ[-1].bias)
 
     def encode_cond(self, beta: torch.Tensor, preferences: torch.Tensor) -> torch.Tensor:
-        """Encode beta and objective weights into one [batch, num_emb] condition."""
+        """Encode beta and objective weights into one [bs, d_hid] condition."""
         return self.condition_encoder(beta, preferences)
 
-    def encode_state(self, batch: GraphBatch, cond_info: torch.Tensor) -> torch.Tensor:
-        """cond_info: [B, H]; return [B, 2H]."""
-        return self.state_encoder(batch, cond_info)
+    def encode_state(self, batch: GraphBatch, cond: torch.Tensor) -> torch.Tensor:
+        """cond: [bs, d_hid]; return [bs, 2*d_state]."""
+        return self.state_encoder(batch, cond)
 
-    def logit_scale(self, cond_info: torch.Tensor) -> torch.Tensor:
-        """[B, H] → [B] ELU + 1 logit multipliers, initialized at 1."""
-        return F.elu(self._logit_scale(cond_info)).squeeze(-1) + 1
+    def logit_scale(self, cond: torch.Tensor) -> torch.Tensor:
+        """[bs, b_hid] → [bs] \in [0, ∞)."""
+        return F.elu(self._logit_scale(cond)).squeeze(-1) + 1
 
-    def logZ(self, cond_info: torch.Tensor) -> torch.Tensor:
-        """[B, H] → [B, 1]."""
-        return self._logZ(cond_info)
+    def logZ(self, cond: torch.Tensor) -> torch.Tensor:
+        """[bs, d_hid] → [bs, 1]."""
+        return self._logZ(cond)
 
     def encode_synthon(
-        self, fp: torch.Tensor, prop: torch.Tensor, site_indices: torch.Tensor
+        self, fp: torch.Tensor, prop: torch.Tensor, synthon_types: torch.Tensor
     ) -> torch.Tensor:
-        return self.synthon_encoder(fp, prop, site_indices)
+        """fp: [n, d_fp], prop: [n, d_prop], synthon_types: [n, 2]
+        return [n, d_synthon]."""
+        return self.synthon_encoder(fp, prop, synthon_types)
 
     def forward_mdp(
         self,
-        state_emb: torch.Tensor,
-        action_name: str,
-        logit_scale: torch.Tensor,
         action_type: ActionType,
+        action_name: str,
+        state_emb: torch.Tensor,
+        logit_scale: torch.Tensor,
     ) -> torch.Tensor:
-        """state_emb: [B, 2H], logit_scale: [B].
-
-        Return [B, 1] logits for UniReaction or [B, S] queries for synthon selection.
         """
-        # Add reaction identity after graph encoding so all reactions share the GNN.
+        - state_emb: [bs, 2*d_state].
+        - logit_scale: [bs].
+
+        Return [bs, 1] logits for unimolecular actions or
+        [bs, d_synthon] logits for bimolecular actions.
+        """
         index = self.action_to_index[action_name]
         rxn_emb = self.emb_rxn.weight[index].expand(state_emb.shape[0], -1)
         state_rxn_emb = torch.cat([state_emb, rxn_emb], dim=-1)

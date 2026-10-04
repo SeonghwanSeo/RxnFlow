@@ -1,8 +1,8 @@
-"""Uniform FIFO replay with constant-time ring insertion and indexed sampling."""
+"""FIFO replay with optional admission limits and uniform replay sampling."""
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 
@@ -10,21 +10,40 @@ from rxnflow.core.types import Trajectory
 
 
 class ReplayBuffer:
-    def __init__(self, capacity: int):
+    def __init__(
+        self,
+        capacity: int,
+        num_insert: int | None = None,
+        insert_priority: Literal["uniform", "reward"] = "uniform",
+    ):
         assert capacity >= 0
+        assert num_insert is None or num_insert >= 0
+        assert insert_priority in ("uniform", "reward")
         self.capacity = capacity
+        self.num_insert = num_insert
+        self.insert_priority = insert_priority
         # Store plain trajectory data, including beta, preferences and objective
         # rewards. Sampling preserves these conditions; no relabeling.
-        # TODO: benchmark beta/preference relabeling and prioritized replay separately.
         self._items: list[dict[str, Any]] = []
         self._next = 0
 
     def __len__(self) -> int:
         return len(self._items)
 
-    def add(self, trajectories: list[Trajectory]) -> None:
-        if not self.capacity:
+    def add(self, trajectories: list[Trajectory], rng: np.random.Generator) -> None:
+        if not self.capacity or self.num_insert == 0:
             return
+        # Admission acts only on this online batch. Preserve its original order
+        # for FIFO eviction, and avoid RNG work when all trajectories are kept.
+        if self.num_insert is not None and self.num_insert < len(trajectories):
+            if self.insert_priority == "uniform":
+                indices = rng.choice(len(trajectories), self.num_insert, replace=False)
+            else:
+                # Rank by the stored scalar reward under the original preference,
+                # before beta. Stable sorting retains input order for tied rewards.
+                rewards = np.asarray([t.reward for t in trajectories])
+                indices = np.argsort(-rewards, kind="stable")[: self.num_insert]
+            trajectories = [trajectories[i] for i in sorted(indices)]
         for trajectory in trajectories:
             item = trajectory.to_dict()
             if len(self._items) < self.capacity:

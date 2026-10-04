@@ -1,4 +1,4 @@
-"""QED/SA product reward with beta conditioning: python examples/qed_sa.py --config configs/qed_sa.yaml --steps 1000."""
+"""Minimize molecular weight and maximize logP."""
 
 from __future__ import annotations
 
@@ -8,27 +8,36 @@ from pathlib import Path
 import numpy as np
 import torch
 from rdkit import Chem
-from rdkit.Chem import QED
-from rdkit.Contrib.SA_Score import sascorer
+from rdkit.Chem import Descriptors
 
 from rxnflow.config import Config
 from rxnflow.reward import RewardFunction
 from rxnflow.trainer import RxnFlowTrainer
 
 
-class QEDSAReward(RewardFunction):
-    objectives = ("qed", "sa")
+class MWLogPReward(RewardFunction):
+    objectives = ("mw", "logp")
+
+    def __init__(self, mw_scale: float = 300.0, logp_scale: float = 1.0):
+        self.mw_scale = mw_scale
+        self.logp_scale = logp_scale
 
     def score(self, mols: list[Chem.Mol]) -> np.ndarray:
-        qeds = [QED.qed(mol) for mol in mols]
-        sas = [(10.0 - sascorer.calculateScore(mol)) / 9 for mol in mols]
-        return np.array([qeds, sas], dtype=np.float32).T
+        # Convert both properties to positive rewards: lower MW and higher logP.
+        rewards = [
+            [
+                1 / (1 + Descriptors.ExactMolWt(mol) / self.mw_scale),
+                1 / (1 + np.exp(-Descriptors.MolLogP(mol) / self.logp_scale)),
+            ]
+            for mol in mols
+        ]
+        return np.array(rewards, dtype=np.float32).reshape(-1, 2)
 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, default=Path("runs/qed_sa"))
+    parser.add_argument("--output-dir", type=Path, default=Path("runs/mw_logp"))
     parser.add_argument(
         "--steps", type=int, required=True, help="additional training updates"
     )
@@ -44,7 +53,7 @@ def main(argv: list[str] | None = None) -> None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     config = Config.from_file(args.config)
-    reward = QEDSAReward(**config.reward.settings)
+    reward = MWLogPReward(**config.reward.settings)
     trainer = RxnFlowTrainer(
         config,
         reward,

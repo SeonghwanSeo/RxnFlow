@@ -1,63 +1,49 @@
-# Complete RxnFlow configuration template.
-data:
-  env_dir: /path/to/prepared/environment
-  # Heavy-atom capacity
-  max_atoms: 50
+# Complete RxnFlow configuration template. See configs/README.md for settings.
+env_dir: /path/to/prepared/environment
 
 reward:
-  # Reward exponent: "32" for a fixed value, "uniform(1,64)" to vary it.
-  beta: "32"
-  # Combine objectives with a product or sum.
+  beta: "32" # scalar | uniform(lower,upper)
   moo_scalarization: mul # mul | sum
-  # "none" uses equal weights without preference conditioning.
-  # Alternatives: "uniform", "dirichlet(0.5)"
   moo_preferences: "none" # none | uniform | dirichlet(alpha)
-  # Keyword arguments passed to the reward constructor in the example scripts.
   settings: {}
 
-# Property penalty configuration.
 property_penalty: {}
 
-# Action space subsampling
 subsampling:
   sampling_ratio: 0.1
   min_sampling: 50
   importance_temp: 1.0
 
-# Generative trajectory constraints.
 generation:
+  max_atoms: 50
   min_synthons: 2
   max_synthons: 3
   min_reactions: 1
   max_reactions: 3
 
 model:
-  num_emb: 128
-  num_layers: 4
-  num_synthon_emb: 128
-  num_mlp_layers: 2
-  num_mlp_layers_synthon: 2
+  hidden_dim: 256
+  state_dim: 256
+  num_state_layers: 4
+  synthon_dim: 256
+  num_action_layers: 3
+  num_synthon_layers: 3
   dropout: 0.0
 
 training:
-  checkpoint_every: 1000
   log_every: 10
-  # New trajectories and replay trajectories per update.
+  checkpoint_every: 1000
   num_online: 64
   num_replay: 64
-  # Set capacity to 0 to disable replay storage.
-  replay_capacity: 10000
+  ema_decay: 0.99
+  replay_capacity: 100000
+  num_replay_insert: null
+  replay_insert_priority: uniform # uniform | reward
   learning_rate: 0.0001
   learning_rate_logZ: 0.01
-  # Number of updates over which learning rates halve.
-  lr_decay_steps: 1000
+  lr_decay_steps: 10000
   weight_decay: 1e-8
   reward_floor: 0.00001
-  # Probability of taking a random exploration action during training.
   random_action_prob: 0.1
-  # EMA coefficient for the model used to generate training trajectories.
-  ema_decay: 0.99
-  # Set to 0 for synchronous backward analysis.
-  retrosynthesis_workers: 4
-  # Divide backward-route weight by this factor for each additional synthon.
   backward_synthon_penalty: 100.0
+  retrosynthesis_workers: 4

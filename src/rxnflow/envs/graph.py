@@ -1,6 +1,6 @@
 """Fixed-shape model tensors derived from the state's RDKit molecule.
 
-Every ``GraphData`` has length ``L = Config.data.max_atoms + 1``: heavy atoms
+Every ``GraphData`` has length ``L = Config.generation.max_atoms + 1``: heavy atoms
 plus one reserved dummy-handle slot. RDKit excludes dummies from its heavy-atom
 count, and a nonterminal linear synthesis state has exactly one. Batching only
 stacks those tensors, producing nodes ``[B, L, node_dim]``, adjacency

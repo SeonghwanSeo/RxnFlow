@@ -46,7 +46,7 @@ class ConditionSampler:
             raise ValueError("beta requires positive fixed(value) or uniform(low,high)")
         if pref_dist == "none":
             if pref_params:
-                raise ValueError("unconditioned preferences take no parameters")
+                raise ValueError("none preferences take no parameters")
         elif pref_dist == "fixed":
             if (
                 len(pref_params) != num_objectives

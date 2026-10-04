@@ -22,6 +22,7 @@ dependencies = [
   "numpy>=2.0",
   "torch>=2.1",
   "omegaconf>=2.3",
+  "tqdm",
   "rdkit>=2023.9.6",
   "druglikeness>=0.2.2",
 ]
