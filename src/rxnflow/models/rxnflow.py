@@ -111,7 +111,7 @@ class RxnFlowModel(nn.Module):
         return self.state_encoder(batch, cond)
 
     def logit_scale(self, cond: torch.Tensor) -> torch.Tensor:
-        """[bs, b_hid] → [bs] \in [0, ∞)."""
+        r"""[bs, b_hid] → [bs] \in [0, ∞)."""
         return F.elu(self._logit_scale(cond)).squeeze(-1) + 1
 
     def logZ(self, cond: torch.Tensor) -> torch.Tensor:

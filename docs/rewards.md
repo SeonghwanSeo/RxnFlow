@@ -43,8 +43,7 @@ class MolecularWeightReward(RewardFunction):
 
     def score(self, mols: list[Chem.Mol]) -> np.ndarray:
         rewards = [
-            1 / (1 + abs(Descriptors.ExactMolWt(mol) - self.target_mw))
-            for mol in mols
+            1 / (1 + abs(Descriptors.ExactMolWt(mol) - self.target_mw)) for mol in mols
         ]
         return np.array(rewards, dtype=np.float32).reshape(-1, 1)
 ```

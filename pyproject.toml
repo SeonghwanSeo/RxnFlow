@@ -39,7 +39,6 @@ line-length = 90
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "UP", "I"]
-ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]

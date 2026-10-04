@@ -247,7 +247,8 @@ class RxnFlowTrainer:
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         if checkpoint.get("rxnflow_version") != __version__:
             raise ValueError(
-                f"checkpoint was created by RxnFlow {checkpoint.get('rxnflow_version')!r}; "
+                "checkpoint was created by RxnFlow "
+                f"{checkpoint.get('rxnflow_version')!r}; "
                 f"this installation is RxnFlow {__version__}"
             )
         if checkpoint.get("config") != self.config.to_dict():

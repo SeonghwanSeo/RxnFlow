@@ -198,8 +198,8 @@ class RxnFlowPolicy:
 
         Each library draw is shared across states and reactions. Each reaction
         shares one query/matmul across libraries of the same action type, then
-        exposes one logit matrix per (reaction, library). Observed actions do not affect these draws or
-        their importance weights.
+        exposes one logit matrix per (reaction, library). Observed actions do not
+        affect these draws or their importance weights.
         """
         assert states
         # 1. Build state features and collect compatible reaction/library rows.
@@ -224,7 +224,8 @@ class RxnFlowPolicy:
         samples: dict[str | None, NDArray[np.int64]] = {}
         log_importance: dict[str | None, float] = {}
         masks: dict[str, NDArray[np.bool_]] = {}  # library -> [batch, sampled actions]
-        # Each entry contains fingerprints, properties and attachment/remaining type indices.
+        # Each entry contains fingerprints, properties and attachment/remaining type
+        # indices.
         features: list[
             tuple[NDArray[np.uint8], NDArray[np.float32], NDArray[np.int64]]
         ] = []
@@ -272,7 +273,8 @@ class RxnFlowPolicy:
             encoded = self._encode_synthons(features)
             synthon_embs = dict(zip(library_names, encoded.split(sizes), strict=True))
 
-        # 4. Score by reaction and action type, apply masks, and split columns into subspaces.
+        # 4. Score by reaction and action type, apply masks, and split columns into
+        # subspaces.
         action_logits: list[ActionLogits] = []
         for group, rows in action_rows.items():
             action_name, action_type = group
@@ -329,7 +331,9 @@ class RxnFlowPolicy:
             else:
                 action_logits.append(
                     ActionLogits(
-                        ActionSubspace((action_name, None), action_type, 1, samples[None]),
+                        ActionSubspace(
+                            (action_name, None), action_type, 1, samples[None]
+                        ),
                         logits,
                         weights,
                     )
@@ -453,7 +457,8 @@ class RxnFlowPolicy:
     ) -> float | None:
         """Normalize synthon-count-weighted route mass for the observed reverse edge."""
         # This is an explicit route preference, independent of catalog size.
-        # TODO: Review backward consistency with trajectory limits and search approximation.
+        # TODO: Review backward consistency with trajectory limits and search
+        # approximation.
         log_penalty = math.log(self.config.training.backward_synthon_penalty)
         numerator = denominator = -math.inf
         for trajectory in trajectories:

@@ -37,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--druglikeness-threshold",
         type=float,
-        help="Filter source building blocks with DeepDL extended (0-100; e.g. 60); omitted disables filtering",
+        help=(
+            "Filter source building blocks with DeepDL extended (0-100; e.g. 60); "
+            "omitted disables filtering"
+        ),
     )
     parser.add_argument(
         "--druglikeness-device", default="cpu", help="DeepDL device: cpu or cuda"

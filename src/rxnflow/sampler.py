@@ -194,7 +194,8 @@ class RxnFlowSampler:
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
         if len(trajectories) != num_samples:
             raise RuntimeError(
-                f"generated only {len(trajectories)} valid samples in {maximum_attempts} attempts"
+                f"generated only {len(trajectories)} valid samples in "
+                f"{maximum_attempts} attempts"
             )
         return [self._result(trajectory) for trajectory in trajectories]
 

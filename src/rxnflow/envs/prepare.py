@@ -108,7 +108,8 @@ def _read_building_blocks(path: Path) -> list[tuple[str, str]]:
             if smiles is not None:
                 records.append((smiles, fields[1].strip()))
     logger.info(
-        f"Building blocks: read={line_number:,}, retained={len(records):,}, rejected={line_number - len(records):,}"
+        f"Building blocks: read={line_number:,}, retained={len(records):,}, "
+        f"rejected={line_number - len(records):,}"
     )
     if not records:
         raise ValueError(f"no valid building blocks in {path}")
@@ -233,7 +234,8 @@ def convert_stage(
     """Write synthon libraries and source provenance from a building-block catalog."""
     started = perf_counter()
     logger.info(
-        f"Preparing synthons: workers={num_workers}, min_library_size={min_library_size}, max_atoms={max_atoms}"
+        f"Preparing synthons: workers={num_workers}, "
+        f"min_library_size={min_library_size}, max_atoms={max_atoms}"
     )
     # 1. Read templates and clean source BBs, before synthon conversion.
     if num_workers < 1:
@@ -273,7 +275,8 @@ def convert_stage(
         raise FileNotFoundError(reaction_path)
     specs = load_synthon_specs(synthon_path)
     logger.info(
-        f"Templates loaded: {len(specs)} synthon types, {len(exclude_patterns)} exclusion patterns"
+        f"Templates loaded: {len(specs)} synthon types, {len(exclude_patterns)} "
+        "exclusion patterns"
     )
     records = _read_building_blocks(source_path)
     # Screen cleaned source building blocks before creating their oriented synthons.
@@ -284,7 +287,8 @@ def convert_stage(
         if not 0 <= druglikeness_threshold <= 100:
             raise ValueError("druglikeness threshold must be between 0 and 100")
         logger.info(
-            f"Loading DeepDL extended: device={druglikeness_device}, threshold={druglikeness_threshold}"
+            f"Loading DeepDL extended: device={druglikeness_device}, "
+            f"threshold={druglikeness_threshold}"
         )
         model = DeepDL.from_pretrained("extended", device=druglikeness_device)
         batch_size = 256 if druglikeness_device.startswith("cuda") else 64
@@ -303,7 +307,9 @@ def convert_stage(
                 if score >= druglikeness_threshold
             )
         records = retained
-        logger.info(f"Druglikeness: retained {len(records):,} / {num_input:,} building blocks")
+        logger.info(
+            f"Druglikeness: retained {len(records):,} / {num_input:,} building blocks"
+        )
         if not records:
             raise ValueError("no building blocks passed druglikeness filtering")
         del model
@@ -356,7 +362,9 @@ def convert_stage(
         raise ValueError("no synthon libraries meet min_library_size")
 
     logger.info(
-        f"Conversion produced {sum(len(v) for v in synthons.values()):,} unique oriented synthons in {len(synthons)} libraries; excluded {len(excluded_counts)} libraries below min_library_size"
+        f"Conversion produced {sum(len(v) for v in synthons.values()):,} unique "
+        f"oriented synthons in {len(synthons)} libraries; excluded "
+        f"{len(excluded_counts)} libraries below min_library_size"
     )
     logger.info(f"Writing synthon libraries and provenance: {env_path}")
     # 4. Write sorted library rows, source provenance, and the active templates.
@@ -421,7 +429,8 @@ def convert_stage(
     )
 
     logger.info(
-        f"Synthon preparation complete: {sum(counts.values()):,} synthons, {len(counts)} libraries ({perf_counter() - started:.1f}s)"
+        f"Synthon preparation complete: {sum(counts.values()):,} synthons, "
+        f"{len(counts)} libraries ({perf_counter() - started:.1f}s)"
     )
 
 
@@ -504,7 +513,8 @@ def features_stage(env_dir: str | Path, num_workers: int = 1) -> None:
     )
 
     logger.info(
-        f"Feature preparation complete: {sum(counts.values()):,} synthons, {len(action_names)} actions -> {output} ({perf_counter() - started:.1f}s)"
+        f"Feature preparation complete: {sum(counts.values()):,} synthons, "
+        f"{len(action_names)} actions -> {output} ({perf_counter() - started:.1f}s)"
     )
 
 
