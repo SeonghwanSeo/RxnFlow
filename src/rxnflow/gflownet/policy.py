@@ -75,48 +75,26 @@ class ActionCategorical:
     logit_scale: torch.Tensor
     subsampling: dict[str, SubsamplingPolicy]
 
-    def _subspace_metadata(
-        self, importance: float = 1.0, exploration: bool = False
-    ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
-        """Transfer subspace counts and weights together before state-wise reductions."""
-        widths, sizes, weights = [], [], []
-        dtype = self.state_emb.dtype
+    def log_partition(self) -> torch.Tensor:
+        """Estimate each state's log partition using library inclusion weights."""
+        partitions = []
         for state_logits in self.action_logits:
-            widths.append(len(state_logits))
+            if not state_logits:
+                partitions.append(self.state_emb.new_tensor(math.log(1e-38)))
+                continue
+            sizes, weights = [], []
             for entry in state_logits:
-                size = len(entry.logits)
+                sizes.append(len(entry.logits))
                 library_name = entry.subspace.name[1]
-                weight = (
+                weights.append(
                     0.0
                     if library_name is None
                     else self.subsampling[library_name].log_importance
                 )
-                sizes.append(size)
-                weights.append(
-                    (importance * weight, -math.log(size) if exploration else 0.0)
-                )
-                dtype = entry.logits.dtype
-        counts = torch.tensor(sizes, dtype=torch.long, device="cpu").to(
-            self.state_emb.device, non_blocking=True
-        )
-        weights = torch.tensor(weights, dtype=dtype, device="cpu").to(
-            self.state_emb.device, non_blocking=True
-        )
-        return counts.split(widths), weights.split(widths)
-
-    def log_partition(self) -> torch.Tensor:
-        """Estimate each state's log partition using library inclusion weights."""
-        counts_by_state, weights_by_state = self._subspace_metadata()
-        partitions = []
-        for state_logits, counts, weights in zip(
-            self.action_logits, counts_by_state, weights_by_state, strict=True
-        ):
-            if not state_logits:
-                partitions.append(self.state_emb.new_tensor(math.log(1e-38)))
-                continue
             logits = torch.cat([entry.logits for entry in state_logits])
+            counts = torch.tensor(sizes, dtype=torch.long, device=logits.device)
             # Known output sizes avoid device synchronization during expansion.
-            offsets = weights[:, 0].repeat_interleave(
+            offsets = logits.new_tensor(weights).repeat_interleave(
                 counts, output_size=logits.numel()
             )
             weighted = logits + offsets
@@ -135,25 +113,32 @@ class ActionCategorical:
             torch.rand(len(self.action_logits), device=self.state_emb.device)
             < random_action_prob
         )
-        counts_by_state, weights_by_state = self._subspace_metadata(
-            importance, exploration=random_action_prob > 0
-        )
         columns = []
-        for state_i, (state_logits, counts, weights) in enumerate(
-            zip(self.action_logits, counts_by_state, weights_by_state, strict=True)
-        ):
+        for state_i, state_logits in enumerate(self.action_logits):
             assert state_logits
+            sizes, weights = [], []
+            for entry in state_logits:
+                sizes.append(len(entry.logits))
+                library_name = entry.subspace.name[1]
+                weight = (
+                    0.0
+                    if library_name is None
+                    else self.subsampling[library_name].log_importance
+                )
+                weights.append(importance * weight)
+
             logits = torch.cat([entry.logits for entry in state_logits])
+            counts = torch.tensor(sizes, dtype=torch.long, device=logits.device)
             # Known output sizes avoid device synchronization during expansion.
-            offsets = weights[:, 0].repeat_interleave(
+            offsets = logits.new_tensor(weights).repeat_interleave(
                 counts, output_size=logits.numel()
             )
             values = logits + offsets
             if random_action_prob > 0:
                 # Each subspace has unit mass before masking at temperature 1.
-                random_logits = weights[:, 1].repeat_interleave(
-                    counts, output_size=logits.numel()
-                )
+                random_logits = logits.new_tensor(
+                    [-math.log(size) for size in sizes]
+                ).repeat_interleave(counts, output_size=logits.numel())
                 values = torch.where(random_states[state_i], random_logits, values)
             values = values.masked_fill(~torch.isfinite(logits), -torch.inf)
             values = values.clamp_min(math.log(1e-38))

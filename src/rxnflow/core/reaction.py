@@ -23,11 +23,11 @@ def _compile(smarts: str) -> ChemicalReaction:
 
 def _run(
     reaction: ChemicalReaction, reactants: tuple[Chem.Mol, ...]
-) -> list[tuple[Chem.Mol, ...]]:
+) -> list[tuple[tuple[Chem.Mol, str], ...]]:
     assert len(reactants) == reaction.GetNumReactantTemplates()
     products: dict[tuple[str, ...], tuple[Chem.Mol, ...]] = {}
     # Canonical SMILES deduplicate and order products; retain molecules for
-    # subsequent structural and property checks.
+    # structural checks and reuse the same SMILES in reverse route enumeration.
     for product_set in reaction.RunReactants(reactants, 0):
         if len(product_set) != reaction.GetNumProductTemplates():
             continue
@@ -46,7 +46,7 @@ def _run(
             keys.append(key)
         if len(molecules) == len(product_set):
             products.setdefault(tuple(keys), tuple(molecules))
-    return [products[key] for key in sorted(products)]
+    return [tuple(zip(products[key], key)) for key in sorted(products)]
 
 
 class Reaction:
@@ -66,10 +66,17 @@ class Reaction:
         matches are deduplicated by _run; distinct products indicate a template
         ambiguity and must not be resolved by silently picking the first one.
         """
+        product = self.run_forward_with_smiles(*reactants)
+        return None if product is None else product[0]
+
+    def run_forward_with_smiles(
+        self, *reactants: Chem.Mol
+    ) -> tuple[Chem.Mol, str] | None:
+        """Return the unique connected product and its canonical SMILES."""
         products = [
             product_set[0]
             for product_set in _run(self.forward_reaction, tuple(reactants))
-            if len(product_set) == 1 and len(Chem.GetMolFrags(product_set[0])) == 1
+            if len(product_set) == 1 and len(Chem.GetMolFrags(product_set[0][0])) == 1
         ]
         if len(products) > 1:
             raise ValueError(
@@ -78,6 +85,15 @@ class Reaction:
         return products[0] if products else None
 
     def run_reverse(self, product: Chem.Mol) -> list[tuple[Chem.Mol, ...]]:
+        return [
+            tuple(mol for mol, _ in product_set)
+            for product_set in self.run_reverse_with_smiles(product)
+        ]
+
+    def run_reverse_with_smiles(
+        self, product: Chem.Mol
+    ) -> list[tuple[tuple[Chem.Mol, str], ...]]:
+        """Return all precursor sets with their canonical SMILES in sorted order."""
         # _run already enumerates and deduplicates every RDKit match. Truncating
         # here can discard the only decomposition whose synthon is in the catalog.
         return _run(self.reverse_reaction, (product,))
