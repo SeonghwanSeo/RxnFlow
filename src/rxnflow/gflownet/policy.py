@@ -198,8 +198,11 @@ class RxnFlowPolicy:
         library = self.env.synthons[library_name]
         fp, prop = library.fingerprints, library.properties
         types = self.env.library_site_indices[library_name]
-        fp = torch.as_tensor(fp[indices], dtype=torch.float32, device=self.device)
-        prop = torch.as_tensor(prop[indices], device=self.device)
+        # Non-blocking device/dtype conversion casts uint8 fingerprints on GPU.
+        fp = torch.from_numpy(fp[indices]).to(
+            self.device, dtype=torch.float32, non_blocking=True
+        )
+        prop = torch.from_numpy(prop[indices]).to(self.device, non_blocking=True)
         types = torch.tensor(types, dtype=torch.long, device=self.device)
         types = types.expand(len(indices), 2)
         return fp, prop, types
@@ -428,15 +431,18 @@ class RxnFlowPolicy:
                 )
             )
             size_parts.append(library.heavy_atoms[indices])
-        fp = torch.as_tensor(
-            np.concatenate(fp_parts), dtype=torch.float32, device=self.device
+        # Transfer sampled uint8 fingerprints before converting them on GPU.
+        fp = torch.from_numpy(np.concatenate(fp_parts)).to(
+            self.device, dtype=torch.float32, non_blocking=True
         )
-        prop = torch.as_tensor(np.concatenate(prop_parts), device=self.device)
-        types = torch.as_tensor(
-            np.concatenate(type_parts), dtype=torch.long, device=self.device
+        prop = torch.from_numpy(np.concatenate(prop_parts)).to(
+            self.device, non_blocking=True
         )
-        size = torch.as_tensor(
-            np.concatenate(size_parts), dtype=torch.float32, device=self.device
+        types = torch.from_numpy(np.concatenate(type_parts)).to(
+            self.device, dtype=torch.long, non_blocking=True
+        )
+        size = torch.from_numpy(np.concatenate(size_parts)).to(
+            self.device, dtype=torch.float32, non_blocking=True
         )
         embeddings = self._encode_synthons((fp, prop, types))
         widths = [len(indices) for indices in samples.values()]
