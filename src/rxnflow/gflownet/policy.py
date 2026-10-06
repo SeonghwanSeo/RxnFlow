@@ -333,6 +333,21 @@ class RxnFlowPolicy:
                 key = (subspace.action_type, subspace.name[0])
                 spaces_by_action.setdefault(key, []).append(subspace)
 
+            # Reaction embeddings differ, but reactions of the same action type
+            # use one shared MLP. Batch that MLP while retaining library scoring.
+            reaction_queries: dict[tuple[ActionType, str], torch.Tensor] = {}
+            for action_type in (
+                ActionType.UNIRXN_TRANSFORM,
+                ActionType.UNIRXN_TERMINAL,
+                ActionType.BIRXN_BRICK,
+                ActionType.BIRXN_LINKER,
+            ):
+                names = [name for kind, name in spaces_by_action if kind == action_type]
+                if names:
+                    queries = self.model.forward_reactions(emb, names, action_type)
+                    for name, query in zip(names, queries.unbind(0), strict=True):
+                        reaction_queries[action_type, name] = query
+
             # 3. Apply size/property constraints to all libraries in the group.
             library_names = list(
                 dict.fromkeys(
@@ -357,7 +372,7 @@ class RxnFlowPolicy:
             group_logits: dict[ActionKey, tuple[torch.Tensor, ...]] = {}
             for (action_type, action_name), spaces in spaces_by_action.items():
                 if action_type.is_unirxn:
-                    logits = self._unirxn_logits(action_type, action_name, emb) * scale
+                    logits = reaction_queries[action_type, action_name] * scale
                     group_logits[spaces[0].name] = logits.unbind(0)
                     continue
 
@@ -366,10 +381,8 @@ class RxnFlowPolicy:
                 if action_type.is_first:
                     logits = self._first_synthon_logits(emb, synthons) * scale
                 else:
-                    logits = (
-                        self._birxn_logits(action_type, action_name, emb, synthons)
-                        * scale
-                    )
+                    query = reaction_queries[action_type, action_name]
+                    logits = (query @ synthons.T) * scale
                 mask = torch.cat([library_masks[name] for name in libraries], dim=1)
                 logits = logits.masked_fill(~mask, -torch.inf)
                 widths = [len(synthon_cache[name][0]) for name in libraries]
