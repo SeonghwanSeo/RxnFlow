@@ -22,7 +22,7 @@ def main() -> None:
             "config",
             "sampling_model",
             "objectives",
-            "templates",
+            "environment",
             "rxnflow_version",
         )
     }

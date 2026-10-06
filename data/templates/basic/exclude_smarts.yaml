@@ -1,6 +1,6 @@
 # These SMARTS patterns identify protecting groups and functional groups
 # that are allowed in intermediates but excluded from final products.
-#
+
 # N-Boc, N-Fmoc, N-Cbz; ordinary carbamates remain allowed.
 - '[NX3]C(=O)OC([CH3])([CH3])[CH3]'
 - '[NX3]C(=O)OCC1c2ccccc2-c2ccccc21'

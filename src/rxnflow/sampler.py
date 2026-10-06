@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from rxnflow import __version__
+from rxnflow.__version__ import __version__
 from rxnflow.config import Config
 from rxnflow.core.types import SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
@@ -54,7 +54,7 @@ class RxnFlowSampler:
             config.property_penalty,
             0,
         )
-        if ckpt["templates"] != self.env.templates:
+        if ckpt["environment"]["synthesis"] != self.env.signature["synthesis"]:
             raise ValueError(
                 "reaction, synthon or exclusion definitions differ from the checkpoint"
             )

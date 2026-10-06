@@ -68,9 +68,7 @@ def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
     """Return raw descriptors in PROPERTY_NAMES order; the empty state is zero."""
     if mol is None:
         return np.zeros(PROPERTY_DIM, dtype=np.float32)
-    # A dummy isotope is a categorical synthesis label, not an isotope mass.
-    # Descriptors still describe the abstract synthon; no hidden real molecule
-    # is reconstructed. Terminal products contain no dummies and need no change.
+    # Dummy isotopes encode synthesis types, so exclude their labels from mass.
     if any(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()):
         mol = Chem.Mol(mol)
         for atom in mol.GetAtoms():
@@ -105,9 +103,7 @@ def synthon_fingerprint(mol: Chem.Mol) -> np.ndarray:
         if atom.GetAtomicNum() == 0:
             invariants[atom.GetIdx()] = atom.GetIsotope()
     morgan = _MORGAN_GENERATOR.GetCountFingerprint(mol, customAtomInvariants=invariants)
-    # Clamp before narrowing: casting a count above 255 directly to uint8
-    # wraps instead of saturating. Catalogs keep bytes;
-    # only selected model inputs are converted to floating point.
+    # Saturate counts before uint8 conversion to prevent overflow.
     morgan_array = np.zeros(512, dtype=np.uint32)
     DataStructs.ConvertToNumpyArray(morgan, morgan_array)
     np.minimum(morgan_array, 255, out=morgan_array)

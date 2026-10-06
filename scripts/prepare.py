@@ -6,7 +6,7 @@ import argparse
 import logging
 from pathlib import Path
 
-from rxnflow.envs.prepare import convert_stage, features_stage
+from rxnflow.envs.prepare.main import prepare_environment
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,9 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     if args.num_workers < 1:
         raise SystemExit("--num-workers must be at least 1")
-    if args.env_dir.exists():
-        raise SystemExit(f"{args.env_dir} already exists")
-    convert_stage(
+    prepare_environment(
         args.block_smi,
         args.env_dir,
         args.config,
@@ -69,7 +67,6 @@ def main(argv: list[str] | None = None) -> None:
         druglikeness_threshold=args.druglikeness_threshold,
         druglikeness_device=args.druglikeness_device,
     )
-    features_stage(args.env_dir, args.num_workers)
 
 
 if __name__ == "__main__":

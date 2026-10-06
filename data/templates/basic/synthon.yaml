@@ -96,11 +96,9 @@
 - type: 32
   original: "[NH2:1][c:2][c:3][C:4](=[O:5])OC"
   convert: "[NH:1]1[c:2][c:3][C:4](=[O:5])N([32*])C1=O"
-# Latent amine: the Boc group is abstracted; nitrogen remains in the scaffold.
 - type: 33
   original: "[N;X3;+0;!$(N[!#6]);!$(N(C=[O,N,S])C=[O,N,S]):1]-C(=O)-O-C([CH3])([CH3])[CH3]"
   convert: "[N:1]-[33*]"
-# Latent carboxylic acid: type 34/35 retains which hydrolysis is needed.
 - type: 34
   original: "[#6:1]-C(=O)-[O;X2;+0]-[CH3;D1]"
   convert: "[#6:1]-[34*]"
