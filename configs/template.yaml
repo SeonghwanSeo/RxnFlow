@@ -28,7 +28,6 @@ model:
   synthon_dim: 256
   num_action_layers: 3
   num_synthon_layers: 3
-  dropout: 0.0
 
 training:
   log_every: 10

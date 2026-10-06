@@ -10,6 +10,7 @@ from rdkit import Chem
 
 from rxnflow.core.reaction import load_reactions
 from rxnflow.core.synthon import get_dummy_atoms, load_synthon_templates
+from rxnflow.core.types import ActionKey
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +81,7 @@ def _write_action_space(env_path: Path, libraries: list[str]) -> None:
             bricks.append(name)
     if not bricks:
         raise ValueError("Prepared environment contains no one-site bricks")
-    reactions: dict[int, list[tuple[str, str | None]]] = {
+    reactions: dict[int, list[ActionKey]] = {
         site: [] for site in sorted(synthon_types)
     }
     for name, reaction in uni.items():

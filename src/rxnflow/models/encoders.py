@@ -46,20 +46,21 @@ class SynthonEncoder(nn.Module):
         self.mlp = mlp(4 * hidden_dim, hidden_dim, hidden_dim, num_layers, layernorm=True)
 
     def forward(
-        self, fp: torch.Tensor, prop: torch.Tensor, site_types: torch.Tensor
+        self, fp: torch.Tensor, prop: torch.Tensor, types: torch.Tensor
     ) -> torch.Tensor:
-        """fp: [N, F], prop: [N, P], site_types: [N, 2]; return [N, S].
+        """fp: [N, F], prop: [N, P], types: [N, 2]; return [N, S].
 
         F/P are fingerprint/property dimensions; S is the synthon embedding size.
+        prop contains raw descriptors in PROPERTY_NAMES order.
         """
         prop = prop / self.property_scale
+        type_emb = self.emb_type(types).flatten(start_dim=1)
         return self.mlp(
             torch.cat(
                 [
                     self.lin_fp(fp),
                     self.lin_prop(prop),
-                    self.emb_type(site_types[:, 0]),
-                    self.emb_type(site_types[:, 1]),
+                    type_emb,
                 ],
                 dim=-1,
             )

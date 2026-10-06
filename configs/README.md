@@ -65,7 +65,6 @@ MLP layer counts include the output linear layer.
 | `model.num_synthon_layers` | `3` | Synthon encoder MLP layers. |
 | `model.hidden_dim` | `256` | Condition/reaction embedding and action-head hidden width. |
 | `model.num_action_layers` | `3` | Action-head MLP layers. |
-| `model.dropout` | `0.0` | Dropout probability in action-head hidden layers. |
 
 ## Training settings
 

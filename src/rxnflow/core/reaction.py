@@ -26,8 +26,8 @@ def _run(
 ) -> list[tuple[Chem.Mol, ...]]:
     assert len(reactants) == reaction.GetNumReactantTemplates()
     products: dict[tuple[str, ...], tuple[Chem.Mol, ...]] = {}
-    # SMILES are only deduplication/order keys. Return sanitized molecules so
-    # atom/property checks do not need a Mol -> SMILES -> Mol round trip.
+    # Canonical SMILES deduplicate and order products; retain molecules for
+    # subsequent structural and property checks.
     for product_set in reaction.RunReactants(reactants, 0):
         if len(product_set) != reaction.GetNumProductTemplates():
             continue
@@ -35,9 +35,7 @@ def _run(
         keys: list[str] = []
         for product in product_set:
             try:
-                # Enumerated matches can yield invalid valence/aromaticity.
-                # These candidates are discarded below; silence only their
-                # product validation, leaving input/template diagnostics visible.
+                # Discard invalid products and suppress their RDKit diagnostics.
                 with rdBase.BlockLogs():
                     Chem.SanitizeMol(product)
                     product = Chem.RemoveHs(product)
@@ -106,8 +104,7 @@ class UniReaction(Reaction):
             or self.reverse_reaction.GetNumProductTemplates() != 1
         ):
             raise ValueError(f"invalid unary reaction shape: {self.name}")
-        # Unary transformations must act on the marked handle, not an unrelated
-        # ordinary functional group elsewhere in the molecule.
+        # Match each template's labeled dummy to its declared input/output type.
         for pattern, expected in (
             (self.forward_reaction.GetReactantTemplate(0), self.input_type),
             (self.forward_reaction.GetProductTemplate(0), self.output_type),
@@ -194,26 +191,37 @@ class BiReaction(Reaction):
 def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReaction]]:
     """Compile the named unary reactions and permitted binary orientations."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    # Validate template sections and names.
     if not isinstance(raw, dict) or set(raw) != {"UniReaction", "BiReaction"}:
         raise ValueError(
             "reaction.yaml requires only UniReaction and BiReaction sections"
         )
-    uni = {
-        name: UniReaction(name=name, **value)
-        for name, value in raw["UniReaction"].items()
-    }
-    bi = {}
-    for name, value in raw["BiReaction"].items():
-        # Compile each permitted direction with the state first and incoming
-        # synthon second, so runtime execution always uses the same argument order.
-        for synthon_first in [False, True] if value["ordered"] else [False]:
-            direction = "synthon_first" if synthon_first else "state_first"
-            oriented_name = f"{name}_{direction}"
-            bi[oriented_name] = BiReaction(
-                name=oriented_name,
-                forward=value["forward"],
-                reverse=value["reverse"],
-                synthon_types=tuple(value["synthon_types"]),
-                synthon_first=synthon_first,
-            )
+    # ParameterDict uses reaction names as keys; dots separate module paths.
+    for section in ("UniReaction", "BiReaction"):
+        for name in raw[section]:
+            if "." in name:
+                raise ValueError(f"reaction name must not contain '.': {name}")
+
+    # Compile unary reactions.
+    uni: dict[str, UniReaction] = {}
+    for name, spec in raw["UniReaction"].items():
+        uni[name] = UniReaction(name, **spec)
+
+    # Compile the permitted state/synthon orientations for binary reactions.
+    bi: dict[str, BiReaction] = {}
+    for name, spec in raw["BiReaction"].items():
+        shared = {
+            "forward": spec["forward"],
+            "reverse": spec["reverse"],
+            "synthon_types": tuple(spec["synthon_types"]),
+        }
+        if spec["ordered"]:
+            # r1/r2 place the state in the first/second original SMARTS position.
+            bi[f"{name}_r1"] = BiReaction(f"{name}_r1", **shared, synthon_first=False)
+            bi[f"{name}_r2"] = BiReaction(f"{name}_r2", **shared, synthon_first=True)
+        else:
+            # Keep one orientation and the original name; the state comes first.
+            bi[name] = BiReaction(name, **shared)
+
     return uni, bi

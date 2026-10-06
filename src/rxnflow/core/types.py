@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import IntEnum
 from functools import cached_property
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import numpy as np
 from rdkit import Chem
@@ -17,6 +17,10 @@ class ActionType(IntEnum):
     UNIRXN_TERMINAL = 2
     BIRXN_BRICK = 3
     BIRXN_LINKER = 4
+
+    @property
+    def is_first(self) -> bool:
+        return self == ActionType.FIRST_SYNTHON
 
     @property
     def is_unirxn(self) -> bool:
@@ -40,6 +44,17 @@ class State:
     num_reactions: int = 0
     terminated: bool = False
     num_synthons: int = 0
+
+    @cached_property
+    def attachment_type(self) -> int | None:
+        if self.mol is None:
+            return None
+        else:
+            attach_atoms = [
+                atom for atom in self.mol.GetAtoms() if atom.GetAtomicNum() == 0
+            ]
+            assert len(attach_atoms) == 1
+            return attach_atoms[0].GetIsotope()
 
     @cached_property
     def smiles(self) -> str:
@@ -100,6 +115,10 @@ class Action:
 BackwardTrajectory = list[tuple[Action, str]]
 
 
+# Action name and optional synthon library; unary actions use None.
+ActionKey: TypeAlias = tuple[str, str | None]
+
+
 @dataclass
 class ActionSubspace:
     """One (reaction, library) pair, independent of policy logits.
@@ -109,7 +128,7 @@ class ActionSubspace:
     subspace holds one array mapping columns back to original synthon indices.
     """
 
-    name: tuple[str, str | None]
+    name: ActionKey
     action_type: ActionType
     num_actions: int
     sample_indices: np.ndarray | None = None
@@ -161,7 +180,7 @@ class Transition:
         )
 
 
-InvalidReason = Literal["no_valid_action", "invalid_transition", "max_reactions"]
+InvalidReason = Literal["invalid_transition", "max_reactions"]
 
 
 @dataclass

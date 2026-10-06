@@ -80,7 +80,6 @@ class ModelConfig:
     num_synthon_layers: int = 3
     hidden_dim: int = 256
     num_action_layers: int = 3
-    dropout: float = 0.0
 
     def validate(self) -> None:
         for name, value in (

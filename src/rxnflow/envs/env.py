@@ -6,8 +6,6 @@ import json
 from functools import cached_property
 from pathlib import Path
 
-import numpy as np
-from numpy.typing import NDArray
 from rdkit import Chem
 
 from rxnflow.__version__ import __version__
@@ -16,7 +14,6 @@ from rxnflow.core.reaction import load_reactions
 from rxnflow.core.synthon import load_synthon_templates, typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionSpace, ActionSubspace, ActionType, State
 from rxnflow.envs.features import (
-    PROPERTY_NAMES,
     PROPERTY_PENALTY_INDICES,
     heavy_atom_count,
     parse_molecule,
@@ -69,7 +66,7 @@ class SynthesisEnv:
         self._load_libraries()
         self._load_reactions()
         self._load_action_spaces()
-        self._build_budget_action_spaces()
+        self._build_feasible_action_spaces()
 
     def _load_libraries(self) -> None:
         """Load aligned synthon data and derive library/type indices."""
@@ -127,14 +124,6 @@ class SynthesisEnv:
         for reaction in self.bi_reactions.values():
             if not set(reaction.synthon_types) <= self.synthon_types:
                 raise ValueError(f"unknown synthon type in {reaction.name}")
-        self.action_names = [
-            "first_synthon",
-            *sorted(self.uni_reactions),
-            *sorted(self.bi_reactions),
-        ]
-        if len(set(self.action_names)) != len(self.action_names):
-            raise ValueError("reaction action names must be unique")
-        self.action_to_index = {name: i for i, name in enumerate(self.action_names)}
 
     def _load_action_spaces(self) -> None:
         """Connect prepared reaction/library pairs to the loaded runtime objects."""
@@ -171,14 +160,13 @@ class SynthesisEnv:
             int(site): load_space(pairs) for site, pairs in spaces["reaction"].items()
         }
 
-    def _build_budget_action_spaces(self) -> None:
-        """Keep type-level transitions that can finish within both budgets.
+    def _build_feasible_action_spaces(self) -> None:
+        """Keep type-level paths that can terminate within the synthesis limits.
 
-        Work backwards in reaction count: every Uni/Bi transition consumes one
-        reaction, so each successor has already been computed. This is chemistry
-        type feasibility; property penalties still apply at sampling time.
+        This ensure that `get_action_space` always returns a action space that
+        can reach a terminal state.
         """
-        self.budget_action_spaces: dict[tuple[int, int, int], ActionSpace] = {}
+        self.feasible_action_spaces: dict[tuple[int, int, int], ActionSpace] = {}
         for reactions in range(self.max_reactions, -1, -1):
             for synthons in range(1, self.max_synthons + 1):
                 for site, space in self.reaction_action_spaces.items():
@@ -201,22 +189,26 @@ class SynthesisEnv:
                                 )
                             else:
                                 reachable = bool(
-                                    self.budget_action_spaces.get(
+                                    self.feasible_action_spaces.get(
                                         (next_site, next_synthons, reactions + 1)
                                     )
                                 )
                             if reachable:
                                 allowed.append(subspace)
-                    self.budget_action_spaces[site, synthons, reactions] = allowed
+                    self.feasible_action_spaces[site, synthons, reactions] = allowed
         # FirstSynthon consumes a synthon but no reaction. Exclude starting types
         # with no complete route under these limits.
         self.initial_action_space = [
             subspace
             for subspace in self.initial_action_space
-            if self.budget_action_spaces[
+            if self.feasible_action_spaces[
                 self.synthons[subspace.name[1]].attachment_type, 1, 0
             ]
         ]
+        if not self.initial_action_space:
+            raise ValueError(
+                "no synthesis path can terminate within the synthesis limits"
+            )
 
     @cached_property
     def retro_analyzer(self) -> RetroSynthesisAnalyzer:
@@ -246,71 +238,11 @@ class SynthesisEnv:
         """Look up type/step eligibility; property penalties follow subsampling."""
         if state.terminated:
             return []
-        if state.mol is None:
+        elif state.mol is None:
             return self.initial_action_space
-        if state.num_reactions >= self.max_reactions:
-            return []
-        signature = typed_dummy_isotopes(state.mol)
-        if len(signature) != 1 or signature[0] not in self.synthon_types:
-            return []
-        return self.budget_action_spaces.get(
-            (signature[0], state.num_synthons, state.num_reactions), []
-        )
-
-    def get_synthon_mask(
-        self,
-        state_properties: NDArray[np.float32],
-        library_name: str,
-        indices: NDArray[np.int64] | None = None,
-    ) -> NDArray[np.bool_]:
-        """Combine the atom-capacity action mask with the property penalty.
-
-        Inputs are one state [P] or a batch [B, P]; the result is [N] or [B, N].
-        Compare raw units so zero and negative upper bounds remain meaningful.
-        These sums estimate product properties without executing candidate reactions.
-        """
-        library = self.synthons[library_name]
-        heavy_atoms = (
-            library.heavy_atoms if indices is None else library.heavy_atoms[indices]
-        )
-        properties = (
-            library.properties if indices is None else library.properties[indices]
-        )
-        # Broadcast either one state [P] or a state batch [B, P] against
-        # the common sampled library [N]. This gathers synthon features once.
-        # State properties are float32, so uint8 counts are promoted before
-        # addition; a combined count above 255 cannot wrap.
-        mask = (
-            heavy_atoms + state_properties[..., PROPERTY_NAMES.index("heavy_atoms"), None]
-            <= self.max_atoms
-        )
-        if self.property_limits:
-            property_penalty = self.compute_property_penalty(state_properties, properties)
-            mask &= property_penalty
-        return mask
-
-    def compute_property_penalty(
-        self,
-        state_properties: NDArray[np.float32],
-        synthon_properties: NDArray[np.float32],
-    ) -> NDArray[np.bool_]:
-        """Return binary Ω: True (1) permits an action; False (0) excludes it.
-
-        Use additive state + synthon estimates, without executing reactions.
-        The result is [N] or [B, N]. The max_atoms action mask is applied separately.
-        """
-        property_penalty = np.ones(
-            (*state_properties.shape[:-1], len(synthon_properties)), dtype=np.bool_
-        )
-        for index, limit in self.property_limits.items():
-            estimate = synthon_properties[:, index] + state_properties[..., index, None]
-            # Nonzero bounds allow 1% of their magnitude as tolerance.
-            # Zero bounds stay exact.
-            if limit == 0:
-                property_penalty &= estimate <= 0
-            else:
-                property_penalty &= estimate < limit + abs(limit) * 0.01
-        return property_penalty
+        assert state.num_reactions < self.max_reactions
+        key = (state.attachment_type, state.num_synthons, state.num_reactions)
+        return self.feasible_action_spaces[key]
 
     def _apply_action(self, current: Chem.Mol | None, action: Action) -> Chem.Mol | None:
         """Apply FirstSynthon/UniReaction/BiReaction and return a valid Mol or None."""

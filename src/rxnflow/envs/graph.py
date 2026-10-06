@@ -16,11 +16,7 @@ import torch
 from rdkit import Chem
 from torch import Tensor
 
-from rxnflow.envs.features import (
-    heavy_atom_count,
-    molecular_properties,
-    normalize_molecular_properties,
-)
+from rxnflow.envs.features import heavy_atom_count, molecular_properties
 
 # Atomic numbers and synthon labels 0..99 have dedicated slots; each
 # vocabulary gets one overflow slot in NODE_FEATURE_DIM.
@@ -48,7 +44,7 @@ class GraphData:
     adjacency: Tensor
     bond_features: Tensor
     mol_features: Tensor
-    remaining_capacity: float
+    size: Tensor
 
 
 @dataclass
@@ -58,7 +54,7 @@ class GraphBatch:
     adjacency: Tensor
     bond_features: Tensor
     mol_features: Tensor
-    remaining_capacity: Tensor
+    size: Tensor
 
     @property
     def device(self) -> torch.device:
@@ -74,7 +70,7 @@ class GraphBatch:
         )
 
     @classmethod
-    def from_graphs(cls, graphs: list[GraphData]) -> GraphBatch:
+    def from_list(cls, graphs: list[GraphData]) -> GraphBatch:
         assert graphs
         return cls(
             node_features=torch.stack([graph.node_features for graph in graphs]),
@@ -82,9 +78,7 @@ class GraphBatch:
             adjacency=torch.stack([graph.adjacency for graph in graphs]),
             bond_features=torch.stack([graph.bond_features for graph in graphs]),
             mol_features=torch.stack([graph.mol_features for graph in graphs]),
-            remaining_capacity=torch.tensor(
-                [graph.remaining_capacity for graph in graphs], dtype=torch.float32
-            ),
+            size=torch.stack([graph.size for graph in graphs]),
         )
 
 
@@ -171,16 +165,14 @@ def molecule_to_graph_data(
             feature[-2:] = bond.GetIsConjugated(), bond.IsInRing()
             bond_features[end, begin] = feature
 
-    # 4. Attach normalized molecular descriptors and remaining atom capacity.
+    # 4. Attach raw molecular descriptors.
     return GraphData(
         node_features=torch.from_numpy(node_features),
         node_mask=torch.from_numpy(node_mask),
         adjacency=torch.from_numpy(adjacency),
         bond_features=torch.from_numpy(bond_features),
         mol_features=torch.from_numpy(
-            normalize_molecular_properties(
-                molecular_properties(mol) if properties is None else properties
-            )
+            molecular_properties(mol) if properties is None else properties
         ),
-        remaining_capacity=(max_atoms - atom_count) / max_atoms,
+        size=torch.tensor(atom_count, dtype=torch.long),
     )

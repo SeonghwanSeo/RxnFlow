@@ -88,11 +88,6 @@ def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
     return np.array(values, dtype=np.float32)
 
 
-def normalize_molecular_properties(values: np.ndarray) -> np.ndarray:
-    """Scale NumPy descriptors for graph input; model tensors normalize on device."""
-    return values / PROPERTY_SCALE
-
-
 def synthon_fingerprint(mol: Chem.Mol) -> np.ndarray:
     """Concatenate isotope-aware Morgan counts and MACCS bits into 678 bytes."""
     invariants = rdMolDescriptors.GetConnectivityInvariants(mol)
