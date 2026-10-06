@@ -1,7 +1,7 @@
 """Residual GINE message passing with graph conditioning and a virtual node.
 
-The graph encoder uses native Torch, fixed node padding and sparse molecular
-messages. Readout concatenates the molecular mean and virtual-node embedding.
+The graph encoder uses native Torch and packed molecular nodes/edges.
+Readout concatenates the molecular mean and virtual-node embedding.
 """
 
 from __future__ import annotations
@@ -37,15 +37,11 @@ class GINELayer(nn.Module):
         dst_idx: torch.Tensor,
         edge_emb: torch.Tensor,
     ) -> torch.Tensor:
-        """x: [B, L, H], src_idx/dst_idx: [E], edge_emb: [E, H]; return [B, L, H].
-
-        Edge indices address flattened B*L nodes, including virtual nodes.
-        """
-        batch, length, model_dim = x.shape
-        node_emb = self.norm(x).reshape(-1, model_dim)
+        """x: [N+B, H], src_idx/dst_idx: [E], edge_emb: [E, H]."""
+        node_emb = self.norm(x)
         msg = F.relu(node_emb[src_idx] + edge_emb)
-        aggr = torch.zeros_like(node_emb).index_add(0, dst_idx, msg)
-        update = self.mlp(node_emb + aggr).view(batch, length, model_dim)
+        aggr = torch.zeros_like(node_emb).index_add_(0, dst_idx, msg)
+        update = self.mlp(node_emb + aggr)
         return x + update
 
 
@@ -80,17 +76,15 @@ class MPNN(nn.Module):
         virtual_emb = self.g2h(batch.mol_features / self.property_scale)
         # External beta/preference conditioning enters once, at initialization.
         virtual_emb = virtual_emb + self.cond2h(cond)
-        x = torch.cat([node_emb, virtual_emb[:, None]], 1)
-        _, length, model_dim = x.shape
+        x = torch.cat([node_emb, virtual_emb], dim=0)
+        num_nodes, model_dim = node_emb.shape
         # 2. Build directed bond edges and bidirectional atom/virtual-node edges.
         # Virtual edges use the fixed embedded feature [1, 0, ...].
-        graph, src, dst = batch.adjacency.nonzero(as_tuple=True)
-        src_idx, dst_idx = graph * length + src, graph * length + dst
-        edge_emb = self.e2h(batch.bond_features[graph, src, dst])
-        graph, atom = batch.node_mask.nonzero(as_tuple=True)
-        atom_indices = graph * length + atom
-        virtual_indices = graph * length + length - 1
-        virtual_edges = edge_emb.new_zeros((2 * len(atom), model_dim))
+        src_idx, dst_idx = batch.edge_index
+        edge_emb = self.e2h(batch.bond_features)
+        atom_indices = torch.arange(num_nodes, device=batch.device)
+        virtual_indices = num_nodes + batch.batch_index
+        virtual_edges = edge_emb.new_zeros((2 * num_nodes, model_dim))
         virtual_edges[:, 0] = 1
         src_idx = torch.cat([src_idx, atom_indices, virtual_indices])
         dst_idx = torch.cat([dst_idx, virtual_indices, atom_indices])
@@ -98,8 +92,12 @@ class MPNN(nn.Module):
         # 3. Propagate only over real edges; GINE adds each node's self term.
         for layer in self.layers:
             x = layer(x, src_idx, dst_idx, edge_emb)
-        # 4. Pool real molecular nodes, excluding padding; retain the virtual node.
-        count = batch.node_mask.sum(1, keepdim=True).clamp_min(1)
-        mean_emb = (x[:, :-1] * batch.node_mask[..., None]).sum(1) / count
+        # 4. Pool molecular nodes by graph, excluding the appended virtual nodes.
+        mean_emb = x.new_zeros((batch.batch_size, model_dim)).index_add_(
+            0, batch.batch_index, x[:num_nodes]
+        )
+        mean_emb = mean_emb / batch.num_nodes.clamp_min(1)[:, None]
         # Empty states have zero molecular mean before the affine normalization.
-        return torch.cat([self.norm_mean(mean_emb), self.norm_virtual(x[:, -1])], dim=-1)
+        return torch.cat(
+            [self.norm_mean(mean_emb), self.norm_virtual(x[num_nodes:])], dim=-1
+        )

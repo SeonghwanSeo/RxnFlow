@@ -1,10 +1,7 @@
-"""Fixed-shape model tensors derived from the state's RDKit molecule.
+"""Packed molecular graphs with directed bond features.
 
-Every ``GraphData`` has length ``L = Config.generation.max_atoms + 1``: heavy atoms
-plus one reserved dummy-handle slot. RDKit excludes dummies from its heavy-atom
-count, and a nonterminal linear synthesis state has exactly one. Batching only
-stacks those tensors, producing nodes ``[B, L, node_dim]``, adjacency
-``[B, L, L]``, and bonds ``[B, L, L, bond_dim]``.
+Each state stores only its atoms and bonds. Batching offsets local edge indices
+and records graph membership for pooling; virtual nodes are added by the encoder.
 """
 
 from __future__ import annotations
@@ -40,8 +37,7 @@ BOND_FEATURE_DIM = 4 + len(BOND_STEREO_TYPES) + 1 + 2
 @dataclass
 class GraphData:
     node_features: Tensor
-    node_mask: Tensor
-    adjacency: Tensor
+    edge_index: Tensor
     bond_features: Tensor
     mol_features: Tensor
     size: Tensor
@@ -50,8 +46,9 @@ class GraphData:
 @dataclass
 class GraphBatch:
     node_features: Tensor
-    node_mask: Tensor
-    adjacency: Tensor
+    batch_index: Tensor
+    num_nodes: Tensor
+    edge_index: Tensor
     bond_features: Tensor
     mol_features: Tensor
     size: Tensor
@@ -62,7 +59,7 @@ class GraphBatch:
 
     @property
     def batch_size(self) -> int:
-        return self.node_features.shape[0]
+        return self.mol_features.shape[0]
 
     def to(self, device: torch.device | str) -> GraphBatch:
         return GraphBatch(
@@ -72,11 +69,17 @@ class GraphBatch:
     @classmethod
     def from_list(cls, graphs: list[GraphData]) -> GraphBatch:
         assert graphs
+        num_nodes = torch.tensor([len(graph.node_features) for graph in graphs])
+        offsets = num_nodes.cumsum(0) - num_nodes
+        num_edges = torch.tensor([graph.edge_index.shape[1] for graph in graphs])
+        edge_index = torch.cat([graph.edge_index for graph in graphs], dim=1)
+        edge_index += torch.repeat_interleave(offsets, num_edges)[None, :]
         return cls(
-            node_features=torch.stack([graph.node_features for graph in graphs]),
-            node_mask=torch.stack([graph.node_mask for graph in graphs]),
-            adjacency=torch.stack([graph.adjacency for graph in graphs]),
-            bond_features=torch.stack([graph.bond_features for graph in graphs]),
+            node_features=torch.cat([graph.node_features for graph in graphs]),
+            batch_index=torch.repeat_interleave(torch.arange(len(graphs)), num_nodes),
+            num_nodes=num_nodes,
+            edge_index=edge_index,
+            bond_features=torch.cat([graph.bond_features for graph in graphs]),
             mol_features=torch.stack([graph.mol_features for graph in graphs]),
             size=torch.stack([graph.size for graph in graphs]),
         )
@@ -88,7 +91,7 @@ def molecule_to_graph_data(
     properties: np.ndarray | None = None,
 ) -> GraphData:
     """Encode one state without truncating atoms or including explicit hydrogens."""
-    # 1. Check graph capacity and allocate fixed-size CPU feature arrays.
+    # 1. Keep the generation limit separate from graph storage dimensions.
     atom_count = heavy_atom_count(mol)
     if atom_count > max_atoms:
         raise ValueError(
@@ -97,13 +100,19 @@ def molecule_to_graph_data(
 
     if mol is not None and sum(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()) > 1:
         raise ValueError("a synthesis state can have at most one dummy handle")
-    capacity = max_atoms + 1
-    node_features = np.zeros((capacity, NODE_FEATURE_DIM), dtype=np.float32)
-    node_mask = np.zeros(capacity, dtype=np.bool_)
-    adjacency = np.zeros((capacity, capacity), dtype=np.bool_)
-    bond_features = np.zeros((capacity, capacity, BOND_FEATURE_DIM), dtype=np.float32)
+    atoms = (
+        []
+        if mol is None
+        else [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() != 1]
+    )
+    node_features = np.zeros((len(atoms), NODE_FEATURE_DIM), dtype=np.float32)
+    # Explicit isotope-labelled hydrogen bonds are omitted below; allocate at
+    # most two directed edges per RDKit bond and retain only the filled rows.
+    max_edges = 0 if mol is None else 2 * mol.GetNumBonds()
+    edge_index = np.empty((2, max_edges), dtype=np.int64)
+    bond_features = np.zeros((max_edges, BOND_FEATURE_DIM), dtype=np.float32)
+    num_edges = 0
     if mol is not None:
-        atoms = [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() != 1]
         index_map = {atom.GetIdx(): index for index, atom in enumerate(atoms)}
         # 2. Fill atom categories/scalars in NumPy; wrap completed arrays once.
         degree_start = len(ATOM_TYPES) + 1
@@ -135,7 +144,6 @@ def molecule_to_graph_data(
             node_features[
                 index, -3 + (chiral_types.index(tag) if tag in chiral_types else 0)
             ] = 1
-            node_mask[index] = True
         # 3. Store each bond in both directions, with shared chemistry features.
         for bond in mol.GetBonds():
             # Explicit isotopic H atoms can survive RDKit's RemoveHs, but the
@@ -147,8 +155,7 @@ def molecule_to_graph_data(
                 continue
             begin = index_map[bond.GetBeginAtomIdx()]
             end = index_map[bond.GetEndAtomIdx()]
-            adjacency[begin, end] = adjacency[end, begin] = True
-            feature = bond_features[begin, end]
+            feature = bond_features[num_edges]
             feature[:4] = (
                 bond.GetBondType() == Chem.BondType.SINGLE,
                 bond.GetBondType() == Chem.BondType.DOUBLE,
@@ -163,14 +170,16 @@ def molecule_to_graph_data(
             )
             feature[4 + stereo_index] = 1
             feature[-2:] = bond.GetIsConjugated(), bond.IsInRing()
-            bond_features[end, begin] = feature
+            edge_index[:, num_edges] = begin, end
+            edge_index[:, num_edges + 1] = end, begin
+            bond_features[num_edges + 1] = feature
+            num_edges += 2
 
-    # 4. Attach raw molecular descriptors.
+    # 4. Retain only represented bonds and attach raw molecular descriptors.
     return GraphData(
         node_features=torch.from_numpy(node_features),
-        node_mask=torch.from_numpy(node_mask),
-        adjacency=torch.from_numpy(adjacency),
-        bond_features=torch.from_numpy(bond_features),
+        edge_index=torch.from_numpy(edge_index[:, :num_edges]),
+        bond_features=torch.from_numpy(bond_features[:num_edges]),
         mol_features=torch.from_numpy(
             molecular_properties(mol) if properties is None else properties
         ),
