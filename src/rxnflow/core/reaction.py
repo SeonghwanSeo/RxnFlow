@@ -103,7 +103,7 @@ class UniReaction(Reaction):
             or self.reverse_reaction.GetNumReactantTemplates() != 1
             or self.reverse_reaction.GetNumProductTemplates() != 1
         ):
-            raise ValueError(f"invalid unary reaction shape: {self.name}")
+            raise ValueError(f"invalid unimolecular reaction shape: {self.name}")
         # Match each template's labeled dummy to its declared input/output type.
         for pattern, expected in (
             (self.forward_reaction.GetReactantTemplate(0), self.input_type),
@@ -118,7 +118,7 @@ class UniReaction(Reaction):
             ]
             if sites != ([] if expected is None else [expected]):
                 raise ValueError(
-                    f"unary SMARTS site disagrees with its type: {self.name}"
+                    f"unimolecular SMARTS site disagrees with its type: {self.name}"
                 )
 
 
@@ -189,7 +189,7 @@ class BiReaction(Reaction):
 
 
 def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReaction]]:
-    """Compile the named unary reactions and permitted binary orientations."""
+    """Compile the named unimolecular reactions and permitted bimolecular orientations."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     # Validate template sections and names.
@@ -203,12 +203,12 @@ def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReac
             if "." in name:
                 raise ValueError(f"reaction name must not contain '.': {name}")
 
-    # Compile unary reactions.
+    # Compile unimolecular reactions.
     uni: dict[str, UniReaction] = {}
     for name, spec in raw["UniReaction"].items():
         uni[name] = UniReaction(name, **spec)
 
-    # Compile the permitted state/synthon orientations for binary reactions.
+    # Compile the permitted state/synthon orientations for bimolecular reactions.
     bi: dict[str, BiReaction] = {}
     for name, spec in raw["BiReaction"].items():
         shared = {

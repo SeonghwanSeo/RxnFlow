@@ -23,7 +23,7 @@ from rxnflow.envs.retrosynthesis import RetroSynthesisAnalyzer
 
 
 class SynthesisEnv:
-    """Grow one synthon intermediate through typed unary and binary reactions."""
+    """Synthon-based linear synthesis environment"""
 
     def __init__(
         self,
@@ -255,7 +255,7 @@ class SynthesisEnv:
                 raise ValueError("synthon_index is out of range")
             synthon_smiles = library.smiles[action.synthon_index]
         elif action.synthon_index is not None:
-            raise ValueError("unary actions do not take a synthon_index")
+            raise ValueError("unimolecular actions do not take a synthon_index")
 
         # 2. Apply the transformation and determine the expected remaining sites.
         if action.action_type == ActionType.FIRST_SYNTHON:

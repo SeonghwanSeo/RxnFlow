@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class Worker:
     """Enumerate catalog-supported routes within the supplied reaction budget.
 
-    The fewest synthons found bounds further exploration; unary reactions do not
+    The fewest synthons found bounds further exploration; unimolecular reactions do not
     consume that budget. Known generated routes remain available above the bound.
     Candidates must match a catalog entry and reproduce the product forward.
     Return reverse-ordered edge lists; probability weighting belongs to the policy.
@@ -42,7 +42,7 @@ class Worker:
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
         self._max_depth = max_reactions + 1  # Bound reaction cycles independently.
-        self._min_synthons = max_reactions + 1  # FirstSynthon plus binary reactions.
+        self._min_synthons = max_reactions + 1  # FirstSynthon plus bimolecular reactions.
         if known_trajectories:
             self._min_synthons = min(
                 self._min_synthons,
@@ -65,7 +65,7 @@ class Worker:
         num_synthons: int,
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
-        # 1. Count removed binary reactants plus the eventual FirstSynthon.
+        # 1. Count removed bimolecular reactants plus the eventual FirstSynthon.
         # UniReaction advances depth but leaves this synthon count unchanged.
         if depth > self._max_depth or num_synthons > self._min_synthons:
             return []
@@ -101,7 +101,7 @@ class Worker:
                         trajectories.append([(action, "")])
                         branch_keys.add((action, ""))
 
-        # 3. Reverse unary transformations and verify each precursor forward.
+        # 3. Reverse unimolecular transformations and verify each precursor forward.
         if depth < self._max_depth:
             for name, reaction in self.uni_reactions.items():
                 expected = () if reaction.output_type is None else (reaction.output_type,)

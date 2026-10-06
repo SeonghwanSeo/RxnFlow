@@ -81,9 +81,7 @@ def _write_action_space(env_path: Path, libraries: list[str]) -> None:
             bricks.append(name)
     if not bricks:
         raise ValueError("Prepared environment contains no one-site bricks")
-    reactions: dict[int, list[ActionKey]] = {
-        site: [] for site in sorted(synthon_types)
-    }
+    reactions: dict[int, list[ActionKey]] = {site: [] for site in sorted(synthon_types)}
     for name, reaction in uni.items():
         reactions[reaction.input_type].append((name, None))
     for name, reaction in bi.items():

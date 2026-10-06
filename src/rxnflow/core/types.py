@@ -115,7 +115,7 @@ class Action:
 BackwardTrajectory = list[tuple[Action, str]]
 
 
-# Action name and optional synthon library; unary actions use None.
+# Action name and optional synthon library; unimolecular actions use None.
 ActionKey: TypeAlias = tuple[str, str | None]
 
 
@@ -123,7 +123,7 @@ ActionKey: TypeAlias = tuple[str, str | None]
 class ActionSubspace:
     """One (reaction, library) pair, independent of policy logits.
 
-    A unary reaction uses library=None and has one action. num_actions is the
+    A unimolecular reaction uses library=None and has one action. num_actions is the
     full library size; sample_indices=None selects that full range. A sampled
     subspace holds one array mapping columns back to original synthon indices.
     """

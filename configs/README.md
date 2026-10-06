@@ -43,7 +43,7 @@ Upper bounds used to mask synthon actions, disabled by default (`{}`). Omitted b
 
 ## Generation Constraints
 
-Synthon counts include the initial selection; reaction counts include unary and binary reactions.
+Synthon counts include the initial selection; reaction counts is equivalent to the step count - 1.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
