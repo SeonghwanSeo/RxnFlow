@@ -25,6 +25,7 @@ from rxnflow.core.types import (
     Transition,
 )
 from rxnflow.envs.env import SynthesisEnv
+from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 from rxnflow.envs.graph import GraphBatch, GraphData, molecule_to_graph_data
 from rxnflow.models import RxnFlowModel
 
@@ -74,26 +75,48 @@ class ActionCategorical:
     logit_scale: torch.Tensor
     subsampling: dict[str, SubsamplingPolicy]
 
-    def log_partition(self) -> torch.Tensor:
-        """Estimate each state's log partition using library inclusion weights."""
-        partitions = []
+    def _subspace_metadata(
+        self, importance: float = 1.0, exploration: bool = False
+    ) -> tuple[tuple[torch.Tensor, ...], tuple[torch.Tensor, ...]]:
+        """Transfer subspace counts and weights together before state-wise reductions."""
+        widths, sizes, weights = [], [], []
+        dtype = self.state_emb.dtype
         for state_logits in self.action_logits:
-            if not state_logits:
-                partitions.append(self.state_emb.new_tensor(math.log(1e-38)))
-                continue
-            sizes, weights = [], []
+            widths.append(len(state_logits))
             for entry in state_logits:
-                sizes.append(len(entry.logits))
+                size = len(entry.logits)
                 library_name = entry.subspace.name[1]
-                weights.append(
+                weight = (
                     0.0
                     if library_name is None
                     else self.subsampling[library_name].log_importance
                 )
+                sizes.append(size)
+                weights.append(
+                    (importance * weight, -math.log(size) if exploration else 0.0)
+                )
+                dtype = entry.logits.dtype
+        counts = torch.tensor(sizes, dtype=torch.long, device="cpu").to(
+            self.state_emb.device, non_blocking=True
+        )
+        weights = torch.tensor(weights, dtype=dtype, device="cpu").to(
+            self.state_emb.device, non_blocking=True
+        )
+        return counts.split(widths), weights.split(widths)
+
+    def log_partition(self) -> torch.Tensor:
+        """Estimate each state's log partition using library inclusion weights."""
+        counts_by_state, weights_by_state = self._subspace_metadata()
+        partitions = []
+        for state_logits, counts, weights in zip(
+            self.action_logits, counts_by_state, weights_by_state, strict=True
+        ):
+            if not state_logits:
+                partitions.append(self.state_emb.new_tensor(math.log(1e-38)))
+                continue
             logits = torch.cat([entry.logits for entry in state_logits])
-            counts = torch.tensor(sizes, dtype=torch.long, device=logits.device)
             # Known output sizes avoid device synchronization during expansion.
-            offsets = logits.new_tensor(weights).repeat_interleave(
+            offsets = weights[:, 0].repeat_interleave(
                 counts, output_size=logits.numel()
             )
             weighted = logits + offsets
@@ -112,32 +135,25 @@ class ActionCategorical:
             torch.rand(len(self.action_logits), device=self.state_emb.device)
             < random_action_prob
         )
+        counts_by_state, weights_by_state = self._subspace_metadata(
+            importance, exploration=random_action_prob > 0
+        )
         columns = []
-        for state_i, state_logits in enumerate(self.action_logits):
+        for state_i, (state_logits, counts, weights) in enumerate(
+            zip(self.action_logits, counts_by_state, weights_by_state, strict=True)
+        ):
             assert state_logits
-            sizes, weights = [], []
-            for entry in state_logits:
-                sizes.append(len(entry.logits))
-                library_name = entry.subspace.name[1]
-                weight = (
-                    0.0
-                    if library_name is None
-                    else self.subsampling[library_name].log_importance
-                )
-                weights.append(importance * weight)
-
             logits = torch.cat([entry.logits for entry in state_logits])
-            counts = torch.tensor(sizes, dtype=torch.long, device=logits.device)
             # Known output sizes avoid device synchronization during expansion.
-            offsets = logits.new_tensor(weights).repeat_interleave(
+            offsets = weights[:, 0].repeat_interleave(
                 counts, output_size=logits.numel()
             )
             values = logits + offsets
             if random_action_prob > 0:
                 # Each subspace has unit mass before masking at temperature 1.
-                random_logits = logits.new_tensor(
-                    [-math.log(size) for size in sizes]
-                ).repeat_interleave(counts, output_size=logits.numel())
+                random_logits = weights[:, 1].repeat_interleave(
+                    counts, output_size=logits.numel()
+                )
                 values = torch.where(random_states[state_i], random_logits, values)
             values = values.masked_fill(~torch.isfinite(logits), -torch.inf)
             values = values.clamp_min(math.log(1e-38))
@@ -187,9 +203,11 @@ class RxnFlowPolicy:
         graphs: dict[str, GraphData] = {}
         for state in states:
             if state.smiles not in graphs:
-                graphs[state.smiles] = molecule_to_graph_data(
-                    state.mol, self.env.max_atoms
+                cached = state._cache.get("graph")
+                graphs[state.smiles] = (
+                    molecule_to_graph_data(state.mol) if cached is None else cached
                 )
+            state._cache["graph"] = graphs[state.smiles]
         return GraphBatch.from_list([graphs[state.smiles] for state in states])
 
     def _get_synthon_features(
@@ -420,32 +438,36 @@ class RxnFlowPolicy:
         if not samples:
             return {}
 
-        fp_parts, prop_parts, type_parts, size_parts = [], [], [], []
+        widths = [len(indices) for indices in samples.values()]
+        count = sum(widths)
+        fp_arr = np.empty((count, FINGERPRINT_DIM), dtype=np.uint8)
+        prop_arr = np.empty((count, PROPERTY_DIM), dtype=np.float32)
+        type_arr = np.empty((count, 2), dtype=np.int64)
+        size_arr = np.empty(count, dtype=np.uint8)
+        offset = 0
         for library_name, indices in samples.items():
             library = self.env.synthons[library_name]
-            fp_parts.append(library.fingerprints[indices])
-            prop_parts.append(library.properties[indices])
-            type_parts.append(
-                np.broadcast_to(
-                    self.env.library_site_indices[library_name], (len(indices), 2)
-                )
-            )
-            size_parts.append(library.heavy_atoms[indices])
-        # Transfer sampled uint8 fingerprints before converting them on GPU.
-        fp = torch.from_numpy(np.concatenate(fp_parts)).to(
+            rows = slice(offset, offset + len(indices))
+            # Subsampling supplies valid indices. Clip mode lets take write directly
+            # into the final buffer without the temporary used by raise mode.
+            np.take(library.fingerprints, indices, axis=0, out=fp_arr[rows], mode="clip")
+            np.take(library.properties, indices, axis=0, out=prop_arr[rows], mode="clip")
+            np.take(library.heavy_atoms, indices, out=size_arr[rows], mode="clip")
+            type_arr[rows] = self.env.library_site_indices[library_name]
+            offset += len(indices)
+
+        # Transfer to device.
+        fp = torch.from_numpy(fp_arr).to(
             self.device, dtype=torch.float32, non_blocking=True
         )
-        prop = torch.from_numpy(np.concatenate(prop_parts)).to(
-            self.device, non_blocking=True
-        )
-        types = torch.from_numpy(np.concatenate(type_parts)).to(
+        prop = torch.from_numpy(prop_arr).to(self.device, non_blocking=True)
+        types = torch.from_numpy(type_arr).to(
             self.device, dtype=torch.long, non_blocking=True
         )
-        size = torch.from_numpy(np.concatenate(size_parts)).to(
+        size = torch.from_numpy(size_arr).to(
             self.device, dtype=torch.float32, non_blocking=True
         )
         embeddings = self._encode_synthons((fp, prop, types))
-        widths = [len(indices) for indices in samples.values()]
         return {
             library_name: (emb, prop, size)
             for library_name, emb, prop, size in zip(

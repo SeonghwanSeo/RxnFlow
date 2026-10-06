@@ -44,6 +44,10 @@ class State:
     num_reactions: int = 0
     terminated: bool = False
     num_synthons: int = 0
+    # graph features
+    _cache: dict[str, Any] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @cached_property
     def attachment_type(self) -> int | None:

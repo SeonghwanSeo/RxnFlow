@@ -85,21 +85,12 @@ class GraphBatch:
         )
 
 
-def molecule_to_graph_data(
-    mol: Chem.Mol | None,
-    max_atoms: int,
-    properties: np.ndarray | None = None,
-) -> GraphData:
+def molecule_to_graph_data(mol: Chem.Mol | None) -> GraphData:
     """Encode one state without truncating atoms or including explicit hydrogens."""
-    # 1. Keep the generation limit separate from graph storage dimensions.
-    atom_count = heavy_atom_count(mol)
-    if atom_count > max_atoms:
-        raise ValueError(
-            f"molecule has {atom_count} heavy atoms, exceeding max_atoms={max_atoms}"
-        )
 
     if mol is not None and sum(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()) > 1:
         raise ValueError("a synthesis state can have at most one dummy handle")
+
     atoms = (
         []
         if mol is None
@@ -112,6 +103,7 @@ def molecule_to_graph_data(
     edge_index = np.empty((2, max_edges), dtype=np.int64)
     bond_features = np.zeros((max_edges, BOND_FEATURE_DIM), dtype=np.float32)
     num_edges = 0
+
     if mol is not None:
         index_map = {atom.GetIdx(): index for index, atom in enumerate(atoms)}
         # 2. Fill atom categories/scalars in NumPy; wrap completed arrays once.
@@ -144,6 +136,7 @@ def molecule_to_graph_data(
             node_features[
                 index, -3 + (chiral_types.index(tag) if tag in chiral_types else 0)
             ] = 1
+
         # 3. Store each bond in both directions, with shared chemistry features.
         for bond in mol.GetBonds():
             # Explicit isotopic H atoms can survive RDKit's RemoveHs, but the
@@ -175,13 +168,14 @@ def molecule_to_graph_data(
             bond_features[num_edges + 1] = feature
             num_edges += 2
 
+    mol_properties = molecular_properties(mol)
+    atom_count = heavy_atom_count(mol)
+
     # 4. Retain only represented bonds and attach raw molecular descriptors.
     return GraphData(
         node_features=torch.from_numpy(node_features),
         edge_index=torch.from_numpy(edge_index[:, :num_edges]),
         bond_features=torch.from_numpy(bond_features[:num_edges]),
-        mol_features=torch.from_numpy(
-            molecular_properties(mol) if properties is None else properties
-        ),
+        mol_features=torch.from_numpy(mol_properties),
         size=torch.tensor(atom_count, dtype=torch.long),
     )
