@@ -44,6 +44,7 @@ training:
   lr_decay_steps: 10000
   weight_decay: 1e-8
   reward_floor: 0.00001
+  loss_fn: mse # mse | mae | huber
   random_action_prob: 0.1
   backward_synthon_penalty: 100.0
   retrosynthesis_workers: 4

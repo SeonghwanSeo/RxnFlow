@@ -91,6 +91,7 @@ MLP layer counts include the output linear layer.
 | `training.lr_decay_steps` | `10000` | Updates over which both learning rates halve. |
 | `training.weight_decay` | `1e-8` | Adam weight decay. |
 | `training.reward_floor` | `1e-5` | Reward lower bound before taking logarithms. |
+| `training.loss_fn` | `mse` | TB loss: `mse`, `mae`, or `huber` (delta=1). |
 | `training.random_action_prob` | `0.1` | Exploration-action probability during online training. |
 | `training.backward_synthon_penalty` | `100.0` | Backward-route penalty per additional synthon; values above `1` favor fewer synthons. |
 | `training.retrosynthesis_workers` | `4` | Reverse-search workers; `0` runs synchronously. |

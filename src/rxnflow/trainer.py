@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import shutil
 from pathlib import Path
 from time import perf_counter
@@ -22,29 +21,11 @@ from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy
 from rxnflow.gflownet.property_penalty import compute_property_rewards
 from rxnflow.gflownet.replay import ReplayBuffer
+from rxnflow.gflownet.trajectory_balance import TrajectoryBalance, scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction
 
 logger = logging.getLogger(__name__)
-
-
-def scalarize_log_rewards(
-    values: torch.Tensor,
-    preferences: torch.Tensor,
-    beta: torch.Tensor | float,
-    method: str,
-    floor: float,
-) -> torch.Tensor:
-    """Return beta-scaled log rewards from the weighted product or sum.
-
-    Weights must sum to the number of objectives for ``mul`` or to one for
-    ``sum``. Apply the floor to each objective for ``mul``, or to the sum.
-    """
-    if method == "mul":
-        log_rewards = (values.clamp_min(floor).log() * preferences).sum(-1)
-    else:
-        log_rewards = (values * preferences).sum(-1).clamp_min(floor).log()
-    return beta * log_rewards
 
 
 def init_logger(log_path: Path) -> None:
@@ -199,6 +180,12 @@ class RxnFlowTrainer:
         """Initialize the gfn training components"""
         cfg = self.config
 
+        self.tb = TrajectoryBalance(
+            self.policy,
+            cfg.reward.moo_scalarization,
+            cfg.training.reward_floor,
+            loss_fn=cfg.training.loss_fn,
+        )
         self.step = 0
         self.condition_sampler: ConditionSampler = ConditionSampler(
             cfg.reward.beta,
@@ -317,18 +304,16 @@ class RxnFlowTrainer:
             self.config.reward.property_penalty_ratio,
         )
         # Property penalties multiply the scalarized reward, independently of
-        # MOO preferences. Keep zero rewards here; TB applies its floor below.
-        preferences = np.array([t.preferences for t in trajectories], dtype=np.float32)
+        # MOO preferences. Floor inputs here; TB also floors the final reward.
+        reward_floor = self.config.training.reward_floor
+        preferences = np.array([t.preferences for t in trajectories], dtype=np.float64)
         log_rewards = scalarize_log_rewards(
-            torch.from_numpy(values),
-            torch.from_numpy(preferences),
-            1.0,  # Logged and replay-priority rewards are independent of beta.
-            self.config.reward.moo_scalarization,
-            self.config.training.reward_floor,
+            values.astype(np.float64).clip(min=reward_floor),
+            moo_scalarization=self.config.reward.moo_scalarization,
+            moo_preference=preferences,
         )
-        scalar_rewards = (
-            (log_rewards + torch.from_numpy(property_rewards).log()).exp().tolist()
-        )
+        log_rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
+        scalar_rewards = np.exp(log_rewards).tolist()
         for trajectory, objectives, property_reward, violation, scalar in zip(
             trajectories,
             values.tolist(),
@@ -341,102 +326,6 @@ class RxnFlowTrainer:
             trajectory.property_reward = property_reward
             trajectory.property_violation = violation
             trajectory.reward = scalar if trajectory.valid else 0.0
-
-    def compute_batch_losses(
-        self, trajectories: list[Trajectory], num_online: int
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Compute conditional TB loss for online trajectories followed by replay."""
-        # 1. Encode each trajectory's stored condition and predict logZ.
-        beta = torch.tensor(
-            [t.beta for t in trajectories], dtype=torch.float32, device=self.device
-        )
-        preferences = torch.tensor(
-            [t.preferences for t in trajectories], dtype=torch.float32, device=self.device
-        )
-        cond_info = self.model.encode_cond(beta, preferences)
-        log_Z = self.model.logZ(cond_info).squeeze(-1)
-        # 2. Score all observed transitions together, then sum by trajectory.
-        transitions = []
-        traj_indices: list[int] = []
-        traj_log_p_B = torch.tensor(
-            [
-                sum(step.log_p_B for step in trajectory.steps)
-                for trajectory in trajectories
-            ],
-            dtype=torch.float32,
-            device=self.device,
-        )
-        for traj_idx, trajectory in enumerate(trajectories):
-            for transition in trajectory.steps:
-                transitions.append(transition)
-                traj_indices.append(traj_idx)
-        if transitions:
-            batch_idx = torch.tensor(traj_indices, dtype=torch.long, device=self.device)
-            log_p_F = self.policy.log_prob(
-                [step.state for step in transitions],
-                [step.action for step in transitions],
-                beta[batch_idx],
-                preferences[batch_idx],
-            )
-            traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
-            traj_log_p_F.index_add_(0, batch_idx, log_p_F)
-        else:
-            traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
-        # 3. Reconstruct log rewards from stored objectives and conditions.
-        # beta * (log R + log property_reward) applies both before exponentiation.
-        objective_rewards = torch.tensor(
-            [t.objective_rewards for t in trajectories],
-            dtype=torch.float32,
-            device=self.device,
-        )
-        scaled_log_R = scalarize_log_rewards(
-            objective_rewards,
-            preferences,
-            beta,
-            self.config.reward.moo_scalarization,
-            self.config.training.reward_floor,
-        )
-        log_property_rewards = torch.tensor(
-            [t.property_reward for t in trajectories],
-            dtype=torch.float64,
-            device=self.device,
-        ).log().to(dtype=torch.float32)
-        scaled_log_R = (scaled_log_R + beta * log_property_rewards).clamp_min(
-            beta * math.log(self.config.training.reward_floor)
-        )
-        tb_residual = log_Z + traj_log_p_F - traj_log_p_B - scaled_log_R
-        # Penalize the squared mismatch between forward and backward log flow.
-        traj_losses = tb_residual.square()
-        loss = traj_losses.mean()
-        # 4. Derive diagnostics from the same pre-update values without gradients.
-        # "batch_entropy" is trajectory surprisal on this online+replay batch,
-        # not categorical entropy or an unbiased on-policy entropy estimate.
-        with torch.no_grad():
-            is_valid = torch.tensor(
-                [value.valid for value in trajectories], device=self.device
-            )
-            info = {
-                "loss": loss.detach(),
-                "logZ": log_Z.mean(),
-                "beta": beta.mean(),
-                "logit_scale": self.model.logit_scale(cond_info).mean(),
-                "batch_entropy": -traj_log_p_F.mean(),
-                "traj_log_p_F": traj_log_p_F.mean(),
-                "traj_log_p_B": traj_log_p_B.mean(),
-                "scaled_log_R": scaled_log_R.mean(),
-                "tb_residual": tb_residual.mean(),
-                "online_loss": traj_losses[:num_online].mean(),
-                "replay_loss": traj_losses[num_online:].sum()
-                / max(1, len(trajectories) - num_online),
-                "valid_losses": (traj_losses * is_valid).sum()
-                / is_valid.sum().clamp_min(1),
-                "invalid_losses": (traj_losses * ~is_valid).sum()
-                / (~is_valid).sum().clamp_min(1),
-                "invalid_logprob": (traj_log_p_F * ~is_valid).sum()
-                / (~is_valid).sum().clamp_min(1),
-                "invalid_trajectories": (~is_valid).float().mean(),
-            }
-        return loss, info
 
     @torch.no_grad()
     def _update_ema(self) -> None:
@@ -524,14 +413,19 @@ class RxnFlowTrainer:
                 self._assign_rewards(online_trajs)
                 # 2. Sample replay before insertion so online trajectories cannot be
                 # duplicated as replay entries in this same optimization batch.
-                batch = online_trajs + self.replay.sample(
+                replay_trajs = self.replay.sample(
                     self.config.training.num_replay, self.rng
                 )
+                batch = online_trajs + replay_trajs
                 self.replay.add(online_trajs, self.rng)
                 # 3. Update the policy/logZ, learning rates, and EMA sampling weights.
                 self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
-                loss, loss_info = self.compute_batch_losses(batch, len(online_trajs))
+                loss, loss_info = self.tb.compute_batch_losses(
+                    batch,
+                    num_online=len(online_trajs),
+                    num_replay=len(replay_trajs),
+                )
                 loss.backward()
                 # clip_grad_norm_ already returns the pre-clip norm. No second
                 # traversal of policy gradients is needed for diagnostics.

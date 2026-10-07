@@ -136,6 +136,7 @@ class TrainingConfig:
     lr_decay_steps: float = 10_000
     weight_decay: float = 1e-8
     reward_floor: float = 1e-5
+    loss_fn: Literal["mse", "mae", "huber"] = "mse"
     random_action_prob: float = 0.1
     backward_synthon_penalty: float = 100.0
     retrosynthesis_workers: int = 4
@@ -177,6 +178,8 @@ class TrainingConfig:
             raise ValueError("learning rates and decay steps must be positive")
         if not math.isfinite(self.reward_floor) or self.reward_floor <= 0:
             raise ValueError("training.reward_floor must be finite and positive")
+        if self.loss_fn not in ("mse", "mae", "huber"):
+            raise ValueError("training.loss_fn must be mse, mae, or huber")
         if not 0 <= self.random_action_prob <= 1:
             raise ValueError("training.random_action_prob must be in [0, 1]")
         if not 0 <= self.ema_decay < 1:

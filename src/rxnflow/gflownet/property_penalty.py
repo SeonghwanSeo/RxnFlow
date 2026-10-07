@@ -44,14 +44,14 @@ def compute_property_rewards(
     property_limits: dict[int, float],
     max_atoms: int,
     sigma_ratio: float,
-) -> tuple[NDArray[np.float64], NDArray[np.bool_]]:
+) -> tuple[NDArray[np.float32], NDArray[np.bool_]]:
     """Return terminal penalty multipliers and per-molecule violation flags.
 
     Each upper bound L has sigma = sigma_ratio * abs(L). A zero sigma makes
     that bound strict. Violations do not change the chemical validity of a route.
     """
     limits = {**property_limits, PROPERTY_NAMES.index("heavy_atoms"): max_atoms}
-    rewards = np.zeros(len(mols), dtype=np.float64)
+    rewards = np.zeros(len(mols), dtype=np.float32)
     violations = np.zeros(len(mols), dtype=np.bool_)
     for i, mol in enumerate(mols):
         if mol is None:
