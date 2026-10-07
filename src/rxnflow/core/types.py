@@ -202,6 +202,8 @@ class Trajectory:
     beta: float
     preferences: list[float]
     objective_rewards: list[float] = field(default_factory=list)
+    property_reward: float = 1.0
+    property_violation: bool = False
     reward: float = 0.0
     valid: bool = True
     invalid_reason: InvalidReason | None = None
@@ -213,6 +215,8 @@ class Trajectory:
             "beta": self.beta,
             "preferences": list(self.preferences),
             "objective_rewards": list(self.objective_rewards),
+            "property_reward": self.property_reward,
+            "property_violation": self.property_violation,
             "reward": self.reward,
             "valid": self.valid,
             "invalid_reason": self.invalid_reason,
@@ -226,6 +230,8 @@ class Trajectory:
             beta=data["beta"],
             preferences=list(data["preferences"]),
             objective_rewards=list(data["objective_rewards"]),
+            property_reward=data["property_reward"],
+            property_violation=data["property_violation"],
             reward=data["reward"],
             valid=data["valid"],
             invalid_reason=data["invalid_reason"],

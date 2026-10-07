@@ -67,7 +67,9 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 | `training.jsonl` | Metrics for every update. |
 | `samples/step_XXXXXX.jsonl` | All online attempts for each update, including invalid ones. |
 
-- `reward` is before beta; `objective_rewards` contains the individual scores.
+- `reward` is the combined reward, including the property penalty.
+- `objective_rewards` contains the original user scores. Update logs and terminal output use names such as `r_qed`; sample records store scores in `objectives` order.
+- `property_reward` is the property penalty multiplier. Samples record `property_violation`; update logs report the mean multiplier and `num_property_violations`.
 - `num_valid`, `num_invalid` and `num_unique` describe online samples only; `num_unique` counts distinct valid SMILES. Terminal summaries calculate valid and unique percentages from these counts.
 - In sample records, `preferences` contains effective weights: they sum to the number of objectives for `mul`, or to one for `sum`.
 - `traj_lens` includes initial synthon selection. The compact `traj` omits that selection and records pre-reaction state, reaction name and added synthon.

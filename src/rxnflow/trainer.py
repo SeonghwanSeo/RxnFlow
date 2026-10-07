@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 from pathlib import Path
 from time import perf_counter
@@ -19,12 +20,31 @@ from rxnflow.core.types import ActionType, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy
+from rxnflow.gflownet.property_penalty import compute_property_rewards
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.rewards import scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction
 
 logger = logging.getLogger(__name__)
+
+
+def scalarize_log_rewards(
+    values: torch.Tensor,
+    preferences: torch.Tensor,
+    beta: torch.Tensor | float,
+    method: str,
+    floor: float,
+) -> torch.Tensor:
+    """Return beta-scaled log rewards from the weighted product or sum.
+
+    Weights must sum to the number of objectives for ``mul`` or to one for
+    ``sum``. Apply the floor to each objective for ``mul``, or to the sum.
+    """
+    if method == "mul":
+        log_rewards = (values.clamp_min(floor).log() * preferences).sum(-1)
+    else:
+        log_rewards = (values * preferences).sum(-1).clamp_min(floor).log()
+    return beta * log_rewards
 
 
 def init_logger(log_path: Path) -> None:
@@ -284,30 +304,42 @@ class RxnFlowTrainer:
         )
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
-        """Attach raw objective values and preference-weighted scalar rewards."""
-        values = self.reward.run(
-            [
-                Chem.MolFromSmiles(value.final_smiles) if value.valid else None
-                for value in trajectories
-            ],
+        """Retain user scores and apply terminal property penalties before beta."""
+        mols = [
+            Chem.MolFromSmiles(value.final_smiles) if value.valid else None
+            for value in trajectories
+        ]
+        values = self.reward.run(mols)
+        property_rewards, violations = compute_property_rewards(
+            mols,
+            self.env.property_limits,
+            self.env.max_atoms,
+            self.config.reward.property_penalty_ratio,
         )
-        # Objective values are independent of the condition; retain them for
-        # logging and replay. The scalar reward has not been raised to beta.
+        # Property penalties multiply the scalarized reward, independently of
+        # MOO preferences. Keep zero rewards here; TB applies its floor below.
         preferences = np.array([t.preferences for t in trajectories], dtype=np.float32)
-        scalar_rewards = (
-            scalarize_log_rewards(
-                torch.from_numpy(values),
-                torch.from_numpy(preferences),
-                self.config.reward.moo_scalarization,
-                self.config.training.reward_floor,
-            )
-            .exp()
-            .tolist()
+        log_rewards = scalarize_log_rewards(
+            torch.from_numpy(values),
+            torch.from_numpy(preferences),
+            1.0,  # Logged and replay-priority rewards are independent of beta.
+            self.config.reward.moo_scalarization,
+            self.config.training.reward_floor,
         )
-        for trajectory, objectives, scalar in zip(
-            trajectories, values.tolist(), scalar_rewards, strict=True
+        scalar_rewards = (
+            (log_rewards + torch.from_numpy(property_rewards).log()).exp().tolist()
+        )
+        for trajectory, objectives, property_reward, violation, scalar in zip(
+            trajectories,
+            values.tolist(),
+            property_rewards.tolist(),
+            violations.tolist(),
+            scalar_rewards,
+            strict=True,
         ):
             trajectory.objective_rewards = objectives
+            trajectory.property_reward = property_reward
+            trajectory.property_violation = violation
             trajectory.reward = scalar if trajectory.valid else 0.0
 
     def compute_batch_losses(
@@ -350,20 +382,27 @@ class RxnFlowTrainer:
             traj_log_p_F.index_add_(0, batch_idx, log_p_F)
         else:
             traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
-        # 3. Scalarize objectives, floor before log, and apply the reward exponent.
+        # 3. Reconstruct log rewards from stored objectives and conditions.
+        # beta * (log R + log property_reward) applies both before exponentiation.
         objective_rewards = torch.tensor(
             [t.objective_rewards for t in trajectories],
             dtype=torch.float32,
             device=self.device,
         )
-        scaled_log_R = (
-            scalarize_log_rewards(
-                objective_rewards,
-                preferences,
-                self.config.reward.moo_scalarization,
-                self.config.training.reward_floor,
-            )
-            * beta
+        scaled_log_R = scalarize_log_rewards(
+            objective_rewards,
+            preferences,
+            beta,
+            self.config.reward.moo_scalarization,
+            self.config.training.reward_floor,
+        )
+        log_property_rewards = torch.tensor(
+            [t.property_reward for t in trajectories],
+            dtype=torch.float64,
+            device=self.device,
+        ).log().to(dtype=torch.float32)
+        scaled_log_R = (scaled_log_R + beta * log_property_rewards).clamp_min(
+            beta * math.log(self.config.training.reward_floor)
         )
         tb_residual = log_Z + traj_log_p_F - traj_log_p_B - scaled_log_R
         # Penalize the squared mismatch between forward and backward log flow.
@@ -437,6 +476,8 @@ class RxnFlowTrainer:
                     "final_smiles": value.final_smiles,
                     "reward": value.reward,
                     "objective_rewards": value.objective_rewards,
+                    "property_reward": value.property_reward,
+                    "property_violation": value.property_violation,
                     "beta": value.beta,
                     "preferences": value.preferences,
                     "valid": value.valid,
@@ -542,10 +583,15 @@ class RxnFlowTrainer:
                     "reward": sum(value.reward for value in online_trajs)
                     / len(online_trajs),
                     "objective_rewards": {
-                        name: sum(t.objective_rewards[i] for t in online_trajs)
+                        f"r_{name}": sum(t.objective_rewards[i] for t in online_trajs)
                         / len(online_trajs)
                         for i, name in enumerate(self.objectives)
                     },
+                    "property_reward": sum(t.property_reward for t in online_trajs)
+                    / len(online_trajs),
+                    "num_property_violations": sum(
+                        t.property_violation for t in online_trajs
+                    ),
                     "traj_lens": sum(len(value.steps) for value in online_trajs)
                     / len(online_trajs),
                     "sampling_time": sample_time,
@@ -569,13 +615,16 @@ class RxnFlowTrainer:
                     )
                     logger.info(
                         "Step %d/%d: loss=%.4f reward=%.4f valid=%.1f%% "
-                        "unique=%.1f%% replay=%d time=%.2fs | %s",
+                        "unique=%.1f%% property_reward=%.4f violations=%d "
+                        "replay=%d time=%.2fs | %s",
                         self.step,
                         final_step,
                         record["loss"],
                         record["reward"],
                         100 * record["num_valid"] / record["num_online"],
                         100 * record["num_unique"] / max(1, record["num_valid"]),
+                        record["property_reward"],
+                        record["num_property_violations"],
                         len(self.replay),
                         record["time"],
                         objectives,

@@ -51,6 +51,7 @@ class RewardConfig:
     beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [32.0]))
     moo_preferences: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
     moo_scalarization: Literal["sum", "mul"] = "mul"
+    property_penalty_ratio: float = 0.2
     settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -66,6 +67,11 @@ class RewardConfig:
                 )
         if self.moo_scalarization not in ("sum", "mul"):
             raise ValueError("reward.moo_scalarization must be sum or mul")
+        if (
+            not math.isfinite(self.property_penalty_ratio)
+            or self.property_penalty_ratio < 0
+        ):
+            raise ValueError("reward.property_penalty_ratio must be finite and non-negative")
         if not isinstance(self.settings, dict):
             raise ValueError("reward.settings must be a mapping")
 

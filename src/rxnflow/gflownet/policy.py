@@ -27,6 +27,7 @@ from rxnflow.core.types import (
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 from rxnflow.envs.graph import GraphBatch, GraphData, molecule_to_graph_data
+from rxnflow.gflownet.property_penalty import get_property_penalty, get_size_mask
 from rxnflow.models import RxnFlowModel
 
 
@@ -210,33 +211,6 @@ class RxnFlowPolicy:
         types = types.expand(len(indices), 2)
         return fp, prop, types
 
-    def _get_size_mask(
-        self,
-        state_size: torch.Tensor,
-        synthon_size: torch.Tensor,
-    ) -> torch.Tensor:
-        return state_size + synthon_size <= self.env.max_atoms
-
-    def _get_property_penalty(
-        self,
-        state_prop: torch.Tensor,
-        synthon_prop: torch.Tensor,
-    ) -> torch.Tensor:
-        """Apply additive property limits in raw units."""
-        property_penalty = torch.ones(
-            (*state_prop.shape[:-1], len(synthon_prop)),
-            dtype=torch.bool,
-            device=synthon_prop.device,
-        )
-        for index, limit in self.env.property_limits.items():
-            estimate = state_prop[..., index, None] + synthon_prop[:, index]
-            # Nonzero bounds allow 1% tolerance; zero bounds remain exact.
-            if limit == 0:
-                property_penalty &= estimate <= 0
-            else:
-                property_penalty &= estimate < limit + abs(limit) * 0.01
-        return property_penalty
-
     def _encode_synthons(
         self, features: tuple[torch.Tensor, torch.Tensor, torch.Tensor]
     ) -> torch.Tensor:
@@ -244,7 +218,12 @@ class RxnFlowPolicy:
         return F.normalize(self.model.encode_synthon(*features), dim=-1)
 
     def forward(
-        self, states: list[State], beta: torch.Tensor, preferences: torch.Tensor
+        self,
+        states: list[State],
+        beta: torch.Tensor,
+        preferences: torch.Tensor,
+        *,
+        apply_property_penalty: bool = False,
     ) -> ActionCategorical:
         """Score each state's actions using shared library samples and encodings.
         This is not used; forward_batch is preferred for efficiency.
@@ -258,7 +237,7 @@ class RxnFlowPolicy:
         action_spaces = self._prepare_action_space(states)
         synthon_cache = self._get_synthon_cache(action_spaces)
 
-        # 2. Score each state's subspaces and apply property penalties.
+        # 2. Score each state's subspaces; size/property masks guide sampling only.
         action_logits: list[list[ActionLogits]] = []
         for state_i, action_space in enumerate(action_spaces):
             emb = state_emb[state_i]
@@ -274,33 +253,44 @@ class RxnFlowPolicy:
                 elif action_type.is_first:
                     synthon_emb, synthon_prop, synthon_size = synthon_cache[library_name]
                     logits = self._first_synthon_logits(emb, synthon_emb) * scale
-                    size_mask = self._get_size_mask(state_size, synthon_size)
-                    property_penalty = self._get_property_penalty(
-                        state_prop, synthon_prop
-                    )
-                    logits = logits.masked_fill(
-                        ~(size_mask & property_penalty), -torch.inf
-                    )
+                    if apply_property_penalty:
+                        size_mask = get_size_mask(
+                            state_size, synthon_size, self.env.max_atoms
+                        )
+                        property_penalty = get_property_penalty(
+                            state_prop, synthon_prop, self.env.property_limits
+                        )
+                        logits = logits.masked_fill(
+                            ~(size_mask & property_penalty), -torch.inf
+                        )
                 else:
                     synthon_emb, synthon_prop, synthon_size = synthon_cache[library_name]
                     logits = (
                         self._birxn_logits(action_type, action_name, emb, synthon_emb)
                         * scale
                     )
-                    size_mask = self._get_size_mask(state_size, synthon_size)
-                    property_penalty = self._get_property_penalty(
-                        state_prop, synthon_prop
-                    )
-                    logits = logits.masked_fill(
-                        ~(size_mask & property_penalty), -torch.inf
-                    )
+                    if apply_property_penalty:
+                        size_mask = get_size_mask(
+                            state_size, synthon_size, self.env.max_atoms
+                        )
+                        property_penalty = get_property_penalty(
+                            state_prop, synthon_prop, self.env.property_limits
+                        )
+                        logits = logits.masked_fill(
+                            ~(size_mask & property_penalty), -torch.inf
+                        )
                 state_logits.append(ActionLogits(subspace, logits))
 
             action_logits.append(state_logits)
         return ActionCategorical(action_logits, state_emb, logit_scale, self.subsampling)
 
     def forward_batch(
-        self, states: list[State], beta: torch.Tensor, preferences: torch.Tensor
+        self,
+        states: list[State],
+        beta: torch.Tensor,
+        preferences: torch.Tensor,
+        *,
+        apply_property_penalty: bool = False,
     ) -> ActionCategorical:
         """Batch states by attachment and score each head's libraries together."""
         assert states
@@ -348,7 +338,8 @@ class RxnFlowPolicy:
                     for name, query in zip(names, queries.unbind(0), strict=True):
                         reaction_queries[action_type, name] = query
 
-            # 3. Apply size/property constraints to all libraries in the group.
+            # 3. Sampling uses approximate size/property limits. TB evaluates
+            # the unmasked policy and learns property preferences from rewards.
             library_names = list(
                 dict.fromkeys(
                     space.name[1]
@@ -357,12 +348,14 @@ class RxnFlowPolicy:
                 )
             )
             library_masks: dict[str, torch.Tensor] = {}
-            if library_names:
+            if apply_property_penalty and library_names:
                 prop = torch.cat([synthon_cache[name][1] for name in library_names])
                 size = torch.cat([synthon_cache[name][2] for name in library_names])
-                size_mask = self._get_size_mask(batch.size[indices, None], size)
-                property_penalty = self._get_property_penalty(
-                    batch.mol_features[indices], prop
+                size_mask = get_size_mask(
+                    batch.size[indices, None], size, self.env.max_atoms
+                )
+                property_penalty = get_property_penalty(
+                    batch.mol_features[indices], prop, self.env.property_limits
                 )
                 widths = [len(synthon_cache[name][0]) for name in library_names]
                 masks = (size_mask & property_penalty).split(widths, dim=1)
@@ -383,8 +376,9 @@ class RxnFlowPolicy:
                 else:
                     query = reaction_queries[action_type, action_name]
                     logits = (query @ synthons.T) * scale
-                mask = torch.cat([library_masks[name] for name in libraries], dim=1)
-                logits = logits.masked_fill(~mask, -torch.inf)
+                if apply_property_penalty:
+                    mask = torch.cat([library_masks[name] for name in libraries], dim=1)
+                    logits = logits.masked_fill(~mask, -torch.inf)
                 widths = [len(synthon_cache[name][0]) for name in libraries]
                 for subspace, values in zip(
                     spaces, logits.split(widths, dim=1), strict=True
@@ -562,7 +556,9 @@ class RxnFlowPolicy:
         beta: torch.Tensor,
         preferences: torch.Tensor,
     ) -> list[Action]:
-        return self.forward_batch(states, beta, preferences).sample(
+        return self.forward_batch(
+            states, beta, preferences, apply_property_penalty=True
+        ).sample(
             softmax_temperature,
             random_action_prob,
             self.config.subsampling.importance_temp,
@@ -575,7 +571,11 @@ class RxnFlowPolicy:
         beta: torch.Tensor,
         preferences: torch.Tensor,
     ) -> torch.Tensor:
-        fwd_cat = self.forward_batch(states, beta, preferences)
+        # The masked sampler is an exploration policy. TB uses the same
+        # unmasked logits in its numerator and normalization estimate.
+        fwd_cat = self.forward_batch(
+            states, beta, preferences, apply_property_penalty=False
+        )
         numerator = self.get_action_logits(
             fwd_cat.state_emb, actions, fwd_cat.logit_scale
         )

@@ -17,12 +17,12 @@ class MyReward(RewardFunction):
         return np.array(qeds, dtype=np.float32).reshape(-1, 1)
 ```
 
-- Rewards must be non-negative. The scores will be automatically clipped `1e-5` for numerical stability.
+- Return finite, non-negative scores.
 - Return a float32 NumPy array of shape `[batch, num_objectives]`, including for an empty batch. Columns follow the order in `objectives`.
-- Return the individual objective scores; RxnFlow applies preference weights.
+- Return the individual objective scores; RxnFlow applies preference weights and the configured [terminal property penalty](conditioning.md#property-rewards). Do not add the framework's property penalty as an MOO objective.
 - Assign zero scores to unwanted molecules inside `score()`, preserving the input order and batch size. This lowers their reward; it does not remove them from sample outputs.
 
-For direct evaluation, use `reward.run(mols)` or `reward(mols)`. See [MW/logP](../examples/mw_logp.py) for a runnable two-objective example.
+For direct evaluation, use `reward.run(mols)` or `reward(mols)` to obtain individual objective scores. See [MW/logP](../examples/mw_logp.py) for a runnable two-objective example.
 
 ## Pass reward settings
 

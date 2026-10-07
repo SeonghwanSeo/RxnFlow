@@ -17,11 +17,12 @@ See [custom rewards](../docs/rewards.md) for implementation and [conditioning](.
 | `reward.beta` | `"32"` | Reward exponent: a fixed value or `uniform(lower,upper)`. |
 | `reward.moo_scalarization` | `mul` | Combine objectives by weighted product (`mul`) or weighted sum (`sum`). |
 | `reward.moo_preferences` | `"none"` | Objective weights: `none`, `fixed(...)`, `uniform` or `dirichlet(...)`. |
+| `reward.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
 | `reward.settings` | `{}` | Constructor arguments for your reward class. |
 
 ## Property penalty
 
-Upper bounds used to mask synthon actions, disabled by default (`{}`). Omitted bounds are unset. These use additive reactant estimates and do not guarantee exact final-product bounds.
+Set property upper bounds to guide sampling and reduce rewards for molecules that exceed them. Omitted properties are unconstrained. See [property rewards](../docs/conditioning.md#property-rewards) for details.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -35,23 +36,30 @@ Upper bounds used to mask synthon actions, disabled by default (`{}`). Omitted b
 
 ## Action Subsampling
 
+Action subsampling evaluates a random subset of each synthon library, reducing computation and GPU memory use for large building-block libraries. Smaller subsets increase the variance of the estimated action-distribution normalization; larger subsets reduce it at higher cost.
+
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `subsampling.sampling_ratio` | `0.1` | Fraction of each synthon library evaluated per action, in `(0, 1]`. |
+| `subsampling.sampling_ratio` | `0.1` | Fraction of each synthon library subsampled for action selection, in `(0, 1]`. |
 | `subsampling.min_sampling` | `50` | Minimum sampled candidates per library, capped by library size. |
 | `subsampling.importance_temp` | `1.0` | Subsampling correction strength: `1` applies the full correction, `0` disables it during action selection. |
 
 ## Generation Constraints
 
-Synthon counts include the initial selection; reaction counts is equivalent to the step count - 1.
+We apply hard constraints on the number of synthons and reactions in a completed route, and a soft constraint on the number of heavy atoms.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `generation.max_atoms` | `50` | Maximum heavy atoms per generated state. |
-| `generation.min_synthons` | `2` | Minimum selected synthons in a completed route. |
-| `generation.max_synthons` | `3` | Maximum selected synthons in a route. |
-| `generation.min_reactions` | `1` | Minimum reaction steps in a completed route. |
-| `generation.max_reactions` | `3` | Maximum reaction steps in a route. |
+| `generation.max_atoms` | `50` | Upper bound on the number of heavy atoms in a generated molecule. |
+| `generation.min_synthons` | `2` | Minimum selected synthons in a synthetic route. |
+| `generation.max_synthons` | `3` | Maximum selected synthons in a synthetic route. |
+| `generation.min_reactions` | `1` | Minimum reaction steps in a synthetic route. |
+| `generation.max_reactions` | `3` | Maximum reaction steps in a synthetic route. |
+
+
+Example:
+- `A-[1*] --(birxn)--> A-B-[2*] --(unirxn)--> A-B-[3*] --(birxn)--> A-B-C` has 3 reactions and 3 synthons.
+- `A-[4*] --(birxn)--> A-B` has 1 reaction and 2 synthons.
 
 ## Model Configuration
 

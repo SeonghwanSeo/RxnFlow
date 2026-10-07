@@ -12,11 +12,7 @@ from rxnflow.core.molecule import Molecule
 from rxnflow.core.reaction import load_reactions
 from rxnflow.core.synthon import load_synthon_templates, typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionSpace, ActionSubspace, ActionType, State
-from rxnflow.envs.features import (
-    PROPERTY_PENALTY_INDICES,
-    heavy_atom_count,
-    parse_molecule,
-)
+from rxnflow.envs.features import PROPERTY_PENALTY_INDICES, parse_molecule
 from rxnflow.envs.library import load_synthon_libraries
 from rxnflow.envs.retrosynthesis import RetroSynthesisAnalyzer
 
@@ -281,10 +277,9 @@ class SynthesisEnv:
                     current, Molecule(smiles=synthon_smiles, rdmol=synthon)
                 )
                 expected = library.synthon_types[1:]
-        # 3. Check remaining sites, atom capacity, and structural change.
+        # 3. Check remaining sites and structural change. The approximate atom
+        # budget affects action selection; exceeding it does not invalidate a product.
         if product is None or typed_dummy_isotopes(product.rdmol) != expected:
-            return None
-        if heavy_atom_count(product.rdmol) > self.max_atoms:
             return None
         # Reject transformations that leave the canonical structure unchanged.
         if current is not None and product.smiles == current.smiles:
@@ -306,9 +301,7 @@ class SynthesisEnv:
             raise InvalidTransition("action cannot finish within the synthesis budgets")
         product = self._apply_action(state.molecule, action)
         if product is None:
-            raise InvalidTransition(
-                "the selected reaction failed structural or graph-capacity checks"
-            )
+            raise InvalidTransition("the selected reaction failed structural checks")
         count = state.num_reactions + int(action.action_type != ActionType.FIRST_SYNTHON)
         terminal = not typed_dummy_isotopes(product.rdmol)
         return State(
