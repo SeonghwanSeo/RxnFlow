@@ -6,27 +6,19 @@ import json
 from functools import cached_property
 from pathlib import Path
 
-import numpy as np
-import yaml
-from numpy.typing import NDArray
-from rdkit import Chem
-
+from rxnflow.core.compatibility import check_library_compatibility
 from rxnflow.core.errors import InvalidTransition
+from rxnflow.core.molecule import Molecule
 from rxnflow.core.reaction import load_reactions
-from rxnflow.core.synthon import load_synthon_specs, typed_dummy_isotopes
+from rxnflow.core.synthon import load_synthon_templates, typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionSpace, ActionSubspace, ActionType, State
-from rxnflow.envs.features import (
-    PROPERTY_NAMES,
-    PROPERTY_PENALTY_INDICES,
-    heavy_atom_count,
-    parse_molecule,
-)
+from rxnflow.envs.features import PROPERTY_PENALTY_INDICES, parse_molecule
 from rxnflow.envs.library import load_synthon_libraries
 from rxnflow.envs.retrosynthesis import RetroSynthesisAnalyzer
 
 
 class SynthesisEnv:
-    """Grow one synthon intermediate through typed unary and binary reactions."""
+    """Synthon-based linear synthesis environment"""
 
     def __init__(
         self,
@@ -59,15 +51,26 @@ class SynthesisEnv:
             for name, limit in (property_penalty or {}).items()
         }
         self.retrosynthesis_workers = retrosynthesis_workers
+        self.signature = json.loads((self.env_dir / "signature.json").read_text())
+        check_library_compatibility(self.signature["rxnflow_version"])
         self._load_libraries()
         self._load_reactions()
         self._load_action_spaces()
-        self._build_budget_action_spaces()
+        self._build_feasible_action_spaces()
 
     def _load_libraries(self) -> None:
         """Load aligned synthon data and derive library/type indices."""
         self.synthons = load_synthon_libraries(self.env_dir)
-        self.sources = json.loads((self.env_dir / "building_blocks.json").read_text())
+        with (self.env_dir / "building_blocks.smi").open(encoding="utf-8") as handle:
+            records = (line.rstrip("\n").split("\t") for line in handle)
+            self.sources = {identifier: smiles for smiles, identifier in records}
+        self.synthon_to_bb_ids: dict[str, list[str]] = {}
+        for path in sorted((self.env_dir / "synthons").glob("*.tsv")):
+            with path.open(encoding="utf-8") as handle:
+                next(handle)  # synthon_id, smiles, bb_ids
+                for line in handle:
+                    synthon_id, _, bb_ids = line.rstrip("\n").split("\t")
+                    self.synthon_to_bb_ids[synthon_id] = bb_ids.split(";")
         self.library_names = sorted(self.synthons)
         self.brick_types = [
             name for name in self.library_names if self.synthons[name].is_brick
@@ -75,8 +78,7 @@ class SynthesisEnv:
         if not self.brick_types:
             raise ValueError("prepared environment contains no one-site bricks")
 
-        specs = load_synthon_specs(self.env_dir / "synthon.yaml")
-        self.synthon_types = {spec.type for spec in specs}
+        self.synthon_types = set(load_synthon_templates(self.env_dir / "synthon.yaml"))
         # Index zero represents an absent remaining site on a brick.
         # Chemical types use stable indices independent of catalog membership.
         self.synthon_type_to_index = {
@@ -91,14 +93,6 @@ class SynthesisEnv:
             )
             for name, library in self.synthons.items()
         }
-        # Store parsed definitions: comments and YAML formatting do not affect
-        # compatibility, while chemical definitions and exclusions must match.
-        self.templates = {}
-        for name in ("reaction", "synthon", "exclude_smarts"):
-            path = self.env_dir / f"{name}.yaml"
-            self.templates[name] = (
-                yaml.safe_load(path.read_text()) if path.is_file() else None
-            )
         for library in self.synthons.values():
             if (
                 len(library.synthon_types) not in (1, 2)
@@ -120,14 +114,6 @@ class SynthesisEnv:
         for reaction in self.bi_reactions.values():
             if not set(reaction.synthon_types) <= self.synthon_types:
                 raise ValueError(f"unknown synthon type in {reaction.name}")
-        self.action_names = [
-            "first_synthon",
-            *sorted(self.uni_reactions),
-            *sorted(self.bi_reactions),
-        ]
-        if len(set(self.action_names)) != len(self.action_names):
-            raise ValueError("reaction action names must be unique")
-        self.action_to_index = {name: i for i, name in enumerate(self.action_names)}
 
     def _load_action_spaces(self) -> None:
         """Connect prepared reaction/library pairs to the loaded runtime objects."""
@@ -163,18 +149,14 @@ class SynthesisEnv:
         self.reaction_action_spaces = {
             int(site): load_space(pairs) for site, pairs in spaces["reaction"].items()
         }
-        # Prepared artifacts are immutable until the next preparation. Reading
-        # this saved signature avoids hashing the full feature archive at startup.
-        self.signature = json.loads((self.env_dir / "signature.json").read_text())
 
-    def _build_budget_action_spaces(self) -> None:
-        """Keep type-level transitions that can finish within both budgets.
+    def _build_feasible_action_spaces(self) -> None:
+        """Keep type-level paths that can terminate within the synthesis limits.
 
-        Work backwards in reaction count: every Uni/Bi transition consumes one
-        reaction, so each successor has already been computed. This is chemistry
-        type feasibility; property penalties still apply at sampling time.
+        This ensure that `get_action_space` always returns a action space that
+        can reach a terminal state.
         """
-        self.budget_action_spaces: dict[tuple[int, int, int], ActionSpace] = {}
+        self.feasible_action_spaces: dict[tuple[int, int, int], ActionSpace] = {}
         for reactions in range(self.max_reactions, -1, -1):
             for synthons in range(1, self.max_synthons + 1):
                 for site, space in self.reaction_action_spaces.items():
@@ -197,22 +179,26 @@ class SynthesisEnv:
                                 )
                             else:
                                 reachable = bool(
-                                    self.budget_action_spaces.get(
+                                    self.feasible_action_spaces.get(
                                         (next_site, next_synthons, reactions + 1)
                                     )
                                 )
                             if reachable:
                                 allowed.append(subspace)
-                    self.budget_action_spaces[site, synthons, reactions] = allowed
+                    self.feasible_action_spaces[site, synthons, reactions] = allowed
         # FirstSynthon consumes a synthon but no reaction. Exclude starting types
         # with no complete route under these limits.
         self.initial_action_space = [
             subspace
             for subspace in self.initial_action_space
-            if self.budget_action_spaces[
+            if self.feasible_action_spaces[
                 self.synthons[subspace.name[1]].attachment_type, 1, 0
             ]
         ]
+        if not self.initial_action_space:
+            raise ValueError(
+                "no synthesis path can terminate within the synthesis limits"
+            )
 
     @cached_property
     def retro_analyzer(self) -> RetroSynthesisAnalyzer:
@@ -242,75 +228,15 @@ class SynthesisEnv:
         """Look up type/step eligibility; property penalties follow subsampling."""
         if state.terminated:
             return []
-        if state.mol is None:
+        elif state.molecule is None:
             return self.initial_action_space
-        if state.num_reactions >= self.max_reactions:
-            return []
-        signature = typed_dummy_isotopes(state.mol)
-        if len(signature) != 1 or signature[0] not in self.synthon_types:
-            return []
-        return self.budget_action_spaces.get(
-            (signature[0], state.num_synthons, state.num_reactions), []
-        )
+        assert state.num_reactions < self.max_reactions
+        key = (state.attachment_type, state.num_synthons, state.num_reactions)
+        return self.feasible_action_spaces[key]
 
-    def get_synthon_mask(
-        self,
-        state_properties: NDArray[np.float32],
-        library_name: str,
-        indices: NDArray[np.int64] | None = None,
-    ) -> NDArray[np.bool_]:
-        """Combine the atom-capacity action mask with the property penalty.
-
-        Inputs are one state [P] or a batch [B, P]; the result is [N] or [B, N].
-        Compare raw units so zero and negative upper bounds remain meaningful.
-        These sums estimate product properties without executing candidate reactions.
-        """
-        library = self.synthons[library_name]
-        heavy_atoms = (
-            library.heavy_atoms if indices is None else library.heavy_atoms[indices]
-        )
-        properties = (
-            library.properties if indices is None else library.properties[indices]
-        )
-        # Broadcast either one state [P] or a state batch [B, P] against
-        # the common sampled library [N]. This gathers synthon features once.
-        # State properties are float32, so uint8 counts are promoted before
-        # addition; a combined count above 255 cannot wrap.
-        mask = (
-            heavy_atoms + state_properties[..., PROPERTY_NAMES.index("heavy_atoms"), None]
-            <= self.max_atoms
-        )
-        if self.property_limits:
-            property_penalty = self.compute_property_penalty(state_properties, properties)
-            mask &= property_penalty
-        return mask
-
-    def compute_property_penalty(
-        self,
-        state_properties: NDArray[np.float32],
-        synthon_properties: NDArray[np.float32],
-    ) -> NDArray[np.bool_]:
-        """Return binary Ω: True (1) permits an action; False (0) excludes it.
-
-        Use additive state + synthon estimates, without executing reactions.
-        The result is [N] or [B, N]. The max_atoms action mask is applied separately.
-        """
-        property_penalty = np.ones(
-            (*state_properties.shape[:-1], len(synthon_properties)), dtype=np.bool_
-        )
-        for index, limit in self.property_limits.items():
-            estimate = synthon_properties[:, index] + state_properties[..., index, None]
-            # Nonzero bounds allow 1% of their magnitude as tolerance.
-            # Zero bounds stay exact.
-            if limit == 0:
-                property_penalty &= estimate <= 0
-            else:
-                property_penalty &= estimate < limit + abs(limit) * 0.01
-        return property_penalty
-
-    def _apply_action(self, current: Chem.Mol | None, action: Action) -> Chem.Mol | None:
-        """Apply FirstSynthon/UniReaction/BiReaction and return a valid Mol or None."""
-        # 1. Resolve the selected catalog row, when this action consumes a synthon.
+    def _apply_action(self, current: Molecule | None, action: Action) -> Molecule | None:
+        """Apply FirstSynthon/UniReaction/BiReaction and return a valid molecule."""
+        # 1. Resolve the selected synthon row.
         if action.library_name is not None:
             library = self.synthons[action.library_name]
             if action.synthon_index is None or not 0 <= action.synthon_index < len(
@@ -319,9 +245,9 @@ class SynthesisEnv:
                 raise ValueError("synthon_index is out of range")
             synthon_smiles = library.smiles[action.synthon_index]
         elif action.synthon_index is not None:
-            raise ValueError("unary actions do not take a synthon_index")
+            raise ValueError("unimolecular actions do not take a synthon_index")
 
-        # 2. Execute the selected transformation and determine its expected handle.
+        # 2. Apply the transformation and determine the expected remaining sites.
         if action.action_type == ActionType.FIRST_SYNTHON:
             # Catalog attachment markers are always 0. A first brick becomes a
             # state with its chemical synthon type restored from the library.
@@ -330,30 +256,30 @@ class SynthesisEnv:
             for atom in first.GetAtoms():
                 if atom.GetAtomicNum() == 0:
                     atom.SetIsotope(library.attachment_type)
-            mol = first
+            product = Molecule(rdmol=first)
             expected = library.synthon_types
         else:
             assert current is not None
             if action.action_type.is_unirxn:
                 reaction = self.uni_reactions[action.reaction]
-                mol = reaction.run_forward(current)
+                product = reaction.run_forward(current)
                 expected = () if reaction.output_type is None else (reaction.output_type,)
             else:
                 bi = self.bi_reactions[action.reaction]
                 synthon = parse_molecule(synthon_smiles)
                 assert synthon is not None
-                mol = bi.run_forward(current, synthon)
+                product = bi.run_forward(
+                    current, Molecule(smiles=synthon_smiles, rdmol=synthon)
+                )
                 expected = library.synthon_types[1:]
-        # 3. Check the actual product's handle, capacity, and structural change.
-        if mol is None or typed_dummy_isotopes(mol) != expected:
+        # 3. Check remaining sites and structural change. The approximate atom
+        # budget affects action selection; exceeding it does not invalidate a product.
+        if product is None or typed_dummy_isotopes(product.rdmol) != expected:
             return None
-        if heavy_atom_count(mol) > self.max_atoms:
+        # Reject transformations that leave the canonical structure unchanged.
+        if current is not None and product.smiles == current.smiles:
             return None
-        # Canonical SMILES detect no-ops; retain the molecule itself so masking,
-        # the selected transition, and model features share the same product.
-        if current is not None and Chem.MolToSmiles(mol) == Chem.MolToSmiles(current):
-            return None
-        return mol
+        return product
 
     def step(self, state: State, action: Action) -> State:
         """Execute an action and terminate when its product has no marked handle."""
@@ -368,28 +294,30 @@ class SynthesisEnv:
             for space in self.get_action_space(state)
         ):
             raise InvalidTransition("action cannot finish within the synthesis budgets")
-        product = self._apply_action(state.mol, action)
+        product = self._apply_action(state.molecule, action)
         if product is None:
-            raise InvalidTransition(
-                "the selected reaction failed structural or graph-capacity checks"
-            )
+            raise InvalidTransition("the selected reaction failed structural checks")
         count = state.num_reactions + int(action.action_type != ActionType.FIRST_SYNTHON)
-        terminal = not typed_dummy_isotopes(product)
+        terminal = not typed_dummy_isotopes(product.rdmol)
         return State(
-            mol=product,
+            molecule=product,
             num_reactions=count,
             num_synthons=state.num_synthons + int(not action.action_type.is_unirxn),
             terminated=terminal,
         )
 
     def action_to_dict(self, action: Action) -> dict[str, object]:
-        result = action.to_dict()
+        result: dict[str, object] = {
+            "action_type": action.action_type.name,
+            "reaction": action.reaction,
+        }
         if action.library_name is not None:
             assert action.synthon_index is not None
             library = self.synthons[action.library_name]
-            identifiers = library.identifiers[action.synthon_index]
+            synthon_id = library.synthon_ids[action.synthon_index]
+            identifiers = self.synthon_to_bb_ids[synthon_id]
             result["synthon_smiles"] = library.smiles[action.synthon_index]
-            result["synthon_ids"] = identifiers
+            result["synthon_id"] = synthon_id
             result["building_blocks"] = [
                 {"id": identifier, "smiles": self.sources[identifier]}
                 for identifier in identifiers

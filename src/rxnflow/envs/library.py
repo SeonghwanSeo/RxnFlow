@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,7 +15,7 @@ from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 class SynthonLibrary:
     name: str  # Catalog identifier, e.g. "7" or "7-8".
     smiles: list[str]
-    identifiers: list[list[str]]
+    synthon_ids: list[str]
     properties: NDArray[np.float32]
     fingerprints: NDArray[np.uint8]
     heavy_atoms: NDArray[np.uint8]
@@ -49,7 +48,7 @@ class SynthonLibrary:
         count = len(self.smiles)
         if count == 0:
             raise ValueError(f"synthon library {self.name!r} is empty")
-        if len(self.identifiers) != count:
+        if len(self.synthon_ids) != count:
             raise ValueError(f"identifier alignment failed for {self.name}")
         expected = {
             "properties": (count, PROPERTY_DIM),
@@ -67,9 +66,9 @@ class SynthonLibrary:
         # reparsing every molecule in the trusted prepared catalog.
 
 
-def read_smiles_file(path: Path) -> tuple[list[str], list[list[str]]]:
+def read_smiles_file(path: Path) -> tuple[list[str], list[str]]:
     smiles: list[str] = []
-    identifiers: list[list[str]] = []
+    synthon_ids: list[str] = []
     with path.open(encoding="utf-8") as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             line = raw_line.rstrip("\n")
@@ -83,18 +82,17 @@ def read_smiles_file(path: Path) -> tuple[list[str], list[list[str]]]:
             if not fields[0] or not fields[1]:
                 raise ValueError(f"{path}:{line_number}: missing SMILES or identifier")
             smiles.append(fields[0])
-            ids = json.loads(fields[1])
-            identifiers.append(ids)
-    return smiles, identifiers
+            synthon_ids.append(fields[1])
+    return smiles, synthon_ids
 
 
 def load_synthon_libraries(env_dir: Path) -> dict[str, SynthonLibrary]:
-    """Load aligned NumPy features and source IDs without reparsing molecules."""
+    """Load aligned NumPy features and synthon IDs without reparsing molecules."""
     feature_path = env_dir / "synthon_features.npz"
-    synthon_dir = env_dir / "synthons"
+    synthon_dir = env_dir / "action_spaces"
     if not feature_path.is_file() or not synthon_dir.is_dir():
         raise FileNotFoundError(
-            "prepared environment requires synthons/*.smi and synthon_features.npz"
+            "prepared environment requires action_spaces/*.smi and synthon_features.npz"
         )
     libraries: dict[str, SynthonLibrary] = {}
     with np.load(feature_path) as arrays:
@@ -109,15 +107,13 @@ def load_synthon_libraries(env_dir: Path) -> dict[str, SynthonLibrary]:
                 "SMILES files and synthon_features.npz synthon types are not aligned"
             )
         for path in files:
-            smiles, identifiers = read_smiles_file(path)
-            # Preparation writes both files in the same sorted row order and
-            # invalidates features on reconversion. Avoid decompressing a second
-            # full SMILES copy merely to compare trusted prepared rows.
-            # Keep catalog data in NumPy. Only sampled model inputs become tensors.
+            smiles, synthon_ids = read_smiles_file(path)
+            # SMILES and features share the row order assigned during preparation.
+            # Keep the catalog in NumPy; only sampled rows become model tensors.
             library = SynthonLibrary(
                 name=path.stem,
                 smiles=smiles,
-                identifiers=identifiers,
+                synthon_ids=synthon_ids,
                 properties=arrays[f"{path.stem}/properties"],
                 fingerprints=arrays[f"{path.stem}/fingerprints"],
                 heavy_atoms=arrays[f"{path.stem}/heavy_atoms"],

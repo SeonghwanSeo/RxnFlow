@@ -17,17 +17,17 @@ class ConditionEncoder(nn.Module):
         super().__init__()
         # Normalized beta plus four sine/cosine pairs.
         self.emb_beta = mlp(9, hidden_dim, hidden_dim, 2)
-        self.emb_preferences = mlp(num_objectives, hidden_dim, hidden_dim, 2)
+        self.emb_preference = mlp(num_objectives, hidden_dim, hidden_dim, 2)
 
-    def forward(self, beta: torch.Tensor, preferences: torch.Tensor) -> torch.Tensor:
-        """beta: [B], preferences: [B, num_objectives]; return [B, H]."""
+    def forward(self, beta: torch.Tensor, preference: torch.Tensor) -> torch.Tensor:
+        """beta: [B], preference: [B, num_objectives]; return [B, H]."""
         # Fixed coordinates are independent of the sampling range. The linear
         # term u distinguishes values that share the same periodic features.
         u = (beta[:, None] - 1.0) / 63.0
         frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
         angles = 2 * math.pi * u * frequencies
         features = torch.cat([u, angles.sin(), angles.cos()], dim=-1)
-        return self.emb_beta(features) + self.emb_preferences(preferences)
+        return self.emb_beta(features) + self.emb_preference(preference)
 
 
 class SynthonEncoder(nn.Module):
@@ -46,20 +46,21 @@ class SynthonEncoder(nn.Module):
         self.mlp = mlp(4 * hidden_dim, hidden_dim, hidden_dim, num_layers, layernorm=True)
 
     def forward(
-        self, fp: torch.Tensor, prop: torch.Tensor, site_types: torch.Tensor
+        self, fp: torch.Tensor, prop: torch.Tensor, types: torch.Tensor
     ) -> torch.Tensor:
-        """fp: [N, F], prop: [N, P], site_types: [N, 2]; return [N, S].
+        """fp: [N, F], prop: [N, P], types: [N, 2]; return [N, S].
 
         F/P are fingerprint/property dimensions; S is the synthon embedding size.
+        prop contains raw descriptors in PROPERTY_NAMES order.
         """
         prop = prop / self.property_scale
+        type_emb = self.emb_type(types).flatten(start_dim=1)
         return self.mlp(
             torch.cat(
                 [
                     self.lin_fp(fp),
                     self.lin_prop(prop),
-                    self.emb_type(site_types[:, 0]),
-                    self.emb_type(site_types[:, 1]),
+                    type_emb,
                 ],
                 dim=-1,
             )

@@ -22,7 +22,7 @@ class ReplayBuffer:
         self.capacity = capacity
         self.num_insert = num_insert
         self.insert_priority = insert_priority
-        # Store plain trajectory data, including beta, preferences and objective
+        # Store plain trajectory data, including beta, preference and objective
         # rewards. Sampling preserves these conditions; no relabeling.
         self._items: list[dict[str, Any]] = []
         self._next = 0

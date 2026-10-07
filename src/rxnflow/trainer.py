@@ -15,12 +15,17 @@ from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
+from rxnflow.core.compatibility import (
+    check_library_compatibility,
+    check_model_compatibility,
+)
 from rxnflow.core.types import ActionType, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy
+from rxnflow.gflownet.property_penalty import compute_property_rewards
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.rewards import scalarize_log_rewards
+from rxnflow.gflownet.trajectory_balance import TrajectoryBalance, scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
 from rxnflow.reward import RewardFunction
 
@@ -179,10 +184,16 @@ class RxnFlowTrainer:
         """Initialize the gfn training components"""
         cfg = self.config
 
+        self.tb = TrajectoryBalance(
+            self.policy,
+            cfg.reward.moo_scalarization,
+            cfg.training.reward_floor,
+            loss_fn=cfg.training.loss_fn,
+        )
         self.step = 0
         self.condition_sampler: ConditionSampler = ConditionSampler(
             cfg.reward.beta,
-            cfg.reward.moo_preferences,
+            cfg.reward.moo_preference,
             self.num_objectives,
             cfg.reward.moo_scalarization,
         )
@@ -212,7 +223,6 @@ class RxnFlowTrainer:
                     "seed": self.seed,
                 },
                 "environment": self.env.signature,
-                "templates": self.env.templates,
                 "model": self.model.state_dict(),
                 "sampling_model": self.sampling_model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
@@ -245,17 +255,19 @@ class RxnFlowTrainer:
         # optimizer loaders move their own tensors to the model device.
         logger.info("Loading checkpoint: %s", path)
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        if checkpoint.get("rxnflow_version") != __version__:
-            raise ValueError(
-                "checkpoint was created by RxnFlow "
-                f"{checkpoint.get('rxnflow_version')!r}; "
-                f"this installation is RxnFlow {__version__}"
-            )
+        check_model_compatibility(checkpoint["rxnflow_version"])
+        saved_environment = checkpoint["environment"]
+        check_library_compatibility(saved_environment["rxnflow_version"])
         if checkpoint.get("config") != self.config.to_dict():
             raise ValueError(
                 "restart configuration differs from the resolved checkpoint configuration"
             )
-        if checkpoint.get("environment") != self.env.signature:
+        # Resume restores catalog-indexed actions in replay; sampling can replace
+        # the catalog, but resume requires identical content and synthesis rules.
+        if (
+            saved_environment["content_sha256"] != self.env.signature["content_sha256"]
+            or saved_environment["synthesis"] != self.env.signature["synthesis"]
+        ):
             raise ValueError(
                 "prepared environment differs from the checkpoint environment"
             )
@@ -285,120 +297,41 @@ class RxnFlowTrainer:
         )
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
-        """Attach raw objective values and preference-weighted scalar rewards."""
-        values = self.reward.run(
-            [
-                Chem.MolFromSmiles(value.final_smiles) if value.valid else None
-                for value in trajectories
-            ],
+        """Retain user scores and apply terminal property penalties before beta."""
+        mols = [
+            Chem.MolFromSmiles(value.final_smiles) if value.valid else None
+            for value in trajectories
+        ]
+        values = self.reward.run(mols)
+        property_rewards, violations = compute_property_rewards(
+            mols,
+            self.env.property_limits,
+            self.env.max_atoms,
+            self.config.reward.property_penalty_ratio,
         )
-        # Objective values are independent of the condition; retain them for
-        # logging and replay. The scalar reward has not been raised to beta.
-        preferences = np.array([t.preferences for t in trajectories], dtype=np.float32)
-        scalar_rewards = (
-            scalarize_log_rewards(
-                torch.from_numpy(values),
-                torch.from_numpy(preferences),
-                self.config.reward.moo_scalarization,
-                self.config.training.reward_floor,
-            )
-            .exp()
-            .tolist()
+        # Property penalties multiply the scalarized reward, independently of
+        # MOO preference. Floor inputs here; TB also floors the final reward.
+        reward_floor = self.config.training.reward_floor
+        preference = np.array([t.preference for t in trajectories], dtype=np.float64)
+        log_rewards = scalarize_log_rewards(
+            values.astype(np.float64).clip(min=reward_floor),
+            moo_scalarization=self.config.reward.moo_scalarization,
+            moo_preference=preference,
         )
-        for trajectory, objectives, scalar in zip(
-            trajectories, values.tolist(), scalar_rewards, strict=True
+        log_rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
+        scalar_rewards = np.exp(log_rewards).tolist()
+        for trajectory, objectives, property_reward, violation, scalar in zip(
+            trajectories,
+            values.tolist(),
+            property_rewards.tolist(),
+            violations.tolist(),
+            scalar_rewards,
+            strict=True,
         ):
             trajectory.objective_rewards = objectives
+            trajectory.property_reward = property_reward
+            trajectory.property_violation = violation
             trajectory.reward = scalar if trajectory.valid else 0.0
-
-    def compute_batch_losses(
-        self, trajectories: list[Trajectory], num_online: int
-    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-        """Compute conditional TB loss for online trajectories followed by replay."""
-        # 1. Encode each trajectory's stored condition and predict logZ.
-        beta = torch.tensor(
-            [t.beta for t in trajectories], dtype=torch.float32, device=self.device
-        )
-        preferences = torch.tensor(
-            [t.preferences for t in trajectories], dtype=torch.float32, device=self.device
-        )
-        cond_info = self.model.encode_cond(beta, preferences)
-        log_Z = self.model.logZ(cond_info).squeeze(-1)
-        # 2. Score all observed transitions together, then sum by trajectory.
-        transitions = []
-        traj_indices: list[int] = []
-        traj_log_p_B = torch.tensor(
-            [
-                sum(step.log_p_B for step in trajectory.steps)
-                for trajectory in trajectories
-            ],
-            dtype=torch.float32,
-            device=self.device,
-        )
-        for traj_idx, trajectory in enumerate(trajectories):
-            for transition in trajectory.steps:
-                transitions.append(transition)
-                traj_indices.append(traj_idx)
-        if transitions:
-            batch_idx = torch.tensor(traj_indices, dtype=torch.long, device=self.device)
-            log_p_F = self.policy.log_prob(
-                [step.state for step in transitions],
-                [step.action for step in transitions],
-                beta[batch_idx],
-                preferences[batch_idx],
-            )
-            traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
-            traj_log_p_F.index_add_(0, batch_idx, log_p_F)
-        else:
-            traj_log_p_F = torch.zeros(len(trajectories), device=self.device)
-        # 3. Scalarize objectives, floor before log, and apply the reward exponent.
-        objective_rewards = torch.tensor(
-            [t.objective_rewards for t in trajectories],
-            dtype=torch.float32,
-            device=self.device,
-        )
-        scaled_log_R = (
-            scalarize_log_rewards(
-                objective_rewards,
-                preferences,
-                self.config.reward.moo_scalarization,
-                self.config.training.reward_floor,
-            )
-            * beta
-        )
-        tb_residual = log_Z + traj_log_p_F - traj_log_p_B - scaled_log_R
-        # Penalize the squared mismatch between forward and backward log flow.
-        traj_losses = tb_residual.square()
-        loss = traj_losses.mean()
-        # 4. Derive diagnostics from the same pre-update values without gradients.
-        # "batch_entropy" is trajectory surprisal on this online+replay batch,
-        # not categorical entropy or an unbiased on-policy entropy estimate.
-        with torch.no_grad():
-            is_valid = torch.tensor(
-                [value.valid for value in trajectories], device=self.device
-            )
-            info = {
-                "loss": loss.detach(),
-                "logZ": log_Z.mean(),
-                "beta": beta.mean(),
-                "logit_scale": self.model.logit_scale(cond_info).mean(),
-                "batch_entropy": -traj_log_p_F.mean(),
-                "traj_log_p_F": traj_log_p_F.mean(),
-                "traj_log_p_B": traj_log_p_B.mean(),
-                "scaled_log_R": scaled_log_R.mean(),
-                "tb_residual": tb_residual.mean(),
-                "online_loss": traj_losses[:num_online].mean(),
-                "replay_loss": traj_losses[num_online:].sum()
-                / max(1, len(trajectories) - num_online),
-                "valid_losses": (traj_losses * is_valid).sum()
-                / is_valid.sum().clamp_min(1),
-                "invalid_losses": (traj_losses * ~is_valid).sum()
-                / (~is_valid).sum().clamp_min(1),
-                "invalid_logprob": (traj_log_p_F * ~is_valid).sum()
-                / (~is_valid).sum().clamp_min(1),
-                "invalid_trajectories": (~is_valid).float().mean(),
-            }
-        return loss, info
 
     @torch.no_grad()
     def _update_ema(self) -> None:
@@ -438,8 +371,10 @@ class RxnFlowTrainer:
                     "final_smiles": value.final_smiles,
                     "reward": value.reward,
                     "objective_rewards": value.objective_rewards,
+                    "property_reward": value.property_reward,
+                    "property_violation": value.property_violation,
                     "beta": value.beta,
-                    "preferences": value.preferences,
+                    "preference": value.preference,
                     "valid": value.valid,
                     "invalid_reason": value.invalid_reason,
                     "traj": traj,
@@ -473,25 +408,30 @@ class RxnFlowTrainer:
                 started = perf_counter()
                 self.sampling_model.eval()
                 count = self.config.training.num_online
-                beta, preferences = self.condition_sampler.sample(count)
+                beta, preference = self.condition_sampler.sample(count)
                 online_trajs = self.sampling_policy.sample_from_model(
                     self.config.training.num_online,
                     random_action_prob=self.config.training.random_action_prob,
                     beta=beta,
-                    preferences=preferences,
+                    preference=preference,
                 )
                 sample_time = perf_counter() - started
                 self._assign_rewards(online_trajs)
                 # 2. Sample replay before insertion so online trajectories cannot be
                 # duplicated as replay entries in this same optimization batch.
-                batch = online_trajs + self.replay.sample(
+                replay_trajs = self.replay.sample(
                     self.config.training.num_replay, self.rng
                 )
+                batch = online_trajs + replay_trajs
                 self.replay.add(online_trajs, self.rng)
                 # 3. Update the policy/logZ, learning rates, and EMA sampling weights.
                 self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
-                loss, loss_info = self.compute_batch_losses(batch, len(online_trajs))
+                loss, loss_info = self.tb.compute_batch_losses(
+                    batch,
+                    num_online=len(online_trajs),
+                    num_replay=len(replay_trajs),
+                )
                 loss.backward()
                 # clip_grad_norm_ already returns the pre-clip norm. No second
                 # traversal of policy gradients is needed for diagnostics.
@@ -543,10 +483,15 @@ class RxnFlowTrainer:
                     "reward": sum(value.reward for value in online_trajs)
                     / len(online_trajs),
                     "objective_rewards": {
-                        name: sum(t.objective_rewards[i] for t in online_trajs)
+                        f"r_{name}": sum(t.objective_rewards[i] for t in online_trajs)
                         / len(online_trajs)
                         for i, name in enumerate(self.objectives)
                     },
+                    "property_reward": sum(t.property_reward for t in online_trajs)
+                    / len(online_trajs),
+                    "num_property_violations": sum(
+                        t.property_violation for t in online_trajs
+                    ),
                     "traj_lens": sum(len(value.steps) for value in online_trajs)
                     / len(online_trajs),
                     "sampling_time": sample_time,
@@ -570,13 +515,16 @@ class RxnFlowTrainer:
                     )
                     logger.info(
                         "Step %d/%d: loss=%.4f reward=%.4f valid=%.1f%% "
-                        "unique=%.1f%% replay=%d time=%.2fs | %s",
+                        "unique=%.1f%% property_reward=%.4f violations=%d "
+                        "replay=%d time=%.2fs | %s",
                         self.step,
                         final_step,
                         record["loss"],
                         record["reward"],
                         100 * record["num_valid"] / record["num_online"],
                         100 * record["num_unique"] / max(1, record["num_valid"]),
+                        record["property_reward"],
+                        record["num_property_violations"],
                         len(self.replay),
                         record["time"],
                         objectives,

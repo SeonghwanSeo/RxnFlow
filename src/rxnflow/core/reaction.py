@@ -12,6 +12,8 @@ from rdkit.Chem.rdChemReactions import (
     ReactionToSmarts,
 )
 
+from .molecule import Molecule
+
 
 def _compile(smarts: str) -> ChemicalReaction:
     reaction = ReactionFromSmarts(smarts)
@@ -22,29 +24,28 @@ def _compile(smarts: str) -> ChemicalReaction:
 
 
 def _run(
-    reaction: ChemicalReaction, reactants: tuple[Chem.Mol, ...]
-) -> list[tuple[Chem.Mol, ...]]:
+    reaction: ChemicalReaction, reactants: tuple[Molecule, ...]
+) -> list[tuple[Molecule, ...]]:
     assert len(reactants) == reaction.GetNumReactantTemplates()
-    products: dict[tuple[str, ...], tuple[Chem.Mol, ...]] = {}
-    # SMILES are only deduplication/order keys. Return sanitized molecules so
-    # atom/property checks do not need a Mol -> SMILES -> Mol round trip.
-    for product_set in reaction.RunReactants(reactants, 0):
+    products: dict[tuple[str, ...], tuple[Molecule, ...]] = {}
+    # Canonical SMILES deduplicate and order products; retain molecules for
+    # structural checks and reuse the same SMILES in reverse route enumeration.
+    reactant_rdmols = [m.rdmol for m in reactants]
+    for product_set in reaction.RunReactants(reactant_rdmols, 0):
         if len(product_set) != reaction.GetNumProductTemplates():
             continue
-        molecules: list[Chem.Mol] = []
+        molecules: list[Molecule] = []
         keys: list[str] = []
         for product in product_set:
             try:
-                # Enumerated matches can yield invalid valence/aromaticity.
-                # These candidates are discarded below; silence only their
-                # product validation, leaving input/template diagnostics visible.
+                # Discard invalid products and suppress their RDKit diagnostics.
                 with rdBase.BlockLogs():
                     Chem.SanitizeMol(product)
                     product = Chem.RemoveHs(product)
                     key = Chem.MolToSmiles(product)
             except (ValueError, RuntimeError, Chem.rdchem.KekulizeException):
                 break
-            molecules.append(product)
+            molecules.append(Molecule(smiles=key, rdmol=product))
             keys.append(key)
         if len(molecules) == len(product_set):
             products.setdefault(tuple(keys), tuple(molecules))
@@ -61,7 +62,7 @@ class Reaction:
         self.forward_reaction = _compile(forward)
         self.reverse_reaction = _compile(reverse)
 
-    def run_forward(self, *reactants: Chem.Mol) -> Chem.Mol | None:
+    def run_forward(self, *reactants: Molecule) -> Molecule | None:
         """Return the unique connected product, or None for an infeasible match.
 
         Incoming synthon orientation fixes the attachment site. Symmetry-related
@@ -71,7 +72,7 @@ class Reaction:
         products = [
             product_set[0]
             for product_set in _run(self.forward_reaction, tuple(reactants))
-            if len(product_set) == 1 and len(Chem.GetMolFrags(product_set[0])) == 1
+            if len(product_set) == 1 and len(Chem.GetMolFrags(product_set[0].rdmol)) == 1
         ]
         if len(products) > 1:
             raise ValueError(
@@ -79,7 +80,8 @@ class Reaction:
             )
         return products[0] if products else None
 
-    def run_reverse(self, product: Chem.Mol) -> list[tuple[Chem.Mol, ...]]:
+    def run_reverse(self, product: Molecule) -> list[tuple[Molecule, ...]]:
+        """Return all precursor sets with their canonical SMILES in sorted order."""
         # _run already enumerates and deduplicates every RDKit match. Truncating
         # here can discard the only decomposition whose synthon is in the catalog.
         return _run(self.reverse_reaction, (product,))
@@ -105,9 +107,8 @@ class UniReaction(Reaction):
             or self.reverse_reaction.GetNumReactantTemplates() != 1
             or self.reverse_reaction.GetNumProductTemplates() != 1
         ):
-            raise ValueError(f"invalid unary reaction shape: {self.name}")
-        # Unary transformations must act on the marked handle, not an unrelated
-        # ordinary functional group elsewhere in the molecule.
+            raise ValueError(f"invalid unimolecular reaction shape: {self.name}")
+        # Match each template's labeled dummy to its declared input/output type.
         for pattern, expected in (
             (self.forward_reaction.GetReactantTemplate(0), self.input_type),
             (self.forward_reaction.GetProductTemplate(0), self.output_type),
@@ -121,7 +122,7 @@ class UniReaction(Reaction):
             ]
             if sites != ([] if expected is None else [expected]):
                 raise ValueError(
-                    f"unary SMARTS site disagrees with its type: {self.name}"
+                    f"unimolecular SMARTS site disagrees with its type: {self.name}"
                 )
 
 
@@ -192,28 +193,39 @@ class BiReaction(Reaction):
 
 
 def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReaction]]:
-    """Compile the named unary reactions and permitted binary orientations."""
+    """Compile the named unimolecular reactions and permitted bimolecular orientations."""
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+
+    # Validate template sections and names.
     if not isinstance(raw, dict) or set(raw) != {"UniReaction", "BiReaction"}:
         raise ValueError(
             "reaction.yaml requires only UniReaction and BiReaction sections"
         )
-    uni = {
-        name: UniReaction(name=name, **value)
-        for name, value in raw["UniReaction"].items()
-    }
-    bi = {}
-    for name, value in raw["BiReaction"].items():
-        # Compile each permitted direction with the state first and incoming
-        # synthon second, so runtime execution always uses the same argument order.
-        for synthon_first in [False, True] if value["ordered"] else [False]:
-            direction = "synthon_first" if synthon_first else "state_first"
-            oriented_name = f"{name}_{direction}"
-            bi[oriented_name] = BiReaction(
-                name=oriented_name,
-                forward=value["forward"],
-                reverse=value["reverse"],
-                synthon_types=tuple(value["synthon_types"]),
-                synthon_first=synthon_first,
-            )
+    # ParameterDict uses reaction names as keys; dots separate module paths.
+    for section in ("UniReaction", "BiReaction"):
+        for name in raw[section]:
+            if "." in name:
+                raise ValueError(f"reaction name must not contain '.': {name}")
+
+    # Compile unimolecular reactions.
+    uni: dict[str, UniReaction] = {}
+    for name, spec in raw["UniReaction"].items():
+        uni[name] = UniReaction(name, **spec)
+
+    # Compile the permitted state/synthon orientations for bimolecular reactions.
+    bi: dict[str, BiReaction] = {}
+    for name, spec in raw["BiReaction"].items():
+        shared = {
+            "forward": spec["forward"],
+            "reverse": spec["reverse"],
+            "synthon_types": tuple(spec["synthon_types"]),
+        }
+        if spec["ordered"]:
+            # r1/r2 place the state in the first/second original SMARTS position.
+            bi[f"{name}_r1"] = BiReaction(f"{name}_r1", **shared, synthon_first=False)
+            bi[f"{name}_r2"] = BiReaction(f"{name}_r2", **shared, synthon_first=True)
+        else:
+            # Keep one orientation and the original name; the state comes first.
+            bi[name] = BiReaction(name, **shared)
+
     return uni, bi

@@ -17,16 +17,16 @@ class MyReward(RewardFunction):
         return np.array(qeds, dtype=np.float32).reshape(-1, 1)
 ```
 
-- Rewards must be non-negative. The scores will be automatically clipped `1e-5` for numerical stability.
+- Return finite, non-negative scores.
 - Return a float32 NumPy array of shape `[batch, num_objectives]`, including for an empty batch. Columns follow the order in `objectives`.
-- Return the individual objective scores; RxnFlow applies preference weights.
+- Return the individual objective scores; RxnFlow applies preference weights and the configured [terminal property penalty](conditioning.md#property-rewards). Do not add the framework's property penalty as an MOO objective.
 - Assign zero scores to unwanted molecules inside `score()`, preserving the input order and batch size. This lowers their reward; it does not remove them from sample outputs.
 
-For direct evaluation, use `reward.run(mols)` or `reward(mols)`. See [MW/logP](../examples/mw_logp.py) for a runnable two-objective example.
+For direct evaluation, use `reward.run(mols)` or `reward(mols)` to obtain individual objective scores. See [MW/logP](../examples/mw_logp.py) for a runnable two-objective example.
 
 ## Pass reward settings
 
-Use `reward.settings` to configure your reward's constructor. For example, reward molecules whose molecular weight is close to a target. The distance `abs(mw - target_mw)` is converted to `1 / (1 + distance)` so closer molecules receive higher rewards:
+Use `reward.settings` to configure your reward's constructor. For example, reward molecules whose molecular weight is close to a target:
 
 ```python
 import numpy as np
@@ -97,13 +97,13 @@ class MWLogPReward(RewardFunction):
         return np.array(rewards, dtype=np.float32).reshape(-1, 2)
 ```
 
-The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`. The inverse transform rewards lower MW; the sigmoid rewards higher logP, including when raw logP is negative. Positive `mw_scale` and `logp_scale` control each score's sensitivity.
+The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`. Positive `mw_scale` and `logp_scale` control each score's sensitivity.
 
 ```yaml
 reward:
   beta: "uniform(1,64)"
   moo_scalarization: mul
-  moo_preferences: "dirichlet(1.5)"
+  moo_preference: "dirichlet(1.5)"
 ```
 
 Construct `MWLogPReward()` in your training script. The [mw_logp.yaml](../configs/mw_logp.yaml) configuration varies beta and objective preferences. This is a descriptor optimization example; the extent of the trade-off depends on the available molecules.

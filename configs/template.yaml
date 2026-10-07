@@ -4,7 +4,8 @@ env_dir: /path/to/prepared/environment
 reward:
   beta: "32" # scalar | uniform(lower,upper)
   moo_scalarization: mul # mul | sum
-  moo_preferences: "none" # none | uniform | dirichlet(alpha)
+  moo_preference: "none" # none | uniform | dirichlet(alpha)
+  property_penalty_ratio: 0.2
   settings: {}
 
 property_penalty: {}
@@ -26,9 +27,8 @@ model:
   state_dim: 256
   num_state_layers: 4
   synthon_dim: 256
-  num_action_layers: 3
-  num_synthon_layers: 3
-  dropout: 0.0
+  num_action_layers: 2
+  num_synthon_layers: 2
 
 training:
   log_every: 10
@@ -43,7 +43,8 @@ training:
   learning_rate_logZ: 0.01
   lr_decay_steps: 10000
   weight_decay: 1e-8
-  reward_floor: 0.00001
+  reward_floor: 1e-5
+  loss_fn: mse # mse | mae | huber
   random_action_prob: 0.1
   backward_synthon_penalty: 100.0
   retrosynthesis_workers: 4

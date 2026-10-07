@@ -1,6 +1,6 @@
 # Reward conditioning
 
-Set `reward.beta`, `reward.moo_scalarization` and `reward.moo_preferences` in your training configuration. Return individual objective scores from your [reward class](rewards.md); RxnFlow combines them and applies the reward exponent.
+Set `reward.beta`, `reward.moo_scalarization` and `reward.moo_preference` in your training configuration. Return individual objective scores from your [reward class](rewards.md); RxnFlow combines them and applies the reward exponent.
 
 ## Reward exponent
 
@@ -26,13 +26,19 @@ With `mul`, a low score in one objective reduces the reward even when another is
 
 Weights are normalized to sum to the number of objectives for `mul`, or to one for `sum`. For two objectives, `fixed(0.3,0.7)` gives weights `[0.6, 1.4]` for `mul` and `[0.3, 0.7]` for `sum`.
 
-`training.reward_floor` is applied before taking logarithms: to each objective score for `mul`, or to the combined reward for `sum`.
+## Property rewards
+
+Molecules exceeding `property_penalty` limits or `generation.max_atoms` receive lower rewards, independently of MOO preferences.
+
+- `reward.property_penalty_ratio` controls how gradually rewards decrease beyond a limit. The default `0.2` uses 20% of the limit as the smoothing width; larger values give gentler penalties.
+- If the ratio or a limit is zero, violating that limit gives zero reward.
+- Molecules and trajectories are retained even when they exceed a limit.
 
 ## Objective preferences
 
 Preferences follow the column order in your reward's `objectives` tuple.
 
-| `moo_preferences` | Use |
+| `moo_preference` | Use |
 | --- | --- |
 | `"none"` | Equal weights throughout training and sampling. |
 | `"fixed(0.3,0.7)"` | Fixed relative weights for two objectives. |
@@ -49,7 +55,7 @@ For example, to train across both exponents and trade-offs:
 reward:
   beta: "uniform(1,64)"
   moo_scalarization: mul
-  moo_preferences: "uniform"
+  moo_preference: "uniform"
 ```
 
 ## Choose conditions when sampling
@@ -60,4 +66,4 @@ Omitted beta and preferences reuse their training settings.
 - `none` keeps equal weights. Fixed-preference training requires the same relative weights.
 - Training with `uniform` or `dirichlet(...)` allows you to choose a fixed trade-off or another preference distribution at sampling.
 
-Use `--beta` and `--preferences` in the [sampling command](training.md#sampling), or the corresponding arguments to `RxnFlowSampler.sample()`.
+Use `--beta` and `--preference` in the [sampling command](training.md#sampling), or the corresponding arguments to `RxnFlowSampler.sample()`.

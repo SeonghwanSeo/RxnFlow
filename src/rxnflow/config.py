@@ -49,12 +49,13 @@ class RewardConfig:
 
     # Reward exponent and preference sampling specifications.
     beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [32.0]))
-    moo_preferences: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
+    moo_preference: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
     moo_scalarization: Literal["sum", "mul"] = "mul"
+    property_penalty_ratio: float = 0.2
     settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        for spec in (self.beta, self.moo_preferences):
+        for spec in (self.beta, self.moo_preference):
             if (
                 not isinstance(spec, tuple)
                 or len(spec) != 2
@@ -66,6 +67,13 @@ class RewardConfig:
                 )
         if self.moo_scalarization not in ("sum", "mul"):
             raise ValueError("reward.moo_scalarization must be sum or mul")
+        if (
+            not math.isfinite(self.property_penalty_ratio)
+            or self.property_penalty_ratio < 0
+        ):
+            raise ValueError(
+                "reward.property_penalty_ratio must be finite and non-negative"
+            )
         if not isinstance(self.settings, dict):
             raise ValueError("reward.settings must be a mapping")
 
@@ -77,10 +85,9 @@ class ModelConfig:
     state_dim: int = 256
     num_state_layers: int = 4
     synthon_dim: int = 256
-    num_synthon_layers: int = 3
+    num_synthon_layers: int = 2
     hidden_dim: int = 256
-    num_action_layers: int = 3
-    dropout: float = 0.0
+    num_action_layers: int = 2
 
     def validate(self) -> None:
         for name, value in (
@@ -131,6 +138,7 @@ class TrainingConfig:
     lr_decay_steps: float = 10_000
     weight_decay: float = 1e-8
     reward_floor: float = 1e-5
+    loss_fn: Literal["mse", "mae", "huber"] = "mse"
     random_action_prob: float = 0.1
     backward_synthon_penalty: float = 100.0
     retrosynthesis_workers: int = 4
@@ -172,6 +180,8 @@ class TrainingConfig:
             raise ValueError("learning rates and decay steps must be positive")
         if not math.isfinite(self.reward_floor) or self.reward_floor <= 0:
             raise ValueError("training.reward_floor must be finite and positive")
+        if self.loss_fn not in ("mse", "mae", "huber"):
+            raise ValueError("training.loss_fn must be mse, mae, or huber")
         if not 0 <= self.random_action_prob <= 1:
             raise ValueError("training.random_action_prob must be in [0, 1]")
         if not 0 <= self.ema_decay < 1:
@@ -221,7 +231,7 @@ class Config:
         """Return the shallow user-facing YAML representation."""
 
         reward = asdict(self.reward)
-        for name in ("beta", "moo_preferences"):
+        for name in ("beta", "moo_preference"):
             distribution, params = reward[name]
             reward[name] = (
                 "none"
@@ -250,7 +260,7 @@ class Config:
             raise ValueError(f"unknown configuration fields: {sorted(unknown)}")
         reward = dict(raw["reward"])
         # JSON/OmegaConf serialize tuples as sequences; restore the typed config.
-        for name in ("beta", "moo_preferences"):
+        for name in ("beta", "moo_preference"):
             dist, params = reward[name]
             reward[name] = (dist, list(params))
         cfg = cls(
@@ -278,7 +288,7 @@ class Config:
         if reward is not None:
             if not isinstance(reward, dict):
                 raise ValueError("reward must be a mapping")
-            for name in ("beta", "moo_preferences"):
+            for name in ("beta", "moo_preference"):
                 if name in reward:
                     reward[name] = parse_distribution(reward[name])
             if "settings" in reward and not isinstance(reward["settings"], dict):

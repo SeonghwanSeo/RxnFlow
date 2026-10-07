@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from enum import IntEnum
 from functools import cached_property
-from typing import Any, Literal
+from typing import Any, Literal, TypeAlias
 
 import numpy as np
 from rdkit import Chem
+
+from .molecule import Molecule
 
 
 class ActionType(IntEnum):
@@ -17,6 +19,10 @@ class ActionType(IntEnum):
     UNIRXN_TERMINAL = 2
     BIRXN_BRICK = 3
     BIRXN_LINKER = 4
+
+    @property
+    def is_first(self) -> bool:
+        return self == ActionType.FIRST_SYNTHON
 
     @property
     def is_unirxn(self) -> bool:
@@ -29,21 +35,35 @@ class ActionType(IntEnum):
 
 @dataclass(frozen=True)
 class State:
-    """An RDKit molecular graph and trajectory metadata.
+    """A molecule and trajectory metadata; the empty state has no molecule."""
 
-    Treat mol as read-only: reactions return new molecules, and edits such as
-    restoring a first brick's isotope operate on a copy. Model tensors and
-    descriptors read this same molecule; SMILES only serialize/identify it.
-    """
-
-    mol: Chem.Mol | None = field(default=None, repr=False)
+    molecule: Molecule | None = None
     num_reactions: int = 0
     terminated: bool = False
     num_synthons: int = 0
+    # graph features
+    _cache: dict[str, Any] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @cached_property
+    def attachment_type(self) -> int | None:
+        if self.rdmol is None:
+            return None
+        else:
+            attach_atoms = [
+                atom for atom in self.rdmol.GetAtoms() if atom.GetAtomicNum() == 0
+            ]
+            assert len(attach_atoms) == 1
+            return attach_atoms[0].GetIsotope()
+
+    @property
+    def rdmol(self) -> Chem.Mol | None:
+        return None if self.molecule is None else self.molecule.rdmol
+
+    @property
     def smiles(self) -> str:
-        return "" if self.mol is None else Chem.MolToSmiles(self.mol)
+        return "" if self.molecule is None else self.molecule.smiles
 
     @classmethod
     def from_smiles(
@@ -53,10 +73,16 @@ class State:
         terminated: bool = False,
         num_synthons: int = 1,
     ) -> State:
-        mol = Chem.MolFromSmiles(smiles) if smiles else None
-        if smiles and mol is None:
+        rdmol = Chem.MolFromSmiles(smiles) if smiles else None
+        if smiles and rdmol is None:
             raise ValueError(f"invalid state SMILES: {smiles}")
-        return cls(mol, num_reactions, terminated, num_synthons if mol is not None else 0)
+        molecule = None if rdmol is None else Molecule(rdmol=rdmol)
+        return cls(
+            molecule,
+            num_reactions,
+            terminated,
+            num_synthons if molecule is not None else 0,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -100,16 +126,20 @@ class Action:
 BackwardTrajectory = list[tuple[Action, str]]
 
 
+# Action name and optional synthon library; unimolecular actions use None.
+ActionKey: TypeAlias = tuple[str, str | None]
+
+
 @dataclass
 class ActionSubspace:
     """One (reaction, library) pair, independent of policy logits.
 
-    A unary reaction uses library=None and has one action. num_actions is the
+    A unimolecular reaction uses library=None and has one action. num_actions is the
     full library size; sample_indices=None selects that full range. A sampled
     subspace holds one array mapping columns back to original synthon indices.
     """
 
-    name: tuple[str, str | None]
+    name: ActionKey
     action_type: ActionType
     num_actions: int
     sample_indices: np.ndarray | None = None
@@ -161,7 +191,7 @@ class Transition:
         )
 
 
-InvalidReason = Literal["no_valid_action", "invalid_transition", "max_reactions"]
+InvalidReason = Literal["invalid_transition", "max_reactions"]
 
 
 @dataclass
@@ -170,8 +200,10 @@ class Trajectory:
     final_smiles: str
     # Conditions are fixed for the entire trajectory, including replay.
     beta: float
-    preferences: list[float]
+    preference: list[float]
     objective_rewards: list[float] = field(default_factory=list)
+    property_reward: float = 1.0
+    property_violation: bool = False
     reward: float = 0.0
     valid: bool = True
     invalid_reason: InvalidReason | None = None
@@ -181,8 +213,10 @@ class Trajectory:
             "steps": [step.to_dict() for step in self.steps],
             "final_smiles": self.final_smiles,
             "beta": self.beta,
-            "preferences": list(self.preferences),
+            "preference": list(self.preference),
             "objective_rewards": list(self.objective_rewards),
+            "property_reward": self.property_reward,
+            "property_violation": self.property_violation,
             "reward": self.reward,
             "valid": self.valid,
             "invalid_reason": self.invalid_reason,
@@ -194,8 +228,10 @@ class Trajectory:
             steps=[Transition.from_dict(step) for step in data["steps"]],
             final_smiles=data["final_smiles"],
             beta=data["beta"],
-            preferences=list(data["preferences"]),
+            preference=list(data["preference"]),
             objective_rewards=list(data["objective_rewards"]),
+            property_reward=data["property_reward"],
+            property_violation=data["property_violation"],
             reward=data["reward"],
             valid=data["valid"],
             invalid_reason=data["invalid_reason"],

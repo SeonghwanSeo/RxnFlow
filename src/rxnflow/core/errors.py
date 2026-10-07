@@ -3,7 +3,3 @@
 
 class InvalidTransition(ValueError):
     """A selected action violates synthesis budgets or has no valid product."""
-
-
-class NoValidActions(ValueError):
-    """The sampled space has no budget-feasible continuation."""

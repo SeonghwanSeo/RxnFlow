@@ -31,7 +31,7 @@ dependencies = [
 dev = ["build>=1", "ruff>=0.5", "wheel>=0.45"]
 
 [tool.setuptools.dynamic]
-version = { attr = "rxnflow.__version__" }
+version = { attr = "rxnflow.__version__.__version__" }
 
 [tool.ruff]
 target-version = "py310"

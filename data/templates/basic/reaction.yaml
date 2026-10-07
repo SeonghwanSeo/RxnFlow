@@ -1,27 +1,26 @@
+# These rules operate directly in synthon space.
+# Reverse rules enumerate precursors; they are not experimental reverse protocols.
 UniReaction:
-  # These rules operate directly in synthon space. Reverse rules enumerate
-  # precursors; they are not experimental reverse protocols.
   boc_deprotection:
-    input_type: 33
-    output_type: 1
     forward: "[#7:1]-[33*]>>[#7:1]-[1*]"
     reverse: "[#7:1]-[1*]>>[#7:1]-[33*]"
+    input_type: 33
+    output_type: 1
   methyl_ester_hydrolysis:
-    input_type: 34
-    output_type: 3
     forward: "[#6:1]-[34*]>>[#6:1]-[3*]"
     reverse: "[#6:1]-[3*]>>[#6:1]-[34*]"
-  ethyl_ester_hydrolysis:
-    input_type: 35
+    input_type: 34
     output_type: 3
+  ethyl_ester_hydrolysis:
     forward: "[#6:1]-[35*]>>[#6:1]-[3*]"
     reverse: "[#6:1]-[3*]>>[#6:1]-[35*]"
+    input_type: 35
+    output_type: 3
   nitrile_to_tetrazole:
-    input_type: 11
-    # Consuming the last handle terminates the trajectory immediately.
-    output_type: null
     forward: "[#6:1]-[11*]>>[#6:1]-c1nnn[nH]1"
     reverse: "[#6:1]-c1nnn[nH]1>>[#6:1]-[11*]"
+    input_type: 11
+    output_type: null
 
 BiReaction:
   amide_coupling:
