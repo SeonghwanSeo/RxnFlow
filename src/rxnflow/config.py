@@ -85,9 +85,9 @@ class ModelConfig:
     state_dim: int = 256
     num_state_layers: int = 4
     synthon_dim: int = 256
-    num_synthon_layers: int = 3
+    num_synthon_layers: int = 2
     hidden_dim: int = 256
-    num_action_layers: int = 3
+    num_action_layers: int = 2
 
     def validate(self) -> None:
         for name, value in (

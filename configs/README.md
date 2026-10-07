@@ -70,9 +70,9 @@ MLP layer counts include the output linear layer.
 | `model.state_dim` | `256` | State graph encoder width. |
 | `model.num_state_layers` | `4` | State graph message-passing layers. |
 | `model.synthon_dim` | `256` | Synthon embedding width. |
-| `model.num_synthon_layers` | `3` | Synthon encoder MLP layers. |
+| `model.num_synthon_layers` | `2` | Synthon encoder MLP layers. |
 | `model.hidden_dim` | `256` | Condition/reaction embedding and action-head hidden width. |
-| `model.num_action_layers` | `3` | Action-head MLP layers. |
+| `model.num_action_layers` | `2` | Action-head MLP layers. |
 
 ## Training settings
 
