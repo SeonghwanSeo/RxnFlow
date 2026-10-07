@@ -1,6 +1,6 @@
 # Reward conditioning
 
-Set `reward.beta`, `reward.moo_scalarization` and `reward.moo_preferences` in your training configuration. Return individual objective scores from your [reward class](rewards.md); RxnFlow combines them and applies the reward exponent.
+Set `reward.beta`, `reward.moo_scalarization` and `reward.moo_preference` in your training configuration. Return individual objective scores from your [reward class](rewards.md); RxnFlow combines them and applies the reward exponent.
 
 ## Reward exponent
 
@@ -38,7 +38,7 @@ Molecules exceeding `property_penalty` limits or `generation.max_atoms` receive 
 
 Preferences follow the column order in your reward's `objectives` tuple.
 
-| `moo_preferences` | Use |
+| `moo_preference` | Use |
 | --- | --- |
 | `"none"` | Equal weights throughout training and sampling. |
 | `"fixed(0.3,0.7)"` | Fixed relative weights for two objectives. |
@@ -55,7 +55,7 @@ For example, to train across both exponents and trade-offs:
 reward:
   beta: "uniform(1,64)"
   moo_scalarization: mul
-  moo_preferences: "uniform"
+  moo_preference: "uniform"
 ```
 
 ## Choose conditions when sampling
@@ -66,4 +66,4 @@ Omitted beta and preferences reuse their training settings.
 - `none` keeps equal weights. Fixed-preference training requires the same relative weights.
 - Training with `uniform` or `dirichlet(...)` allows you to choose a fixed trade-off or another preference distribution at sampling.
 
-Use `--beta` and `--preferences` in the [sampling command](training.md#sampling), or the corresponding arguments to `RxnFlowSampler.sample()`.
+Use `--beta` and `--preference` in the [sampling command](training.md#sampling), or the corresponding arguments to `RxnFlowSampler.sample()`.

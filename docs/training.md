@@ -64,10 +64,10 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 
 ### Sample records
 
-`samples/step_XXXXXX.jsonl` stores individual online attempts. Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `preferences`, `valid`, `invalid_reason` and `traj`.
+`samples/step_XXXXXX.jsonl` stores individual online attempts. Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `preference`, `valid`, `invalid_reason` and `traj`.
 
 - `objective_rewards` follows the reward class's `objectives` order.
-- `preferences` stores effective weights: their sum is the number of objectives for `mul`, or one for `sum`.
+- `preference` stores effective weights: their sum is the number of objectives for `mul`, or one for `sum`.
 - `traj` records the pre-reaction state, reaction name and added synthon. Initial synthon selection is omitted because it is already represented in the first reaction's state.
 
 ### Training log metrics
@@ -144,7 +144,7 @@ python scripts/sample.py \
   --output samples.jsonl
 ```
 
-Use `--beta 32` to select a fixed exponent, or `--preferences "fixed(0.3,0.7)"` to select a trade-off for two objectives. See [sampling conditions](conditioning.md#choose-conditions-when-sampling) for the options supported by your training settings.
+Use `--beta 32` to select a fixed exponent, or `--preference "fixed(0.3,0.7)"` to select a trade-off for two objectives. See [sampling conditions](conditioning.md#choose-conditions-when-sampling) for the options supported by your training settings.
 
 - `--num-samples` sets the number of trajectory attempts. Invalid results are excluded without retrying, so fewer molecules may be returned.
 - Sampling prints the training reward configuration and the requested sampling settings before generating molecules.
@@ -155,7 +155,7 @@ Use `--beta 32` to select a fixed exponent, or `--preferences "fixed(0.3,0.7)"` 
 Supported output formats:
 
 - `.smi`: one `SMILES<TAB>sample_i` record per line, numbered from zero in saved-result order.
-- `.jsonl`: one record per line containing `smiles`, `traj` and `metadata`. Metadata holds `beta` and `preferences`; trajectories include initial synthon selection and each action's product.
+- `.jsonl`: one record per line containing `smiles`, `traj` and `metadata`. Metadata holds `beta` and `preference`; trajectories include initial synthon selection and each action's product.
 - `.json`: the same records as a single array, formatted with two-space indentation.
 
 ### JSON and JSONL records
@@ -167,14 +167,14 @@ Both formats store the same sample records. JSON contains an array of records wi
 | `smiles` | Final generated molecule's SMILES. |
 | `traj` | Ordered list of actions, starting with initial synthon selection and ending with the terminal product. |
 | `metadata.beta` | Reward exponent sampled for this trajectory, including when fixed during training. |
-| `metadata.preferences` | Effective objective weights in the reward class's `objectives` order. They sum to the number of objectives for `mul`, or to one for `sum`. |
+| `metadata.preference` | Effective objective weights in the reward class's `objectives` order. They sum to the number of objectives for `mul`, or to one for `sum`. |
 
 For example, two objectives with equal weights under `mul` have:
 
 ```json
 {
   "beta": 32.0,
-  "preferences": [1.0, 1.0]
+  "preference": [1.0, 1.0]
 }
 ```
 

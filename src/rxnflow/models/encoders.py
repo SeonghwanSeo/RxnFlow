@@ -17,17 +17,17 @@ class ConditionEncoder(nn.Module):
         super().__init__()
         # Normalized beta plus four sine/cosine pairs.
         self.emb_beta = mlp(9, hidden_dim, hidden_dim, 2)
-        self.emb_preferences = mlp(num_objectives, hidden_dim, hidden_dim, 2)
+        self.emb_preference = mlp(num_objectives, hidden_dim, hidden_dim, 2)
 
-    def forward(self, beta: torch.Tensor, preferences: torch.Tensor) -> torch.Tensor:
-        """beta: [B], preferences: [B, num_objectives]; return [B, H]."""
+    def forward(self, beta: torch.Tensor, preference: torch.Tensor) -> torch.Tensor:
+        """beta: [B], preference: [B, num_objectives]; return [B, H]."""
         # Fixed coordinates are independent of the sampling range. The linear
         # term u distinguishes values that share the same periodic features.
         u = (beta[:, None] - 1.0) / 63.0
         frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
         angles = 2 * math.pi * u * frequencies
         features = torch.cat([u, angles.sin(), angles.cos()], dim=-1)
-        return self.emb_beta(features) + self.emb_preferences(preferences)
+        return self.emb_beta(features) + self.emb_preference(preference)
 
 
 class SynthonEncoder(nn.Module):

@@ -103,7 +103,7 @@ The result has shape `[batch, 2]`, with MW rewards first and logP rewards second
 reward:
   beta: "uniform(1,64)"
   moo_scalarization: mul
-  moo_preferences: "dirichlet(1.5)"
+  moo_preference: "dirichlet(1.5)"
 ```
 
 Construct `MWLogPReward()` in your training script. The [mw_logp.yaml](../configs/mw_logp.yaml) configuration varies beta and objective preferences. This is a descriptor optimization example; the extent of the trade-off depends on the available molecules.

@@ -193,7 +193,7 @@ class RxnFlowTrainer:
         self.step = 0
         self.condition_sampler: ConditionSampler = ConditionSampler(
             cfg.reward.beta,
-            cfg.reward.moo_preferences,
+            cfg.reward.moo_preference,
             self.num_objectives,
             cfg.reward.moo_scalarization,
         )
@@ -310,13 +310,13 @@ class RxnFlowTrainer:
             self.config.reward.property_penalty_ratio,
         )
         # Property penalties multiply the scalarized reward, independently of
-        # MOO preferences. Floor inputs here; TB also floors the final reward.
+        # MOO preference. Floor inputs here; TB also floors the final reward.
         reward_floor = self.config.training.reward_floor
-        preferences = np.array([t.preferences for t in trajectories], dtype=np.float64)
+        preference = np.array([t.preference for t in trajectories], dtype=np.float64)
         log_rewards = scalarize_log_rewards(
             values.astype(np.float64).clip(min=reward_floor),
             moo_scalarization=self.config.reward.moo_scalarization,
-            moo_preference=preferences,
+            moo_preference=preference,
         )
         log_rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
         scalar_rewards = np.exp(log_rewards).tolist()
@@ -374,7 +374,7 @@ class RxnFlowTrainer:
                     "property_reward": value.property_reward,
                     "property_violation": value.property_violation,
                     "beta": value.beta,
-                    "preferences": value.preferences,
+                    "preference": value.preference,
                     "valid": value.valid,
                     "invalid_reason": value.invalid_reason,
                     "traj": traj,
@@ -408,12 +408,12 @@ class RxnFlowTrainer:
                 started = perf_counter()
                 self.sampling_model.eval()
                 count = self.config.training.num_online
-                beta, preferences = self.condition_sampler.sample(count)
+                beta, preference = self.condition_sampler.sample(count)
                 online_trajs = self.sampling_policy.sample_from_model(
                     self.config.training.num_online,
                     random_action_prob=self.config.training.random_action_prob,
                     beta=beta,
-                    preferences=preferences,
+                    preference=preference,
                 )
                 sample_time = perf_counter() - started
                 self._assign_rewards(online_trajs)

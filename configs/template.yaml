@@ -4,7 +4,7 @@ env_dir: /path/to/prepared/environment
 reward:
   beta: "32" # scalar | uniform(lower,upper)
   moo_scalarization: mul # mul | sum
-  moo_preferences: "none" # none | uniform | dirichlet(alpha)
+  moo_preference: "none" # none | uniform | dirichlet(alpha)
   property_penalty_ratio: 0.2
   settings: {}
 

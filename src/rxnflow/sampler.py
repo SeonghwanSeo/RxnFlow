@@ -100,7 +100,7 @@ class RxnFlowSampler:
             traj=actions,
             metadata={
                 "beta": trajectory.beta,
-                "preferences": trajectory.preferences,
+                "preference": trajectory.preference,
             },
         )
 
@@ -109,14 +109,14 @@ class RxnFlowSampler:
         num_samples: int,
         *,
         beta: tuple[str, list[float]] | None = None,
-        preferences: tuple[str, list[float]] | None = None,
+        preference: tuple[str, list[float]] | None = None,
         batch_size: int = 64,
         softmax_temperature: float = 1.0,
         seed: int | None = None,
     ) -> list[SamplingResult]:
         """Attempt num_samples trajectories and return the valid results.
 
-        beta and preferences are (distribution, parameters) tuples. Omitted
+        beta and preference are (distribution, parameters) tuples. Omitted
         conditions use their training settings. batch_size is independent of the
         training batch size; softmax_temperature scales the policy softmax.
         A supplied seed resets sampling RNGs; None continues their current state.
@@ -124,15 +124,15 @@ class RxnFlowSampler:
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
         if beta is None:
             beta = self.config.reward.beta
-        if preferences is None:
-            preferences = self.config.reward.moo_preferences
-        if (preferences[0] == "none") != (
-            self.config.reward.moo_preferences[0] == "none"
+        if preference is None:
+            preference = self.config.reward.moo_preference
+        if (preference[0] == "none") != (
+            self.config.reward.moo_preference[0] == "none"
         ):
-            raise ValueError("preferences 'none' must match the checkpoint setting")
+            raise ValueError("preference 'none' must match the checkpoint setting")
         conditions = ConditionSampler(
             beta,
-            preferences,
+            preference,
             len(self.objectives),
             self.config.reward.moo_scalarization,
         )
@@ -144,15 +144,15 @@ class RxnFlowSampler:
                 raise ValueError("fixed-beta training requires the same fixed beta")
         elif min(beta[1]) < trained_beta[1][0] or max(beta[1]) > trained_beta[1][1]:
             raise ValueError("sampling beta must stay within the training range")
-        trained_preferences = self.config.reward.moo_preferences
-        if trained_preferences[0] == "fixed":
-            if preferences[0] != "fixed":
-                raise ValueError("fixed-preference training requires fixed preferences")
-            trained = np.asarray(trained_preferences[1])
-            requested = np.asarray(preferences[1])
+        trained_preference = self.config.reward.moo_preference
+        if trained_preference[0] == "fixed":
+            if preference[0] != "fixed":
+                raise ValueError("fixed-preference training requires fixed preference")
+            trained = np.asarray(trained_preference[1])
+            requested = np.asarray(preference[1])
             if not np.allclose(trained / trained.sum(), requested / requested.sum()):
                 raise ValueError(
-                    "sampling preferences differ from fixed training weights"
+                    "sampling preference differ from fixed training weights"
                 )
         if batch_size <= 0:
             raise ValueError("batch size must be positive")
@@ -175,7 +175,7 @@ class RxnFlowSampler:
                     "num_samples": num_samples,
                     "batch_size": batch_size,
                     "beta": beta,
-                    "preferences": preferences,
+                    "preference": preference,
                     "moo_scalarization": self.config.reward.moo_scalarization,
                     "softmax_temperature": softmax_temperature,
                     "seed": seed,
@@ -197,7 +197,7 @@ class RxnFlowSampler:
                 0.0,
                 analyze_backward=False,
                 beta=sampled_beta,
-                preferences=weights,
+                preference=weights,
             )
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
         return [self._result(trajectory) for trajectory in trajectories]

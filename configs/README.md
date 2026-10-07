@@ -16,7 +16,7 @@ See [custom rewards](../docs/rewards.md) for implementation and [conditioning](.
 | --- | --- | --- |
 | `reward.beta` | `"32"` | Reward exponent: a fixed value or `uniform(lower,upper)`. |
 | `reward.moo_scalarization` | `mul` | Combine objectives by weighted product (`mul`) or weighted sum (`sum`). |
-| `reward.moo_preferences` | `"none"` | Objective weights: `none`, `fixed(...)`, `uniform` or `dirichlet(...)`. |
+| `reward.moo_preference` | `"none"` | Objective weights: `none`, `fixed(...)`, `uniform` or `dirichlet(...)`. |
 | `reward.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
 | `reward.settings` | `{}` | Constructor arguments for your reward class. |
 

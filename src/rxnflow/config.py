@@ -49,13 +49,13 @@ class RewardConfig:
 
     # Reward exponent and preference sampling specifications.
     beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [32.0]))
-    moo_preferences: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
+    moo_preference: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
     moo_scalarization: Literal["sum", "mul"] = "mul"
     property_penalty_ratio: float = 0.2
     settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        for spec in (self.beta, self.moo_preferences):
+        for spec in (self.beta, self.moo_preference):
             if (
                 not isinstance(spec, tuple)
                 or len(spec) != 2
@@ -231,7 +231,7 @@ class Config:
         """Return the shallow user-facing YAML representation."""
 
         reward = asdict(self.reward)
-        for name in ("beta", "moo_preferences"):
+        for name in ("beta", "moo_preference"):
             distribution, params = reward[name]
             reward[name] = (
                 "none"
@@ -260,7 +260,7 @@ class Config:
             raise ValueError(f"unknown configuration fields: {sorted(unknown)}")
         reward = dict(raw["reward"])
         # JSON/OmegaConf serialize tuples as sequences; restore the typed config.
-        for name in ("beta", "moo_preferences"):
+        for name in ("beta", "moo_preference"):
             dist, params = reward[name]
             reward[name] = (dist, list(params))
         cfg = cls(
@@ -288,7 +288,7 @@ class Config:
         if reward is not None:
             if not isinstance(reward, dict):
                 raise ValueError("reward must be a mapping")
-            for name in ("beta", "moo_preferences"):
+            for name in ("beta", "moo_preference"):
                 if name in reward:
                     reward[name] = parse_distribution(reward[name])
             if "settings" in reward and not isinstance(reward["settings"], dict):

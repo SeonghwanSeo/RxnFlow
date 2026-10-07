@@ -57,7 +57,7 @@ class TrajectoryBalance:
 
         # 1. Compute rewards.
         beta = np.array([t.beta for t in trajectories], dtype=np.float64)
-        preference = np.array([t.preferences for t in trajectories], dtype=np.float64)
+        preference = np.array([t.preference for t in trajectories], dtype=np.float64)
         objective_rewards = np.array(
             [t.objective_rewards for t in trajectories], dtype=np.float64
         ).clip(min=self.reward_floor)

@@ -43,7 +43,7 @@ def main(argv: list[str] | None = None) -> None:
         help="defaults to checkpoint setting; reward exponent: 32 or uniform(1,64)",
     )
     parser.add_argument(
-        "--preferences",
+        "--preference",
         default=None,
         help=(
             "defaults to checkpoint setting; none, uniform, dirichlet(alpha), or "
@@ -73,8 +73,8 @@ def main(argv: list[str] | None = None) -> None:
         seed=args.seed,
         beta=parse_distribution(args.beta) if args.beta is not None else None,
         batch_size=args.batch_size,
-        preferences=parse_distribution(args.preferences)
-        if args.preferences is not None
+        preference=parse_distribution(args.preference)
+        if args.preference is not None
         else None,
     )
     sampler.write(results, args.output, output_format=args.format)

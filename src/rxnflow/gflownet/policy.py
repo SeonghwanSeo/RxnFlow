@@ -221,7 +221,7 @@ class RxnFlowPolicy:
         self,
         states: list[State],
         beta: torch.Tensor,
-        preferences: torch.Tensor,
+        preference: torch.Tensor,
         *,
         apply_property_penalty: bool = False,
     ) -> ActionCategorical:
@@ -231,7 +231,7 @@ class RxnFlowPolicy:
         assert states
         # 1. Encode the states and prepare all needed synthons before scoring.
         batch = self._get_state_inputs(states).to(self.device)
-        cond_info = self.model.encode_cond(beta, preferences)
+        cond_info = self.model.encode_cond(beta, preference)
         state_emb = self.model.encode_state(batch, cond_info)
         logit_scale = self.model.logit_scale(cond_info)
         action_spaces = self._prepare_action_space(states)
@@ -288,7 +288,7 @@ class RxnFlowPolicy:
         self,
         states: list[State],
         beta: torch.Tensor,
-        preferences: torch.Tensor,
+        preference: torch.Tensor,
         *,
         apply_property_penalty: bool = False,
     ) -> ActionCategorical:
@@ -296,7 +296,7 @@ class RxnFlowPolicy:
         assert states
         # 1. Encode states and all sampled synthons before scoring.
         batch = self._get_state_inputs(states).to(self.device)
-        cond_info = self.model.encode_cond(beta, preferences)
+        cond_info = self.model.encode_cond(beta, preference)
         state_emb = self.model.encode_state(batch, cond_info)
         logit_scale = self.model.logit_scale(cond_info)
         action_spaces = self._prepare_action_space(states)
@@ -554,10 +554,10 @@ class RxnFlowPolicy:
         softmax_temperature: float,
         random_action_prob: float,
         beta: torch.Tensor,
-        preferences: torch.Tensor,
+        preference: torch.Tensor,
     ) -> list[Action]:
         return self.forward_batch(
-            states, beta, preferences, apply_property_penalty=True
+            states, beta, preference, apply_property_penalty=True
         ).sample(
             softmax_temperature,
             random_action_prob,
@@ -569,12 +569,12 @@ class RxnFlowPolicy:
         states: list[State],
         actions: list[Action],
         beta: torch.Tensor,
-        preferences: torch.Tensor,
+        preference: torch.Tensor,
     ) -> torch.Tensor:
         # The masked sampler is an exploration policy. TB uses the same
         # unmasked logits in its numerator and normalization estimate.
         fwd_cat = self.forward_batch(
-            states, beta, preferences, apply_property_penalty=False
+            states, beta, preference, apply_property_penalty=False
         )
         numerator = self.get_action_logits(
             fwd_cat.state_emb, actions, fwd_cat.logit_scale
@@ -615,17 +615,17 @@ class RxnFlowPolicy:
         analyze_backward: bool = True,
         *,
         beta: torch.Tensor,
-        preferences: torch.Tensor,
+        preference: torch.Tensor,
     ) -> list[Trajectory]:
         """Grow a batch with fixed conditions and optional backward analysis."""
         # 1. Initialize trajectory state and keep conditions fixed for every step.
         if count <= 0:
             raise ValueError("sample count must be positive")
         assert beta.shape == (count,)
-        assert preferences.shape == (count, self.model.num_objectives)
+        assert preference.shape == (count, self.model.num_objectives)
         # Retain condition values for serialization at termination.
-        beta_values, preference_values = beta.tolist(), preferences.tolist()
-        beta, preferences = beta.to(self.device), preferences.to(self.device)
+        beta_values, preference_values = beta.tolist(), preference.tolist()
+        beta, preference = beta.to(self.device), preference.to(self.device)
         states = [self.env.initial_state() for _ in range(count)]
         steps: list[list[Transition]] = [[] for _ in range(count)]
         reasons: list[InvalidReason | None] = [None] * count
@@ -663,7 +663,7 @@ class RxnFlowPolicy:
                 softmax_temperature,
                 random_action_prob,
                 beta[active],
-                preferences[active],
+                preference[active],
             )
             # Collect the preceding reverse search after forward sampling so
             # worker processes can overlap it with model computation. Parent
@@ -710,7 +710,7 @@ class RxnFlowPolicy:
                 Trajectory(
                     steps=steps[index],
                     beta=beta_values[index],
-                    preferences=preference_values[index],
+                    preference=preference_values[index],
                     final_smiles=state.smiles if reasons[index] is None else "",
                     valid=reasons[index] is None,
                     invalid_reason=reasons[index],

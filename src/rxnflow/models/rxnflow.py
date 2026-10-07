@@ -118,9 +118,9 @@ class RxnFlowModel(nn.Module):
         """[bs, d_hid] → [bs, 1]."""
         return self._logZ(cond)
 
-    def encode_cond(self, beta: torch.Tensor, preferences: torch.Tensor) -> torch.Tensor:
+    def encode_cond(self, beta: torch.Tensor, preference: torch.Tensor) -> torch.Tensor:
         """Encode beta and objective weights into one [bs, d_hid] condition."""
-        return self.condition_encoder(beta, preferences)
+        return self.condition_encoder(beta, preference)
 
     def encode_state(self, batch: GraphBatch, cond: torch.Tensor) -> torch.Tensor:
         """cond: [bs, d_hid]; return [bs, 2*d_state]."""

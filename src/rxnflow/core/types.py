@@ -200,7 +200,7 @@ class Trajectory:
     final_smiles: str
     # Conditions are fixed for the entire trajectory, including replay.
     beta: float
-    preferences: list[float]
+    preference: list[float]
     objective_rewards: list[float] = field(default_factory=list)
     property_reward: float = 1.0
     property_violation: bool = False
@@ -213,7 +213,7 @@ class Trajectory:
             "steps": [step.to_dict() for step in self.steps],
             "final_smiles": self.final_smiles,
             "beta": self.beta,
-            "preferences": list(self.preferences),
+            "preference": list(self.preference),
             "objective_rewards": list(self.objective_rewards),
             "property_reward": self.property_reward,
             "property_violation": self.property_violation,
@@ -228,7 +228,7 @@ class Trajectory:
             steps=[Transition.from_dict(step) for step in data["steps"]],
             final_smiles=data["final_smiles"],
             beta=data["beta"],
-            preferences=list(data["preferences"]),
+            preference=list(data["preference"]),
             objective_rewards=list(data["objective_rewards"]),
             property_reward=data["property_reward"],
             property_violation=data["property_violation"],
