@@ -5,15 +5,18 @@ from __future__ import annotations
 from concurrent.futures import Future, ProcessPoolExecutor
 from typing import TYPE_CHECKING
 
-from rdkit import Chem
+from rdkit import Chem, rdBase
 
 from rxnflow.core.molecule import Molecule
 from rxnflow.core.synthon import typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionType, BackwardTrajectory
 
 if TYPE_CHECKING:
-    from rxnflow.core.reaction import UniReaction
+    from rxnflow.core.reaction import BiReaction, UniReaction
     from rxnflow.envs.env import SynthesisEnv
+
+
+_HYDROGEN_ATOM = Chem.MolFromSmarts("[#1]")
 
 
 class Worker:
@@ -46,6 +49,28 @@ class Worker:
             for library_name, library in env.synthons.items()
         }
         self.brick_types = set(env.brick_types)
+        signatures = [(), *((site,) for site in sorted(env.synthon_types))]
+        # A coupling consumes the state's handle. A remaining product handle
+        # belongs to the incoming linker and determines its catalog library.
+        self._bi_candidates = {
+            signature: [
+                (name, reaction)
+                for name, reaction in self.bi_reactions.items()
+                if "-".join(map(str, (reaction.attachment_type, *signature)))
+                in self.synthon_search
+            ]
+            for signature in signatures
+        }
+        self._min_birxns = [
+            {
+                signature: (
+                    0
+                    if len(signature) == 1 and str(signature[0]) in self.brick_types
+                    else float("inf")
+                )
+                for signature in signatures
+            }
+        ]
         self._max_depth = 0
         self._min_synthons = 0
 
@@ -55,6 +80,22 @@ class Worker:
         max_reactions: int,
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
+        # Ignoring structure gives a lower bound on the additional bimolecular
+        # steps needed to reach FirstSynthon within each remaining reaction cap.
+        # Extend once per new cap; run() may supply a different cap from the env.
+        while len(self._min_birxns) <= max_reactions:
+            previous = self._min_birxns[-1]
+            current = dict(previous)
+            for signature in previous:
+                for _, reaction, _ in self._uni_candidates.get(signature, ()):
+                    current[signature] = min(
+                        current[signature], previous[(reaction.input_type,)]
+                    )
+                for _, reaction in self._bi_candidates[signature]:
+                    current[signature] = min(
+                        current[signature], 1 + previous[(reaction.state_type,)]
+                    )
+            self._min_birxns.append(current)
         self._max_depth = max_reactions + 1  # Bound reaction cycles independently.
         self._min_synthons = max_reactions + 1  # FirstSynthon plus bimolecular reactions.
         if known_trajectories:
@@ -72,6 +113,48 @@ class Worker:
             return []
         molecule = Molecule(rdmol=rdmol)
         return self._dfs(molecule, 1, 1, cache, known_trajectories)
+
+    def _reverse_birxn(
+        self, reaction: BiReaction, product: Molecule
+    ) -> list[tuple[Molecule, Molecule]]:
+        """Process catalog-supported precursor pairs in canonical DFS order."""
+        products = {}
+        for raw in reaction.reverse_reaction.RunReactants((product.rdmol,), 0):
+            if len(raw) != 2 or typed_dummy_isotopes(raw[0]) != (reaction.state_type,):
+                continue
+            sites = typed_dummy_isotopes(raw[1])
+            if not sites or sites[0] != 0:
+                continue
+            library_name = "-".join(map(str, (reaction.attachment_type, *sites[1:])))
+            library = self.synthon_search.get(library_name)
+            if library is None:
+                continue
+
+            # Reject missing catalog synthons before sanitizing the parent.
+            molecules, keys = [None, None], [None, None]
+            for index in (1, 0):
+                molecule = raw[index]
+                try:
+                    with rdBase.BlockLogs():
+                        Chem.SanitizeMol(molecule)
+                        if molecule.HasSubstructMatch(_HYDROGEN_ATOM):
+                            molecule = Chem.RemoveHs(molecule)
+                        smiles = Chem.MolToSmiles(molecule)
+                except (ValueError, RuntimeError, Chem.rdchem.KekulizeException):
+                    break
+                if index == 1 and smiles not in library:
+                    break
+                molecules[index], keys[index] = molecule, smiles
+            if any(key is None for key in keys):
+                continue
+            key = tuple(keys)
+            # Allocate wrappers only for complete, unique precursor pairs.
+            if key not in products:
+                products[key] = (
+                    Molecule(smiles=keys[0], rdmol=molecules[0]),
+                    Molecule(smiles=keys[1], rdmol=molecules[1]),
+                )
+        return [products[key] for key in sorted(products)]
 
     def _dfs(
         self,
@@ -121,6 +204,11 @@ class Worker:
         # 3. Reverse unimolecular transformations and verify each precursor forward.
         if depth < self._max_depth:
             for name, reaction, action in self._uni_candidates.get(signature, ()):
+                if (
+                    self._min_birxns[self._max_depth - depth - 1][(reaction.input_type,)]
+                    > self._min_synthons - num_synthons
+                ):
+                    continue
                 reverse_key = (name, canonical)
                 products_list = cache["unirxn"].get(reverse_key)
                 if products_list is None:
@@ -145,13 +233,18 @@ class Worker:
                         branch_keys.add(edge)
 
             # 4. Reverse couplings, recover the oriented synthon, and find its row.
-            for name, reaction in self.bi_reactions.items():
+            for name, reaction in self._bi_candidates.get(signature, ()):
                 if num_synthons >= self._min_synthons:
                     break
+                if (
+                    self._min_birxns[self._max_depth - depth - 1][(reaction.state_type,)]
+                    > self._min_synthons - num_synthons - 1
+                ):
+                    continue
                 reverse_key = (name, canonical)
                 products_list = cache["birxn"].get(reverse_key)
                 if products_list is None:
-                    products_list = reaction.run_reverse(molecule)
+                    products_list = self._reverse_birxn(reaction, molecule)
                     cache["birxn"][reverse_key] = products_list
                 for child, synthon in products_list:
                     if num_synthons >= self._min_synthons:
