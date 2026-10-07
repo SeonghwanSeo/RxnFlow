@@ -462,9 +462,7 @@ class RxnFlowPolicy:
         types = torch.from_numpy(type_arr).to(
             self.device, dtype=torch.long, non_blocking=True
         )
-        size = torch.from_numpy(size_arr).to(
-            self.device, dtype=torch.float32, non_blocking=True
-        )
+        size = torch.from_numpy(size_arr).to(self.device, non_blocking=True)
         embeddings = self._encode_synthons((fp, prop, types))
         return {
             library_name: (emb, prop, size)
