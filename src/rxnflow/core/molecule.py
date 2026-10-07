@@ -11,9 +11,7 @@ class Molecule:
     smiles: str
     rdmol: Chem.Mol
 
-    def __init__(
-        self, smiles: str | None = None, rdmol: Chem.Mol | None = None
-    ) -> None:
+    def __init__(self, smiles: str | None = None, rdmol: Chem.Mol | None = None) -> None:
         if smiles is None and rdmol is None:
             raise ValueError("smiles or rdmol is required")
         if rdmol is None:

@@ -139,9 +139,7 @@ class Worker:
                     forward_product = reaction.run_forward(precursor)
                     if forward_product is None or forward_product.smiles != canonical:
                         continue
-                    suffixes = self._dfs(
-                        precursor, depth + 1, num_synthons, cache
-                    )
+                    suffixes = self._dfs(precursor, depth + 1, num_synthons, cache)
                     if suffixes:
                         trajectories.extend([edge, *suffix] for suffix in suffixes)
                         branch_keys.add(edge)
@@ -189,9 +187,7 @@ class Worker:
                     forward_product = reaction.run_forward(child, synthon)
                     if forward_product is None or forward_product.smiles != canonical:
                         continue
-                    suffixes = self._dfs(
-                        child, depth + 1, num_synthons + 1, cache
-                    )
+                    suffixes = self._dfs(child, depth + 1, num_synthons + 1, cache)
                     if suffixes:
                         trajectories.extend([edge, *suffix] for suffix in suffixes)
                         branch_keys.add(edge)
