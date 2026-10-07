@@ -68,12 +68,6 @@ def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
     """Return raw descriptors in PROPERTY_NAMES order; the empty state is zero."""
     if mol is None:
         return np.zeros(PROPERTY_DIM, dtype=np.float32)
-    # Dummy isotopes encode synthesis types, so exclude their labels from mass.
-    if any(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()):
-        mol = Chem.Mol(mol)
-        for atom in mol.GetAtoms():
-            if atom.GetAtomicNum() == 0:
-                atom.SetIsotope(0)
     values = [
         Descriptors.ExactMolWt(mol),
         Descriptors.TPSA(mol),

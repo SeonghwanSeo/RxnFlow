@@ -13,6 +13,7 @@ import torch
 from rdkit import Chem
 from torch import Tensor
 
+from rxnflow.core.molecule import Molecule
 from rxnflow.envs.features import heavy_atom_count, molecular_properties
 
 # Atomic numbers and synthon labels 0..99 have dedicated slots; each
@@ -85,26 +86,30 @@ class GraphBatch:
         )
 
 
-def molecule_to_graph_data(mol: Chem.Mol | None) -> GraphData:
+def molecule_to_graph_data(molecule: Molecule | None) -> GraphData:
     """Encode one state without truncating atoms or including explicit hydrogens."""
+    rdmol = None if molecule is None else molecule.rdmol
 
-    if mol is not None and sum(atom.GetAtomicNum() == 0 for atom in mol.GetAtoms()) > 1:
+    if (
+        rdmol is not None
+        and sum(atom.GetAtomicNum() == 0 for atom in rdmol.GetAtoms()) > 1
+    ):
         raise ValueError("a synthesis state can have at most one dummy handle")
 
     atoms = (
         []
-        if mol is None
-        else [atom for atom in mol.GetAtoms() if atom.GetAtomicNum() != 1]
+        if rdmol is None
+        else [atom for atom in rdmol.GetAtoms() if atom.GetAtomicNum() != 1]
     )
     node_features = np.zeros((len(atoms), NODE_FEATURE_DIM), dtype=np.float32)
     # Explicit isotope-labelled hydrogen bonds are omitted below; allocate at
     # most two directed edges per RDKit bond and retain only the filled rows.
-    max_edges = 0 if mol is None else 2 * mol.GetNumBonds()
+    max_edges = 0 if rdmol is None else 2 * rdmol.GetNumBonds()
     edge_index = np.empty((2, max_edges), dtype=np.int64)
     bond_features = np.zeros((max_edges, BOND_FEATURE_DIM), dtype=np.float32)
     num_edges = 0
 
-    if mol is not None:
+    if rdmol is not None:
         index_map = {atom.GetIdx(): index for index, atom in enumerate(atoms)}
         # 2. Fill atom categories/scalars in NumPy; wrap completed arrays once.
         degree_start = len(ATOM_TYPES) + 1
@@ -138,7 +143,7 @@ def molecule_to_graph_data(mol: Chem.Mol | None) -> GraphData:
             ] = 1
 
         # 3. Store each bond in both directions, with shared chemistry features.
-        for bond in mol.GetBonds():
+        for bond in rdmol.GetBonds():
             # Explicit isotopic H atoms can survive RDKit's RemoveHs, but the
             # model representation only allocates heavy-atom and dummy slots.
             if (
@@ -168,8 +173,8 @@ def molecule_to_graph_data(mol: Chem.Mol | None) -> GraphData:
             bond_features[num_edges + 1] = feature
             num_edges += 2
 
-    mol_properties = molecular_properties(mol)
-    atom_count = heavy_atom_count(mol)
+    mol_properties = molecular_properties(rdmol)
+    atom_count = heavy_atom_count(rdmol)
 
     # 4. Retain only represented bonds and attach raw molecular descriptors.
     return GraphData(

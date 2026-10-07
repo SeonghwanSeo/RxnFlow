@@ -6,10 +6,9 @@ import json
 from functools import cached_property
 from pathlib import Path
 
-from rdkit import Chem
-
 from rxnflow.__version__ import __version__
 from rxnflow.core.errors import InvalidTransition
+from rxnflow.core.molecule import Molecule
 from rxnflow.core.reaction import load_reactions
 from rxnflow.core.synthon import load_synthon_templates, typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionSpace, ActionSubspace, ActionType, State
@@ -238,14 +237,14 @@ class SynthesisEnv:
         """Look up type/step eligibility; property penalties follow subsampling."""
         if state.terminated:
             return []
-        elif state.mol is None:
+        elif state.molecule is None:
             return self.initial_action_space
         assert state.num_reactions < self.max_reactions
         key = (state.attachment_type, state.num_synthons, state.num_reactions)
         return self.feasible_action_spaces[key]
 
-    def _apply_action(self, current: Chem.Mol | None, action: Action) -> Chem.Mol | None:
-        """Apply FirstSynthon/UniReaction/BiReaction and return a valid Mol or None."""
+    def _apply_action(self, current: Molecule | None, action: Action) -> Molecule | None:
+        """Apply FirstSynthon/UniReaction/BiReaction and return a valid molecule."""
         # 1. Resolve the selected synthon row.
         if action.library_name is not None:
             library = self.synthons[action.library_name]
@@ -266,29 +265,31 @@ class SynthesisEnv:
             for atom in first.GetAtoms():
                 if atom.GetAtomicNum() == 0:
                     atom.SetIsotope(library.attachment_type)
-            mol = first
+            product = Molecule(rdmol=first)
             expected = library.synthon_types
         else:
             assert current is not None
             if action.action_type.is_unirxn:
                 reaction = self.uni_reactions[action.reaction]
-                mol = reaction.run_forward(current)
+                product = reaction.run_forward(current)
                 expected = () if reaction.output_type is None else (reaction.output_type,)
             else:
                 bi = self.bi_reactions[action.reaction]
                 synthon = parse_molecule(synthon_smiles)
                 assert synthon is not None
-                mol = bi.run_forward(current, synthon)
+                product = bi.run_forward(
+                    current, Molecule(smiles=synthon_smiles, rdmol=synthon)
+                )
                 expected = library.synthon_types[1:]
         # 3. Check remaining sites, atom capacity, and structural change.
-        if mol is None or typed_dummy_isotopes(mol) != expected:
+        if product is None or typed_dummy_isotopes(product.rdmol) != expected:
             return None
-        if heavy_atom_count(mol) > self.max_atoms:
+        if heavy_atom_count(product.rdmol) > self.max_atoms:
             return None
         # Reject transformations that leave the canonical structure unchanged.
-        if current is not None and Chem.MolToSmiles(mol) == Chem.MolToSmiles(current):
+        if current is not None and product.smiles == current.smiles:
             return None
-        return mol
+        return product
 
     def step(self, state: State, action: Action) -> State:
         """Execute an action and terminate when its product has no marked handle."""
@@ -303,15 +304,15 @@ class SynthesisEnv:
             for space in self.get_action_space(state)
         ):
             raise InvalidTransition("action cannot finish within the synthesis budgets")
-        product = self._apply_action(state.mol, action)
+        product = self._apply_action(state.molecule, action)
         if product is None:
             raise InvalidTransition(
                 "the selected reaction failed structural or graph-capacity checks"
             )
         count = state.num_reactions + int(action.action_type != ActionType.FIRST_SYNTHON)
-        terminal = not typed_dummy_isotopes(product)
+        terminal = not typed_dummy_isotopes(product.rdmol)
         return State(
-            mol=product,
+            molecule=product,
             num_reactions=count,
             num_synthons=state.num_synthons + int(not action.action_type.is_unirxn),
             terminated=terminal,

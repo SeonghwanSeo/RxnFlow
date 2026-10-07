@@ -190,7 +190,7 @@ class RxnFlowPolicy:
             if state.smiles not in graphs:
                 cached = state._cache.get("graph")
                 graphs[state.smiles] = (
-                    molecule_to_graph_data(state.mol) if cached is None else cached
+                    molecule_to_graph_data(state.molecule) if cached is None else cached
                 )
             state._cache["graph"] = graphs[state.smiles]
         return GraphBatch.from_list([graphs[state.smiles] for state in states])
