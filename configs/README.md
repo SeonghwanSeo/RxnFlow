@@ -2,7 +2,7 @@
 
 Defaults apply when settings are omitted. Start from the [template](template.yaml); see the [training guide](../docs/training.md) for output directory, device, seed and update count.
 
-## Synthetic Environment
+## Synthesis environment
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

@@ -71,7 +71,7 @@ Generate molecules and their synthesis routes from a trained checkpoint:
 python scripts/sample.py \
   --checkpoint runs/mw_logp/checkpoints/latest.ckpt \
   --num-samples 100 \
-  --output samples.csv
+  --output samples.jsonl
 ```
 
 See [sampling](docs/training.md#sampling) for more details on sampling.

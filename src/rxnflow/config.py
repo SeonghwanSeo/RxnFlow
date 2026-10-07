@@ -71,7 +71,9 @@ class RewardConfig:
             not math.isfinite(self.property_penalty_ratio)
             or self.property_penalty_ratio < 0
         ):
-            raise ValueError("reward.property_penalty_ratio must be finite and non-negative")
+            raise ValueError(
+                "reward.property_penalty_ratio must be finite and non-negative"
+            )
         if not isinstance(self.settings, dict):
             raise ValueError("reward.settings must be a mapping")
 

@@ -15,6 +15,10 @@ from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
+from rxnflow.core.compatibility import (
+    check_library_compatibility,
+    check_model_compatibility,
+)
 from rxnflow.core.types import ActionType, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
@@ -251,17 +255,19 @@ class RxnFlowTrainer:
         # optimizer loaders move their own tensors to the model device.
         logger.info("Loading checkpoint: %s", path)
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        if checkpoint.get("rxnflow_version") != __version__:
-            raise ValueError(
-                "checkpoint was created by RxnFlow "
-                f"{checkpoint.get('rxnflow_version')!r}; "
-                f"this installation is RxnFlow {__version__}"
-            )
+        check_model_compatibility(checkpoint["rxnflow_version"])
+        saved_environment = checkpoint["environment"]
+        check_library_compatibility(saved_environment["rxnflow_version"])
         if checkpoint.get("config") != self.config.to_dict():
             raise ValueError(
                 "restart configuration differs from the resolved checkpoint configuration"
             )
-        if checkpoint.get("environment") != self.env.signature:
+        # Resume restores catalog-indexed actions in replay; sampling can replace
+        # the catalog, but resume requires identical content and synthesis rules.
+        if (
+            saved_environment["content_sha256"] != self.env.signature["content_sha256"]
+            or saved_environment["synthesis"] != self.env.signature["synthesis"]
+        ):
             raise ValueError(
                 "prepared environment differs from the checkpoint environment"
             )

@@ -6,7 +6,7 @@ import json
 from functools import cached_property
 from pathlib import Path
 
-from rxnflow.__version__ import __version__
+from rxnflow.core.compatibility import check_library_compatibility
 from rxnflow.core.errors import InvalidTransition
 from rxnflow.core.molecule import Molecule
 from rxnflow.core.reaction import load_reactions
@@ -52,12 +52,7 @@ class SynthesisEnv:
         }
         self.retrosynthesis_workers = retrosynthesis_workers
         self.signature = json.loads((self.env_dir / "signature.json").read_text())
-        if self.signature["rxnflow_version"] != __version__:
-            raise ValueError(
-                "environment was prepared by RxnFlow "
-                f"{self.signature['rxnflow_version']!r}; "
-                f"this installation is RxnFlow {__version__}; regenerate the environment"
-            )
+        check_library_compatibility(self.signature["rxnflow_version"])
         self._load_libraries()
         self._load_reactions()
         self._load_action_spaces()
@@ -312,7 +307,10 @@ class SynthesisEnv:
         )
 
     def action_to_dict(self, action: Action) -> dict[str, object]:
-        result = action.to_dict()
+        result: dict[str, object] = {
+            "action_type": action.action_type.name,
+            "reaction": action.reaction,
+        }
         if action.library_name is not None:
             assert action.synthon_index is not None
             library = self.synthons[action.library_name]

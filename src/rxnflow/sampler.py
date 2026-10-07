@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 
 import numpy as np
 import torch
+from rdkit.Chem.rdChemReactions import ReactionToSmarts
 
-from rxnflow.__version__ import __version__
 from rxnflow.config import Config
+from rxnflow.core.compatibility import (
+    check_library_compatibility,
+    check_model_compatibility,
+)
 from rxnflow.core.types import SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
@@ -33,10 +36,8 @@ class RxnFlowSampler:
         # Load once on CPU: sampling needs only EMA weights, not the optimizer
         # and replay tensors copied to the GPU with the entire checkpoint.
         ckpt = torch.load(checkpoint, map_location="cpu", weights_only=False)
-        if ckpt["rxnflow_version"] != __version__:
-            raise ValueError(
-                f"checkpoint was created by RxnFlow {ckpt['rxnflow_version']!r}"
-            )
+        check_model_compatibility(ckpt["rxnflow_version"])
+        check_library_compatibility(ckpt["environment"]["rxnflow_version"])
         config = Config.from_dict(ckpt["config"])
 
         if env_dir is not None:
@@ -73,13 +74,27 @@ class RxnFlowSampler:
         self.policy = RxnFlowPolicy(self.env, self.model, config, self.device, self.rng)
 
     def _result(self, trajectory: Trajectory) -> SamplingResult:
-        actions = [
-            {
-                **self.env.action_to_dict(step.action),
-                "product_smiles": step.product_smiles,
-            }
-            for step in trajectory.steps
-        ]
+        actions = []
+        for step in trajectory.steps:
+            action = step.action
+            reaction_smarts = None
+            if not action.action_type.is_first:
+                reactions = (
+                    self.env.uni_reactions
+                    if action.action_type.is_unirxn
+                    else self.env.bi_reactions
+                )
+                # Export the executable template, including incoming-site orientation.
+                reaction_smarts = ReactionToSmarts(
+                    reactions[action.reaction].forward_reaction
+                )
+            actions.append(
+                {
+                    **self.env.action_to_dict(action),
+                    "reaction_smarts": reaction_smarts,
+                    "product_smiles": step.product_smiles,
+                }
+            )
         return SamplingResult(
             smiles=trajectory.final_smiles,
             traj=actions,
@@ -99,7 +114,7 @@ class RxnFlowSampler:
         softmax_temperature: float = 1.0,
         seed: int | None = None,
     ) -> list[SamplingResult]:
-        """Generate num_samples valid trajectories, retaining duplicate molecules.
+        """Attempt num_samples trajectories and return the valid results.
 
         beta and preferences are (distribution, parameters) tuples. Omitted
         conditions use their training settings. batch_size is independent of the
@@ -171,16 +186,10 @@ class RxnFlowSampler:
             ),
             flush=True,
         )
-        # 2. Generate until enough valid terminal trajectories or the attempt limit.
+        # 2. Sample a fixed number of trajectories without retrying invalid ones.
         trajectories: list[Trajectory] = []
-        attempts = 0
-        maximum_attempts = max(100, num_samples * 100)
-        while len(trajectories) < num_samples and attempts < maximum_attempts:
-            batch_count = min(
-                batch_size,
-                num_samples - len(trajectories),
-                maximum_attempts - attempts,
-            )
+        for start in range(0, num_samples, batch_size):
+            batch_count = min(batch_size, num_samples - start)
             sampled_beta, weights = conditions.sample(batch_count)
             batch = self.policy.sample_from_model(
                 batch_count,
@@ -190,13 +199,7 @@ class RxnFlowSampler:
                 beta=sampled_beta,
                 preferences=weights,
             )
-            attempts += batch_count
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
-        if len(trajectories) != num_samples:
-            raise RuntimeError(
-                f"generated only {len(trajectories)} valid samples in "
-                f"{maximum_attempts} attempts"
-            )
         return [self._result(trajectory) for trajectory in trajectories]
 
     @staticmethod
@@ -210,34 +213,15 @@ class RxnFlowSampler:
         format_name = (output_format or destination.suffix.lstrip(".")).lower()
         if format_name == "smi":
             with destination.open("w", encoding="utf-8") as handle:
-                for result in results:
-                    handle.write(result.smiles + "\n")
-        elif format_name == "csv":
-            with destination.open("w", newline="", encoding="utf-8") as handle:
-                writer = csv.DictWriter(
-                    handle,
-                    fieldnames=[
-                        "smiles",
-                        "traj",
-                        "beta",
-                        "preferences",
-                    ],
-                )
-                writer.writeheader()
-                for result in results:
-                    writer.writerow(
-                        {
-                            "smiles": result.smiles,
-                            "traj": json.dumps(result.traj, separators=(",", ":")),
-                            "beta": result.metadata["beta"],
-                            "preferences": json.dumps(
-                                result.metadata["preferences"], separators=(",", ":")
-                            ),
-                        }
-                    )
+                for index, result in enumerate(results):
+                    handle.write(f"{result.smiles}\tsample_{index}\n")
         elif format_name == "json":
             with destination.open("w", encoding="utf-8") as handle:
                 json.dump([result.to_dict() for result in results], handle, indent=2)
                 handle.write("\n")
+        elif format_name == "jsonl":
+            with destination.open("w", encoding="utf-8") as handle:
+                for result in results:
+                    handle.write(json.dumps(result.to_dict()) + "\n")
         else:
-            raise ValueError("output format must be smi, csv, or json")
+            raise ValueError("output format must be smi, json, or jsonl")

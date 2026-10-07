@@ -26,7 +26,7 @@ For direct evaluation, use `reward.run(mols)` or `reward(mols)` to obtain indivi
 
 ## Pass reward settings
 
-Use `reward.settings` to configure your reward's constructor. For example, reward molecules whose molecular weight is close to a target. The distance `abs(mw - target_mw)` is converted to `1 / (1 + distance)` so closer molecules receive higher rewards:
+Use `reward.settings` to configure your reward's constructor. For example, reward molecules whose molecular weight is close to a target:
 
 ```python
 import numpy as np
@@ -97,7 +97,7 @@ class MWLogPReward(RewardFunction):
         return np.array(rewards, dtype=np.float32).reshape(-1, 2)
 ```
 
-The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`. The inverse transform rewards lower MW; the sigmoid rewards higher logP, including when raw logP is negative. Positive `mw_scale` and `logp_scale` control each score's sensitivity.
+The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`. Positive `mw_scale` and `logp_scale` control each score's sensitivity.
 
 ```yaml
 reward:

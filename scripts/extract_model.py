@@ -7,6 +7,11 @@ from pathlib import Path
 
 import torch
 
+from rxnflow.core.compatibility import (
+    check_library_compatibility,
+    check_model_compatibility,
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -16,6 +21,8 @@ def main() -> None:
     if args.checkpoint.resolve() == args.output.resolve():
         raise ValueError("output must differ from the training checkpoint")
     payload = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    check_model_compatibility(payload["rxnflow_version"])
+    check_library_compatibility(payload["environment"]["rxnflow_version"])
     model = {
         key: payload[key]
         for key in (
