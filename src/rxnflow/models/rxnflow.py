@@ -163,6 +163,21 @@ class RxnFlowModel(nn.Module):
             rxn_emb = rxn_emb.expand(state_emb.shape[0], -1)
         return head(torch.cat([state_emb, rxn_emb], dim=-1))
 
+    def forward_reactions(
+        self,
+        state_emb: torch.Tensor,
+        action_names: list[str],
+        action_type: ActionType,
+    ) -> torch.Tensor:
+        """Apply one shared action head to [reactions, states, features]."""
+        assert state_emb.ndim == 2
+        assert action_type.is_unirxn or action_type.is_birxn
+        rxn_emb = torch.stack([self.rxn_embedding[name] for name in action_names])
+        rxn_emb = rxn_emb[:, None, :].expand(-1, len(state_emb), -1)
+        states = state_emb[None, :, :].expand(len(action_names), -1, -1)
+        head = self.action_heads[action_type.name]
+        return head(torch.cat([states, rxn_emb], dim=-1))
+
     def forward_birxn(
         self,
         state_emb: torch.Tensor,

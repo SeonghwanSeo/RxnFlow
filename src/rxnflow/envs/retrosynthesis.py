@@ -7,10 +7,12 @@ from typing import TYPE_CHECKING
 
 from rdkit import Chem
 
+from rxnflow.core.molecule import Molecule
 from rxnflow.core.synthon import typed_dummy_isotopes
 from rxnflow.core.types import Action, ActionType, BackwardTrajectory
 
 if TYPE_CHECKING:
+    from rxnflow.core.reaction import UniReaction
     from rxnflow.envs.env import SynthesisEnv
 
 
@@ -24,14 +26,26 @@ class Worker:
     """
 
     def __init__(self, env: SynthesisEnv):
-        self.uni_reactions = env.uni_reactions
+        self._uni_candidates: dict[
+            tuple[int, ...], list[tuple[str, UniReaction, Action]]
+        ] = {}
+        for name, reaction in env.uni_reactions.items():
+            signature = () if reaction.output_type is None else (reaction.output_type,)
+            action = Action(
+                ActionType.UNIRXN_TERMINAL
+                if reaction.output_type is None
+                else ActionType.UNIRXN_TRANSFORM,
+                reaction=name,
+            )
+            self._uni_candidates.setdefault(signature, []).append(
+                (name, reaction, action)
+            )
         self.bi_reactions = env.bi_reactions
         self.synthon_search = {
             library_name: {smiles: index for index, smiles in enumerate(library.smiles)}
             for library_name, library in env.synthons.items()
         }
         self.brick_types = set(env.brick_types)
-        self._memo: dict[tuple[str, int, int, int], list[BackwardTrajectory]] = {}
         self._max_depth = 0
         self._min_synthons = 0
 
@@ -51,18 +65,20 @@ class Worker:
                     for route in known_trajectories
                 ),
             )
-        self._memo = {}
-        mol = Chem.MolFromSmiles(smiles) if smiles else None
-        if mol is None:
+        # Reverse chemistry is independent of DFS budgets and known routes.
+        cache = {"unirxn": {}, "birxn": {}, "traj": {}}
+        rdmol = Chem.MolFromSmiles(smiles) if smiles else None
+        if rdmol is None:
             return []
-        return self._dfs(mol, Chem.MolToSmiles(mol), 1, 1, known_trajectories)
+        molecule = Molecule(rdmol=rdmol)
+        return self._dfs(molecule, 1, 1, cache, known_trajectories)
 
     def _dfs(
         self,
-        mol: Chem.Mol,
-        canonical: str,
+        molecule: Molecule,
         depth: int,
         num_synthons: int,
+        cache: dict[str, dict],
         known_trajectories: list[BackwardTrajectory] | None = None,
     ) -> list[BackwardTrajectory]:
         # 1. Count removed bimolecular reactants plus the eventual FirstSynthon.
@@ -70,25 +86,25 @@ class Worker:
         if depth > self._max_depth or num_synthons > self._min_synthons:
             return []
         # Cache only under the same remaining reaction and synthon budgets.
+        canonical = molecule.smiles
         key = (canonical, depth, num_synthons, self._min_synthons)
-        if known_trajectories is None and key in self._memo:
-            return self._memo[key]
+        if known_trajectories is None and key in cache["traj"]:
+            return cache["traj"][key]
         trajectories = list(known_trajectories or [])
         # First edges identify backward choices. Retain known suffixes and skip
         # rediscovering their action/parent pair during this root search.
         branch_keys = {trajectory[0] for trajectory in trajectories}
 
         # 2. Look for a direct FirstSynthon origin by restoring the catalog marker.
-        signature = typed_dummy_isotopes(mol)
+        signature = typed_dummy_isotopes(molecule.rdmol)
         if len(signature) == 1:
-            synthon_type = signature[0]
-            brick = Chem.Mol(mol)
-            for atom in brick.GetAtoms():
-                if atom.GetAtomicNum() == 0:
-                    atom.SetIsotope(0)
-            brick_smiles = Chem.MolToSmiles(brick)
-            library_name = str(synthon_type)
+            library_name = str(signature[0])
             if library_name in self.brick_types:
+                brick = Chem.Mol(molecule.rdmol)
+                for atom in brick.GetAtoms():
+                    if atom.GetAtomicNum() == 0:
+                        atom.SetIsotope(0)
+                brick_smiles = Chem.MolToSmiles(brick)
                 synthon_index = self.synthon_search[library_name].get(brick_smiles)
                 if synthon_index is not None:
                     self._min_synthons = num_synthons
@@ -97,70 +113,64 @@ class Worker:
                         library_name=library_name,
                         synthon_index=synthon_index,
                     )
-                    if (action, "") not in branch_keys:
-                        trajectories.append([(action, "")])
-                        branch_keys.add((action, ""))
+                    edge = (action, "")
+                    if edge not in branch_keys:
+                        trajectories.append([edge])
+                        branch_keys.add(edge)
 
         # 3. Reverse unimolecular transformations and verify each precursor forward.
         if depth < self._max_depth:
-            for name, reaction in self.uni_reactions.items():
-                expected = () if reaction.output_type is None else (reaction.output_type,)
-                if signature != expected:
-                    continue
-                for products in reaction.run_reverse(mol):
+            for name, reaction, action in self._uni_candidates.get(signature, ()):
+                reverse_key = (name, canonical)
+                products_list = cache["unirxn"].get(reverse_key)
+                if products_list is None:
+                    products_list = reaction.run_reverse(molecule)
+                    cache["unirxn"][reverse_key] = products_list
+                for products in products_list:
                     if len(products) != 1:
                         continue
                     precursor = products[0]
-                    if typed_dummy_isotopes(precursor) != (reaction.input_type,):
+                    parent_smiles = precursor.smiles
+                    if typed_dummy_isotopes(precursor.rdmol) != (reaction.input_type,):
                         continue
-                    parent_smiles = Chem.MolToSmiles(precursor)
-                    action = Action(
-                        ActionType.UNIRXN_TERMINAL
-                        if reaction.output_type is None
-                        else ActionType.UNIRXN_TRANSFORM,
-                        reaction=name,
-                    )
-                    if (action, parent_smiles) in branch_keys:
+                    edge = (action, parent_smiles)
+                    if edge in branch_keys:
                         continue
                     forward_product = reaction.run_forward(precursor)
-                    if (
-                        forward_product is None
-                        or Chem.MolToSmiles(forward_product) != canonical
-                    ):
+                    if forward_product is None or forward_product.smiles != canonical:
                         continue
-                    suffixes = self._dfs(
-                        precursor, parent_smiles, depth + 1, num_synthons
-                    )
+                    suffixes = self._dfs(precursor, depth + 1, num_synthons, cache)
                     if suffixes:
-                        trajectories.extend(
-                            [(action, parent_smiles), *suffix] for suffix in suffixes
-                        )
-                        branch_keys.add((action, parent_smiles))
+                        trajectories.extend([edge, *suffix] for suffix in suffixes)
+                        branch_keys.add(edge)
 
             # 4. Reverse couplings, recover the oriented synthon, and find its row.
-            for name, action in self.bi_reactions.items():
+            for name, reaction in self.bi_reactions.items():
                 if num_synthons >= self._min_synthons:
                     break
-                for child_mol, synthon_mol in action.run_reverse(mol):
+                reverse_key = (name, canonical)
+                products_list = cache["birxn"].get(reverse_key)
+                if products_list is None:
+                    products_list = reaction.run_reverse(molecule)
+                    cache["birxn"][reverse_key] = products_list
+                for child, synthon in products_list:
                     if num_synthons >= self._min_synthons:
                         break
-                    child_canonical = Chem.MolToSmiles(child_mol)
-                    synthon_canonical = Chem.MolToSmiles(synthon_mol)
-                    if typed_dummy_isotopes(child_mol) != (action.state_type,):
+                    if typed_dummy_isotopes(child.rdmol) != (reaction.state_type,):
                         continue
                     # Reverse products carry the incoming isotope-0 attachment
                     # and (for linkers) the remaining type. Together with the
                     # reaction's incoming type this determines one library.
-                    synthon_sites = typed_dummy_isotopes(synthon_mol)
+                    synthon_sites = typed_dummy_isotopes(synthon.rdmol)
                     if not synthon_sites or synthon_sites[0] != 0:
                         continue
                     library_name = "-".join(
-                        map(str, (action.attachment_type, *synthon_sites[1:]))
+                        map(str, (reaction.attachment_type, *synthon_sites[1:]))
                     )
                     library = self.synthon_search.get(library_name)
                     if library is None:
                         continue
-                    synthon_index = library.get(synthon_canonical)
+                    synthon_index = library.get(synthon.smiles)
                     if synthon_index is None:
                         continue
                     reverse_action = Action(
@@ -171,27 +181,20 @@ class Worker:
                         library_name=library_name,
                         synthon_index=synthon_index,
                     )
-                    if (reverse_action, child_canonical) in branch_keys:
+                    edge = (reverse_action, child.smiles)
+                    if edge in branch_keys:
                         continue
-                    forward_product = action.run_forward(child_mol, synthon_mol)
-                    if (
-                        forward_product is None
-                        or Chem.MolToSmiles(forward_product) != canonical
-                    ):
+                    forward_product = reaction.run_forward(child, synthon)
+                    if forward_product is None or forward_product.smiles != canonical:
                         continue
-                    suffixes = self._dfs(
-                        child_mol, child_canonical, depth + 1, num_synthons + 1
-                    )
+                    suffixes = self._dfs(child, depth + 1, num_synthons + 1, cache)
                     if suffixes:
-                        trajectories.extend(
-                            [(reverse_action, child_canonical), *suffix]
-                            for suffix in suffixes
-                        )
-                        branch_keys.add((reverse_action, child_canonical))
+                        trajectories.extend([edge, *suffix] for suffix in suffixes)
+                        branch_keys.add(edge)
 
         # 5. Cache only unseeded searches; known routes are specific to a rollout.
         if known_trajectories is None:
-            self._memo[key] = trajectories
+            cache["traj"][key] = trajectories
         return trajectories
 
 

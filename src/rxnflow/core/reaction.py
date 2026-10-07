@@ -12,6 +12,8 @@ from rdkit.Chem.rdChemReactions import (
     ReactionToSmarts,
 )
 
+from .molecule import Molecule
+
 
 def _compile(smarts: str) -> ChemicalReaction:
     reaction = ReactionFromSmarts(smarts)
@@ -22,16 +24,17 @@ def _compile(smarts: str) -> ChemicalReaction:
 
 
 def _run(
-    reaction: ChemicalReaction, reactants: tuple[Chem.Mol, ...]
-) -> list[tuple[Chem.Mol, ...]]:
+    reaction: ChemicalReaction, reactants: tuple[Molecule, ...]
+) -> list[tuple[Molecule, ...]]:
     assert len(reactants) == reaction.GetNumReactantTemplates()
-    products: dict[tuple[str, ...], tuple[Chem.Mol, ...]] = {}
+    products: dict[tuple[str, ...], tuple[Molecule, ...]] = {}
     # Canonical SMILES deduplicate and order products; retain molecules for
-    # subsequent structural and property checks.
-    for product_set in reaction.RunReactants(reactants, 0):
+    # structural checks and reuse the same SMILES in reverse route enumeration.
+    reactant_rdmols = [m.rdmol for m in reactants]
+    for product_set in reaction.RunReactants(reactant_rdmols, 0):
         if len(product_set) != reaction.GetNumProductTemplates():
             continue
-        molecules: list[Chem.Mol] = []
+        molecules: list[Molecule] = []
         keys: list[str] = []
         for product in product_set:
             try:
@@ -42,7 +45,7 @@ def _run(
                     key = Chem.MolToSmiles(product)
             except (ValueError, RuntimeError, Chem.rdchem.KekulizeException):
                 break
-            molecules.append(product)
+            molecules.append(Molecule(smiles=key, rdmol=product))
             keys.append(key)
         if len(molecules) == len(product_set):
             products.setdefault(tuple(keys), tuple(molecules))
@@ -59,7 +62,7 @@ class Reaction:
         self.forward_reaction = _compile(forward)
         self.reverse_reaction = _compile(reverse)
 
-    def run_forward(self, *reactants: Chem.Mol) -> Chem.Mol | None:
+    def run_forward(self, *reactants: Molecule) -> Molecule | None:
         """Return the unique connected product, or None for an infeasible match.
 
         Incoming synthon orientation fixes the attachment site. Symmetry-related
@@ -69,7 +72,7 @@ class Reaction:
         products = [
             product_set[0]
             for product_set in _run(self.forward_reaction, tuple(reactants))
-            if len(product_set) == 1 and len(Chem.GetMolFrags(product_set[0])) == 1
+            if len(product_set) == 1 and len(Chem.GetMolFrags(product_set[0].rdmol)) == 1
         ]
         if len(products) > 1:
             raise ValueError(
@@ -77,7 +80,8 @@ class Reaction:
             )
         return products[0] if products else None
 
-    def run_reverse(self, product: Chem.Mol) -> list[tuple[Chem.Mol, ...]]:
+    def run_reverse(self, product: Molecule) -> list[tuple[Molecule, ...]]:
+        """Return all precursor sets with their canonical SMILES in sorted order."""
         # _run already enumerates and deduplicates every RDKit match. Truncating
         # here can discard the only decomposition whose synthon is in the catalog.
         return _run(self.reverse_reaction, (product,))

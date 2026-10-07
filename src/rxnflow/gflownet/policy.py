@@ -25,6 +25,7 @@ from rxnflow.core.types import (
     Transition,
 )
 from rxnflow.envs.env import SynthesisEnv
+from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM
 from rxnflow.envs.graph import GraphBatch, GraphData, molecule_to_graph_data
 from rxnflow.models import RxnFlowModel
 
@@ -187,9 +188,11 @@ class RxnFlowPolicy:
         graphs: dict[str, GraphData] = {}
         for state in states:
             if state.smiles not in graphs:
-                graphs[state.smiles] = molecule_to_graph_data(
-                    state.mol, self.env.max_atoms
+                cached = state._cache.get("graph")
+                graphs[state.smiles] = (
+                    molecule_to_graph_data(state.molecule) if cached is None else cached
                 )
+            state._cache["graph"] = graphs[state.smiles]
         return GraphBatch.from_list([graphs[state.smiles] for state in states])
 
     def _get_synthon_features(
@@ -198,8 +201,11 @@ class RxnFlowPolicy:
         library = self.env.synthons[library_name]
         fp, prop = library.fingerprints, library.properties
         types = self.env.library_site_indices[library_name]
-        fp = torch.as_tensor(fp[indices], dtype=torch.float32, device=self.device)
-        prop = torch.as_tensor(prop[indices], device=self.device)
+        # Non-blocking device/dtype conversion casts uint8 fingerprints on GPU.
+        fp = torch.from_numpy(fp[indices]).to(
+            self.device, dtype=torch.float32, non_blocking=True
+        )
+        prop = torch.from_numpy(prop[indices]).to(self.device, non_blocking=True)
         types = torch.tensor(types, dtype=torch.long, device=self.device)
         types = types.expand(len(indices), 2)
         return fp, prop, types
@@ -327,6 +333,21 @@ class RxnFlowPolicy:
                 key = (subspace.action_type, subspace.name[0])
                 spaces_by_action.setdefault(key, []).append(subspace)
 
+            # Reaction embeddings differ, but reactions of the same action type
+            # use one shared MLP. Batch that MLP while retaining library scoring.
+            reaction_queries: dict[tuple[ActionType, str], torch.Tensor] = {}
+            for action_type in (
+                ActionType.UNIRXN_TRANSFORM,
+                ActionType.UNIRXN_TERMINAL,
+                ActionType.BIRXN_BRICK,
+                ActionType.BIRXN_LINKER,
+            ):
+                names = [name for kind, name in spaces_by_action if kind == action_type]
+                if names:
+                    queries = self.model.forward_reactions(emb, names, action_type)
+                    for name, query in zip(names, queries.unbind(0), strict=True):
+                        reaction_queries[action_type, name] = query
+
             # 3. Apply size/property constraints to all libraries in the group.
             library_names = list(
                 dict.fromkeys(
@@ -351,7 +372,7 @@ class RxnFlowPolicy:
             group_logits: dict[ActionKey, tuple[torch.Tensor, ...]] = {}
             for (action_type, action_name), spaces in spaces_by_action.items():
                 if action_type.is_unirxn:
-                    logits = self._unirxn_logits(action_type, action_name, emb) * scale
+                    logits = reaction_queries[action_type, action_name] * scale
                     group_logits[spaces[0].name] = logits.unbind(0)
                     continue
 
@@ -360,10 +381,8 @@ class RxnFlowPolicy:
                 if action_type.is_first:
                     logits = self._first_synthon_logits(emb, synthons) * scale
                 else:
-                    logits = (
-                        self._birxn_logits(action_type, action_name, emb, synthons)
-                        * scale
-                    )
+                    query = reaction_queries[action_type, action_name]
+                    logits = (query @ synthons.T) * scale
                 mask = torch.cat([library_masks[name] for name in libraries], dim=1)
                 logits = logits.masked_fill(~mask, -torch.inf)
                 widths = [len(synthon_cache[name][0]) for name in libraries]
@@ -417,29 +436,34 @@ class RxnFlowPolicy:
         if not samples:
             return {}
 
-        fp_parts, prop_parts, type_parts, size_parts = [], [], [], []
+        widths = [len(indices) for indices in samples.values()]
+        count = sum(widths)
+        fp_arr = np.empty((count, FINGERPRINT_DIM), dtype=np.uint8)
+        prop_arr = np.empty((count, PROPERTY_DIM), dtype=np.float32)
+        type_arr = np.empty((count, 2), dtype=np.int64)
+        size_arr = np.empty(count, dtype=np.uint8)
+        offset = 0
         for library_name, indices in samples.items():
             library = self.env.synthons[library_name]
-            fp_parts.append(library.fingerprints[indices])
-            prop_parts.append(library.properties[indices])
-            type_parts.append(
-                np.broadcast_to(
-                    self.env.library_site_indices[library_name], (len(indices), 2)
-                )
-            )
-            size_parts.append(library.heavy_atoms[indices])
-        fp = torch.as_tensor(
-            np.concatenate(fp_parts), dtype=torch.float32, device=self.device
+            rows = slice(offset, offset + len(indices))
+            # Subsampling supplies valid indices. Clip mode lets take write directly
+            # into the final buffer without the temporary used by raise mode.
+            np.take(library.fingerprints, indices, axis=0, out=fp_arr[rows], mode="clip")
+            np.take(library.properties, indices, axis=0, out=prop_arr[rows], mode="clip")
+            np.take(library.heavy_atoms, indices, out=size_arr[rows], mode="clip")
+            type_arr[rows] = self.env.library_site_indices[library_name]
+            offset += len(indices)
+
+        # Transfer to device.
+        fp = torch.from_numpy(fp_arr).to(
+            self.device, dtype=torch.float32, non_blocking=True
         )
-        prop = torch.as_tensor(np.concatenate(prop_parts), device=self.device)
-        types = torch.as_tensor(
-            np.concatenate(type_parts), dtype=torch.long, device=self.device
+        prop = torch.from_numpy(prop_arr).to(self.device, non_blocking=True)
+        types = torch.from_numpy(type_arr).to(
+            self.device, dtype=torch.long, non_blocking=True
         )
-        size = torch.as_tensor(
-            np.concatenate(size_parts), dtype=torch.float32, device=self.device
-        )
+        size = torch.from_numpy(size_arr).to(self.device, non_blocking=True)
         embeddings = self._encode_synthons((fp, prop, types))
-        widths = [len(indices) for indices in samples.values()]
         return {
             library_name: (emb, prop, size)
             for library_name, emb, prop, size in zip(
