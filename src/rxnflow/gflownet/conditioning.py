@@ -54,8 +54,8 @@ class ConditionSampler:
                 or sum(pref_params) <= 0
             ):
                 raise ValueError(
-                    "fixed preference weights must match objectives and have positive total "
-                    "weight"
+                    "fixed preference weights must match objectives "
+                    "and have positive total weight"
                 )
         elif pref_dist == "dirichlet":
             if len(pref_params) not in (1, num_objectives) or any(

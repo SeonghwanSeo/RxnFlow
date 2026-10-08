@@ -6,6 +6,8 @@ import json
 from functools import cached_property
 from pathlib import Path
 
+from rdkit.Chem.rdChemReactions import ReactionToSmarts
+
 from rxnflow.core.compatibility import check_library_compatibility
 from rxnflow.core.errors import InvalidTransition
 from rxnflow.core.molecule import Molecule
@@ -307,9 +309,20 @@ class SynthesisEnv:
         )
 
     def action_to_dict(self, action: Action) -> dict[str, object]:
+        """Export the executed template and source BB candidates for an action."""
+        reaction_smarts = None
+        if not action.action_type.is_first:
+            reactions = (
+                self.uni_reactions if action.action_type.is_unirxn else self.bi_reactions
+            )
+            # Include incoming-site orientation in the executable template.
+            reaction_smarts = ReactionToSmarts(
+                reactions[action.reaction].forward_reaction
+            )
         result: dict[str, object] = {
             "action_type": action.action_type.name,
             "reaction": action.reaction,
+            "reaction_smarts": reaction_smarts,
         }
         if action.library_name is not None:
             assert action.synthon_index is not None

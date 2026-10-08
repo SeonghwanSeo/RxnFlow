@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from rdkit.Chem.rdChemReactions import ReactionToSmarts
 
 from rxnflow.config import Config
 from rxnflow.core.compatibility import (
@@ -76,22 +75,9 @@ class RxnFlowSampler:
     def _result(self, trajectory: Trajectory) -> SamplingResult:
         actions = []
         for step in trajectory.steps:
-            action = step.action
-            reaction_smarts = None
-            if not action.action_type.is_first:
-                reactions = (
-                    self.env.uni_reactions
-                    if action.action_type.is_unirxn
-                    else self.env.bi_reactions
-                )
-                # Export the executable template, including incoming-site orientation.
-                reaction_smarts = ReactionToSmarts(
-                    reactions[action.reaction].forward_reaction
-                )
             actions.append(
                 {
-                    **self.env.action_to_dict(action),
-                    "reaction_smarts": reaction_smarts,
+                    **self.env.action_to_dict(step.action),
                     "product_smiles": step.product_smiles,
                 }
             )
@@ -126,9 +112,7 @@ class RxnFlowSampler:
             beta = self.config.reward.beta
         if preference is None:
             preference = self.config.reward.moo_preference
-        if (preference[0] == "none") != (
-            self.config.reward.moo_preference[0] == "none"
-        ):
+        if (preference[0] == "none") != (self.config.reward.moo_preference[0] == "none"):
             raise ValueError("preference 'none' must match the checkpoint setting")
         conditions = ConditionSampler(
             beta,
@@ -151,9 +135,7 @@ class RxnFlowSampler:
             trained = np.asarray(trained_preference[1])
             requested = np.asarray(preference[1])
             if not np.allclose(trained / trained.sum(), requested / requested.sum()):
-                raise ValueError(
-                    "sampling preference differ from fixed training weights"
-                )
+                raise ValueError("sampling preference differ from fixed training weights")
         if batch_size <= 0:
             raise ValueError("batch size must be positive")
         if num_samples <= 0:

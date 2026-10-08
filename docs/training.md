@@ -21,12 +21,13 @@ if __name__ == "__main__":
         reward,
         output_dir="runs/custom_reward",
         device="cuda",
+        num_workers=4,
         seed=1,
     )
     checkpoint = trainer.run(num_steps=1000)
 ```
 
-`trainer.run(steps)` performs the requested number of additional updates. Output directory, device, seed and update count are execution arguments, separate from YAML settings.
+`trainer.run(steps)` performs the requested number of additional updates. Output directory, device, worker count, seed and update count are execution arguments, separate from YAML settings. Trainer's `num_workers` sets the number of retrosynthesis workers (default `4`); `0` runs in the main process and emits an initialization warning.
 
 ## Resume training
 
@@ -40,6 +41,7 @@ trainer = RxnFlowTrainer(
     reward,
     output_dir="runs/custom_reward_resumed",
     device="cuda",
+    num_workers=4,
     seed=1,
 )
 checkpoint = trainer.run(
@@ -60,15 +62,15 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 | `checkpoints/latest.ckpt` | Model, optimizer, replay and RNG state for restart. |
 | `training.log` | Training log, also printed to terminal. |
 | `training.jsonl` | Metrics for every update. |
-| `samples/step_XXXXXX.jsonl` | All online attempts for each update, including invalid ones. |
+| `sample.jsonl` | All online attempts appended across updates, including invalid ones. |
 
 ### Sample records
 
-`samples/step_XXXXXX.jsonl` stores individual online attempts. Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `preference`, `valid`, `invalid_reason` and `traj`.
+`sample.jsonl` stores individual online attempts. Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `preference`, `valid`, `invalid_reason` and `traj`. The iteration index `step` starts at one; the `sample` index starts at zero within each step.
 
 - `objective_rewards` follows the reward class's `objectives` order.
 - `preference` stores effective weights: their sum is the number of objectives for `mul`, or one for `sum`.
-- `traj` records the pre-reaction state, reaction name and added synthon. Initial synthon selection is omitted because it is already represented in the first reaction's state.
+- `traj` records the synthesis trajectory.
 
 ### Training log metrics
 
@@ -116,10 +118,8 @@ Subset metrics are zero when their subset is empty.
 | `learning_rate` | Policy learning rate after the scheduler update. |
 | `policy_grad_norm` | Policy gradient L2 norm before clipping. |
 | `grad_norm` | Total gradient L2 norm, including the logZ head, before clipping. |
-| `policy_grad_clipped` | `1` when the policy gradient norm exceeds the clipping threshold of 100; otherwise `0`. |
 | `sampling_time` | Online trajectory generation time in seconds, excluding reward evaluation. |
-| `time` | Update time in seconds through metric collection, excluding output writing and checkpoint saving. |
-| `logging_time` | Time in seconds spent writing the per-step sample file. |
+| `time` | Online sampling and training time in seconds. |
 
 
 ## Sampling

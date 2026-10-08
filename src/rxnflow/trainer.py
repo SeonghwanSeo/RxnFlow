@@ -11,7 +11,6 @@ from time import perf_counter
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
@@ -19,7 +18,7 @@ from rxnflow.core.compatibility import (
     check_library_compatibility,
     check_model_compatibility,
 )
-from rxnflow.core.types import ActionType, Trajectory
+from rxnflow.core.types import Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy
@@ -58,13 +57,17 @@ class RxnFlowTrainer:
         config: Config,
         reward: RewardFunction,
         *,
+        seed: int = 1,
         output_dir: str | Path,
         device: str | torch.device = "cuda",
-        seed: int = 1,
+        num_workers: int = 4,
     ):
         # Validate the configuration
         config.validate()
+        if num_workers < 0:
+            raise ValueError("num_workers must be non-negative")
         self.config: Config = config
+        self.num_workers = num_workers
 
         # Set up the output directory
         self.output_dir = Path(output_dir)
@@ -74,8 +77,7 @@ class RxnFlowTrainer:
         self.config.save(self.output_dir / "config.yaml")
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.checkpoint_dir.mkdir()
-        self.sample_dir = self.output_dir / "samples"
-        self.sample_dir.mkdir()
+        self.sample_path = self.output_dir / "sample.jsonl"
         self.log_file = self.output_dir / "training.log"
         init_logger(self.log_file)
 
@@ -84,7 +86,17 @@ class RxnFlowTrainer:
         torch.manual_seed(seed)
         self.rng = np.random.default_rng(seed)
 
-        logger.info("Initializing trainer: device=%s, seed=%d", device, seed)
+        logger.info(
+            "Initializing trainer: device=%s, num_workers=%d, seed=%d",
+            device,
+            num_workers,
+            seed,
+        )
+        if num_workers == 0:
+            logger.warning(
+                "num_workers=0: retrosynthesis runs in the main process "
+                "and may slow training."
+            )
         logger.info(
             "Config:\n%s",
             OmegaConf.to_yaml(OmegaConf.create(config.to_file_dict())).rstrip(),
@@ -120,7 +132,7 @@ class RxnFlowTrainer:
             cfg.generation.max_synthons,
             cfg.generation.min_reactions,
             cfg.property_penalty,
-            cfg.training.retrosynthesis_workers,
+            self.num_workers,
         )
         logger.info(
             "Environment loaded: %s libraries, %s synthons.",
@@ -298,13 +310,12 @@ class RxnFlowTrainer:
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
         """Retain user scores and apply terminal property penalties before beta."""
-        mols = [
-            Chem.MolFromSmiles(value.final_smiles) if value.valid else None
-            for value in trajectories
+        smiles_list = [
+            value.final_smiles if value.valid else None for value in trajectories
         ]
-        values = self.reward.run(mols)
+        values = self.reward.run(smiles_list)
         property_rewards, violations = compute_property_rewards(
-            mols,
+            smiles_list,
             self.env.property_limits,
             self.env.max_atoms,
             self.config.reward.property_penalty_ratio,
@@ -341,28 +352,23 @@ class RxnFlowTrainer:
         ):
             target.mul_(decay).add_(source, alpha=1 - decay)
 
+    def _clip_policy_gradients(self) -> torch.Tensor:
+        """Clip policy gradients and return their pre-clip norm."""
+        grad_clip = self.config.training.grad_clip
+        norm = torch.nn.utils.clip_grad_norm_(self.policy_parameters, grad_clip)
+        return norm
+
     def _write_samples(self, trajectories: list[Trajectory]) -> None:
-        """Write the compact reaction paths for one training update."""
-        sample_path = self.sample_dir / f"step_{self.step:06d}.jsonl"
-        with sample_path.open("w", encoding="utf-8") as handle:
+        """Retain online molecules, rewards and complete synthesis routes."""
+        with self.sample_path.open("a") as handle:
             for index, value in enumerate(trajectories):
                 traj = []
                 for transition in value.steps:
-                    action = transition.action
-                    # The first reaction's state already contains the initial brick.
-                    if action.action_type == ActionType.FIRST_SYNTHON:
-                        continue
-                    synthon_smiles = None
-                    if action.library_name is not None:
-                        assert action.synthon_index is not None
-                        synthon_smiles = self.env.synthons[action.library_name].smiles[
-                            action.synthon_index
-                        ]
                     traj.append(
                         {
                             "state": transition.state.smiles,
-                            "reaction": action.reaction,
-                            "synthon_smiles": synthon_smiles,
+                            **self.env.action_to_dict(transition.action),
+                            "product_smiles": transition.product_smiles,
                         }
                     )
                 sample = {
@@ -435,9 +441,7 @@ class RxnFlowTrainer:
                 loss.backward()
                 # clip_grad_norm_ already returns the pre-clip norm. No second
                 # traversal of policy gradients is needed for diagnostics.
-                policy_grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.policy_parameters, 100.0
-                )
+                policy_grad_norm = self._clip_policy_gradients()
                 loss_info.update(
                     policy_grad_norm=policy_grad_norm,
                     # Total pre-clip norm includes the unclipped logZ head.
@@ -449,7 +453,6 @@ class RxnFlowTrainer:
                             if p.grad is not None
                         )
                     ).sqrt(),
-                    policy_grad_clipped=(policy_grad_norm > 100.0).float(),
                 )
                 self.optimizer.step()
                 self.lr_scheduler.step()
@@ -497,12 +500,9 @@ class RxnFlowTrainer:
                     "sampling_time": sample_time,
                     "time": perf_counter() - started,
                 }
-                # Keep all online attempts, including invalid ones. This readable
-                # path log omits replay-only state flags and backward probabilities;
-                # checkpoints retain the complete training trajectories.
-                log_started = perf_counter()
+
+                # Log the generated trajectories and training metrics.
                 self._write_samples(online_trajs)
-                record["logging_time"] = perf_counter() - log_started
                 with log_path.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record, sort_keys=True) + "\n")
                 if (

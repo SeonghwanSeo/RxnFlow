@@ -15,7 +15,8 @@ class HeavyAtomReward(RewardFunction):
     def __init__(self, scale: float = 40.0):
         self.scale = scale
 
-    def score(self, mols: list[Chem.Mol]) -> NDArray[np.float32]:
+    def score(self, smiles_list: list[str]) -> NDArray[np.float32]:
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
         values = np.zeros((len(mols), 1), dtype=np.float32)
         for i, mol in enumerate(mols):
             num_atoms = mol.GetNumHeavyAtoms()
@@ -31,6 +32,8 @@ if __name__ == "__main__":
     trainer = RxnFlowTrainer(
         config,
         reward,
+        seed=1,
         output_dir="runs/custom_reward",
+        num_workers=4,
     )
     trainer.run(1000)

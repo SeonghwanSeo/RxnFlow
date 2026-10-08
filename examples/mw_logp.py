@@ -22,7 +22,8 @@ class MWLogPReward(RewardFunction):
         self.mw_scale = mw_scale
         self.logp_scale = logp_scale
 
-    def score(self, mols: list[Chem.Mol]) -> np.ndarray:
+    def score(self, smiles_list: list[str]) -> np.ndarray:
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
         # Convert both properties to positive rewards: lower MW and higher logP.
         rewards = [
             [
@@ -57,9 +58,10 @@ def main(argv: list[str] | None = None) -> None:
     trainer = RxnFlowTrainer(
         config,
         reward,
+        seed=args.seed,
         output_dir=args.output_dir,
         device=device,
-        seed=args.seed,
+        num_workers=4,
     )
     checkpoint = trainer.run(
         args.steps, resume_from_checkpoint=args.resume_from_checkpoint

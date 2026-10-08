@@ -42,12 +42,13 @@ Preferences follow the column order in your reward's `objectives` tuple.
 | --- | --- |
 | `"none"` | Equal weights throughout training and sampling. |
 | `"fixed(0.3,0.7)"` | Fixed relative weights for two objectives. |
-| `"uniform"` | Sample uniformly on the preference simplex. |
+| `"dirichlet(1.5)"` | Sample preferences with more emphasis near the center of the simplex. |
+| `"dirichlet(1)"` | Sample uniformly on the preference simplex. |
 | `"dirichlet(0.5)"` | Sample preferences with more emphasis near the simplex boundaries. |
 
 Fixed weights require one non-negative value per objective and a positive total.
 
-Dirichlet concentrations must be positive. One value is shared across objectives: with three objectives, `dirichlet(0.5)` is equivalent to `dirichlet(0.5,0.5,0.5)`. You can also supply one concentration per objective. Equal concentrations of `1` give the same distribution as `uniform`; values below `1` favor the boundaries, while values above `1` favor balanced preferences.
+`dirichlet` without parameters uses `dirichlet(1.5)`. Dirichlet concentrations must be positive. One value is shared across objectives: with three objectives, `dirichlet(0.5)` is equivalent to `dirichlet(0.5,0.5,0.5)`. You can also supply one concentration per objective. Equal concentrations of `1` sample uniformly on the preference simplex; values below `1` favor the boundaries, while values above `1` favor balanced preferences.
 
 For example, to train across both exponents and trade-offs:
 
@@ -55,7 +56,7 @@ For example, to train across both exponents and trade-offs:
 reward:
   beta: "uniform(1,64)"
   moo_scalarization: mul
-  moo_preference: "uniform"
+  moo_preference: "dirichlet"
 ```
 
 ## Choose conditions when sampling
@@ -64,6 +65,6 @@ Omitted beta and preferences reuse their training settings.
 
 - Fixed-beta training requires the same beta at sampling. Uniform-beta training allows a fixed value or uniform subrange inside the training range.
 - `none` keeps equal weights. Fixed-preference training requires the same relative weights.
-- Training with `uniform` or `dirichlet(...)` allows you to choose a fixed trade-off or another preference distribution at sampling.
+- Training with `dirichlet` or `dirichlet(...)` allows you to choose a fixed trade-off or another preference distribution at sampling.
 
 Use `--beta` and `--preference` in the [sampling command](training.md#sampling), or the corresponding arguments to `RxnFlowSampler.sample()`.

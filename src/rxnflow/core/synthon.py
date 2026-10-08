@@ -8,6 +8,8 @@ import yaml
 from rdkit import Chem
 from rdkit.Chem.rdChemReactions import ChemicalReaction, ReactionFromSmarts
 
+_DUMMY_ATOM = Chem.MolFromSmarts("[#0]")
+
 
 class SynthonConversion:
     def __init__(self, synthon_type: int, original: str, converted: str):
@@ -44,7 +46,12 @@ class SynthonConversion:
 
 def get_dummy_atoms(mol: Chem.Mol) -> tuple[Chem.Atom, ...]:
     """Return dummy atoms."""
-    return tuple(atom for atom in mol.GetAtoms() if atom.GetAtomicNum() == 0)
+    # Match in RDKit to avoid Python wrappers for non-dummy atoms. The atom
+    # count bounds all possible matches without truncating large molecules.
+    return tuple(
+        mol.GetAtomWithIdx(index)
+        for (index,) in mol.GetSubstructMatches(_DUMMY_ATOM, maxMatches=mol.GetNumAtoms())
+    )
 
 
 def typed_dummy_isotopes(mol: Chem.Mol) -> tuple[int, ...]:
