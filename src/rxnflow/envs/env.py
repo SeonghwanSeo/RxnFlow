@@ -313,9 +313,7 @@ class SynthesisEnv:
         reaction_smarts = None
         if not action.action_type.is_first:
             reactions = (
-                self.uni_reactions
-                if action.action_type.is_unirxn
-                else self.bi_reactions
+                self.uni_reactions if action.action_type.is_unirxn else self.bi_reactions
             )
             # Include incoming-site orientation in the executable template.
             reaction_smarts = ReactionToSmarts(

@@ -68,7 +68,7 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 
 - `objective_rewards` follows the reward class's `objectives` order.
 - `preference` stores effective weights: their sum is the number of objectives for `mul`, or one for `sum`.
-- `traj` includes generative trajectory.
+- `traj` records the synthesis trajectory.
 
 ### Training log metrics
 
@@ -117,7 +117,7 @@ Subset metrics are zero when their subset is empty.
 | `policy_grad_norm` | Policy gradient L2 norm before clipping. |
 | `grad_norm` | Total gradient L2 norm, including the logZ head, before clipping. |
 | `sampling_time` | Online trajectory generation time in seconds, excluding reward evaluation. |
-| `time` | Update time in seconds through sample writing, excluding metric logging and checkpoint saving. |
+| `time` | Online sampling and training time in seconds. |
 
 
 ## Sampling

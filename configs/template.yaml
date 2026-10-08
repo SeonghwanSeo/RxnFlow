@@ -4,7 +4,7 @@ env_dir: /path/to/prepared/environment
 reward:
   beta: "32" # scalar | uniform(lower,upper)
   moo_scalarization: mul # mul | sum
-  moo_preference: "none" # none | uniform | dirichlet(alpha)
+  moo_preference: "none" # none | fixed(...) | dirichlet | dirichlet(...)
   property_penalty_ratio: 0.2
   settings: {}
 
@@ -41,10 +41,11 @@ training:
   replay_insert_priority: uniform # uniform | reward
   learning_rate: 0.0001
   learning_rate_logZ: 0.01
-  lr_decay_steps: 10000
+  lr_decay_steps: 5000
   weight_decay: 1e-8
+  grad_clip: 100.0
   reward_floor: 1e-5
-  loss_fn: mse # mse | mae | huber
-  random_action_prob: 0.1
+  loss_fn: huber # mse | mae | huber
+  random_action_prob: 0.05
   backward_synthon_penalty: 100.0
   retrosynthesis_workers: 4

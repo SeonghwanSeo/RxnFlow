@@ -112,9 +112,7 @@ class RxnFlowSampler:
             beta = self.config.reward.beta
         if preference is None:
             preference = self.config.reward.moo_preference
-        if (preference[0] == "none") != (
-            self.config.reward.moo_preference[0] == "none"
-        ):
+        if (preference[0] == "none") != (self.config.reward.moo_preference[0] == "none"):
             raise ValueError("preference 'none' must match the checkpoint setting")
         conditions = ConditionSampler(
             beta,
@@ -137,9 +135,7 @@ class RxnFlowSampler:
             trained = np.asarray(trained_preference[1])
             requested = np.asarray(preference[1])
             if not np.allclose(trained / trained.sum(), requested / requested.sum()):
-                raise ValueError(
-                    "sampling preference differ from fixed training weights"
-                )
+                raise ValueError("sampling preference differ from fixed training weights")
         if batch_size <= 0:
             raise ValueError("batch size must be positive")
         if num_samples <= 0:

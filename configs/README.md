@@ -16,9 +16,11 @@ See [custom rewards](../docs/rewards.md) for implementation and [conditioning](.
 | --- | --- | --- |
 | `reward.beta` | `"32"` | Reward exponent: a fixed value or `uniform(lower,upper)`. |
 | `reward.moo_scalarization` | `mul` | Combine objectives by weighted product (`mul`) or weighted sum (`sum`). |
-| `reward.moo_preference` | `"none"` | Objective weights: `none`, `fixed(...)`, `uniform` or `dirichlet(...)`. |
+| `reward.moo_preference` | `"none"` | Objective weights: `none`, `fixed(...)`, `dirichlet` or `dirichlet(...)`. |
 | `reward.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
 | `reward.settings` | `{}` | Constructor arguments for your reward class. |
+
+`dirichlet` defaults to concentration `1.5`. Use `dirichlet(alpha)` for a shared concentration or `dirichlet(alpha1,alpha2,...)` for per-objective concentrations.
 
 ## Property penalty
 
@@ -88,10 +90,11 @@ MLP layer counts include the output linear layer.
 | `training.replay_insert_priority` | `uniform` | Limited insertion selection: random (`uniform`) or highest reward (`reward`). |
 | `training.learning_rate` | `1e-4` | Adam learning rate for policy parameters. |
 | `training.learning_rate_logZ` | `1e-2` | Adam learning rate for the logZ head. |
-| `training.lr_decay_steps` | `10000` | Updates over which both learning rates halve. |
+| `training.lr_decay_steps` | `5000` | Updates over which both learning rates halve. |
 | `training.weight_decay` | `1e-8` | Adam weight decay. |
+| `training.grad_clip` | `100.0` | Global L2 gradient clipping threshold for policy parameters, excluding the logZ head. |
 | `training.reward_floor` | `1e-5` | Reward lower bound before taking logarithms. |
-| `training.loss_fn` | `mse` | TB loss: `mse`, `mae`, or `huber` (delta=1). |
-| `training.random_action_prob` | `0.1` | Exploration-action probability during online training. |
+| `training.loss_fn` | `huber` | TB loss: `mse`, `mae`, or `huber` (delta=1). |
+| `training.random_action_prob` | `0.05` | Exploration-action probability during online training. |
 | `training.backward_synthon_penalty` | `100.0` | Backward-route penalty per additional synthon; values above `1` favor fewer synthons. |
 | `training.retrosynthesis_workers` | `4` | Reverse-search workers; `0` runs synchronously. |

@@ -8,7 +8,6 @@ import yaml
 from rdkit import Chem
 from rdkit.Chem.rdChemReactions import ChemicalReaction, ReactionFromSmarts
 
-
 _DUMMY_ATOM = Chem.MolFromSmarts("[#0]")
 
 
@@ -51,9 +50,7 @@ def get_dummy_atoms(mol: Chem.Mol) -> tuple[Chem.Atom, ...]:
     # count bounds all possible matches without truncating large molecules.
     return tuple(
         mol.GetAtomWithIdx(index)
-        for (index,) in mol.GetSubstructMatches(
-            _DUMMY_ATOM, maxMatches=mol.GetNumAtoms()
-        )
+        for (index,) in mol.GetSubstructMatches(_DUMMY_ATOM, maxMatches=mol.GetNumAtoms())
     )
 
 

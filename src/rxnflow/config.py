@@ -12,14 +12,14 @@ from omegaconf import OmegaConf
 
 
 def parse_distribution(value: str) -> tuple[str, list[float]]:
-    """Parse a CLI/YAML condition. Bare uniform means simplex-uniform weights."""
+    """Parse a CLI/YAML condition."""
     if not isinstance(value, str):
         raise ValueError("external condition specifications must be strings")
     value = value.strip()
     if value == "none":
         return "none", []
-    if value == "uniform":
-        return "dirichlet", [1.0]
+    if value == "dirichlet":
+        return "dirichlet", [1.5]
     match = re.fullmatch(r"(fixed|uniform|dirichlet)\(([^)]+)\)", value)
     if match:
         return match[1], [float(x) for x in match[2].split(",")]
@@ -135,11 +135,12 @@ class TrainingConfig:
     replay_insert_priority: Literal["uniform", "reward"] = "uniform"
     learning_rate: float = 1e-4
     learning_rate_logZ: float = 1e-2
-    lr_decay_steps: float = 10_000
+    lr_decay_steps: float = 5_000
     weight_decay: float = 1e-8
+    grad_clip: float = 100.0
     reward_floor: float = 1e-5
-    loss_fn: Literal["mse", "mae", "huber"] = "mse"
-    random_action_prob: float = 0.1
+    loss_fn: Literal["mse", "mae", "huber"] = "huber"
+    random_action_prob: float = 0.05
     backward_synthon_penalty: float = 100.0
     retrosynthesis_workers: int = 4
 
@@ -178,6 +179,8 @@ class TrainingConfig:
             )
         ):
             raise ValueError("learning rates and decay steps must be positive")
+        if not math.isfinite(self.grad_clip) or self.grad_clip <= 0:
+            raise ValueError("training.grad_clip must be finite and positive")
         if not math.isfinite(self.reward_floor) or self.reward_floor <= 0:
             raise ValueError("training.reward_floor must be finite and positive")
         if self.loss_fn not in ("mse", "mae", "huber"):

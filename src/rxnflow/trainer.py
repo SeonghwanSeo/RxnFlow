@@ -341,6 +341,12 @@ class RxnFlowTrainer:
         ):
             target.mul_(decay).add_(source, alpha=1 - decay)
 
+    def _clip_policy_gradients(self) -> torch.Tensor:
+        """Clip policy gradients and return their pre-clip norm."""
+        grad_clip = self.config.training.grad_clip
+        norm = torch.nn.utils.clip_grad_norm_(self.policy_parameters, grad_clip)
+        return norm
+
     def _write_samples(self, trajectories: list[Trajectory]) -> None:
         """Retain online molecules, rewards and complete synthesis routes."""
         sample_path = self.sample_dir / f"step_{self.step:06d}.jsonl"
@@ -425,9 +431,7 @@ class RxnFlowTrainer:
                 loss.backward()
                 # clip_grad_norm_ already returns the pre-clip norm. No second
                 # traversal of policy gradients is needed for diagnostics.
-                policy_grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.policy_parameters, 100.0
-                )
+                policy_grad_norm = self._clip_policy_gradients()
                 loss_info.update(
                     policy_grad_norm=policy_grad_norm,
                     # Total pre-clip norm includes the unclipped logZ head.

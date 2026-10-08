@@ -14,19 +14,25 @@ from rxnflow.sampler import RxnFlowSampler
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--checkpoint", type=Path, required=True,
+        "--checkpoint",
+        type=Path,
+        required=True,
         help="training checkpoint or extracted sampling model",
     )
+    parser.add_argument("--output", type=Path, required=True, help="output file path")
     parser.add_argument(
-        "--output", type=Path, required=True, help="output file path"
-    )
-    parser.add_argument(
-        "--format", choices=("smi", "json", "jsonl"),
+        "--format",
+        choices=("smi", "json", "jsonl"),
         help="output format (default: inferred from the output file extension)",
     )
     parser.add_argument(
-        "--num-samples", type=int, default=1000,
-        help="trajectory attempts (default: 1000); invalid results are excluded without retrying",
+        "--num-samples",
+        type=int,
+        default=1000,
+        help=(
+            "trajectory attempts (default: 1000); "
+            "invalid results are excluded without retrying"
+        ),
     )
     parser.add_argument(
         "--batch-size", type=int, default=64, help="trajectories per batch (default: 64)"
@@ -57,8 +63,11 @@ def main(argv: list[str] | None = None) -> None:
         "--device", help="device, e.g. cpu or cuda; omitted selects CUDA when available"
     )
     parser.add_argument(
-        "--env-dir", type=Path,
-        help="override the checkpoint's prepared catalog; template definitions must match",
+        "--env-dir",
+        type=Path,
+        help=(
+            "override the checkpoint's prepared catalog; template definitions must match"
+        ),
     )
     args = parser.parse_args(argv)
     device = (
