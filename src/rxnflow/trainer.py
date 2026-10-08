@@ -11,7 +11,6 @@ from time import perf_counter
 import numpy as np
 import torch
 from omegaconf import OmegaConf
-from rdkit import Chem
 
 from rxnflow import __version__
 from rxnflow.config import Config
@@ -58,10 +57,10 @@ class RxnFlowTrainer:
         config: Config,
         reward: RewardFunction,
         *,
+        seed: int = 1,
         output_dir: str | Path,
         device: str | torch.device = "cuda",
         num_workers: int = 4,
-        seed: int = 1,
     ):
         # Validate the configuration
         config.validate()
@@ -311,13 +310,12 @@ class RxnFlowTrainer:
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
         """Retain user scores and apply terminal property penalties before beta."""
-        mols = [
-            Chem.MolFromSmiles(value.final_smiles) if value.valid else None
-            for value in trajectories
+        smiles_list = [
+            value.final_smiles if value.valid else None for value in trajectories
         ]
-        values = self.reward.run(mols)
+        values = self.reward.run(smiles_list)
         property_rewards, violations = compute_property_rewards(
-            mols,
+            smiles_list,
             self.env.property_limits,
             self.env.max_atoms,
             self.config.reward.property_penalty_ratio,

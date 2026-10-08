@@ -40,7 +40,7 @@ def get_property_penalty(
 
 
 def compute_property_rewards(
-    mols: list[Chem.Mol | None],
+    smiles_list: list[str | None],
     property_limits: dict[int, float],
     max_atoms: int,
     sigma_ratio: float,
@@ -51,12 +51,12 @@ def compute_property_rewards(
     that bound strict. Violations do not change the chemical validity of a route.
     """
     limits = {**property_limits, PROPERTY_NAMES.index("heavy_atoms"): max_atoms}
-    rewards = np.zeros(len(mols), dtype=np.float32)
-    violations = np.zeros(len(mols), dtype=np.bool_)
-    for i, mol in enumerate(mols):
-        if mol is None:
+    rewards = np.zeros(len(smiles_list), dtype=np.float32)
+    violations = np.zeros(len(smiles_list), dtype=np.bool_)
+    for i, smi in enumerate(smiles_list):
+        if smi is None:
             continue
-        properties = molecular_properties(mol)
+        properties = molecular_properties(Chem.MolFromSmiles(smi))
         log_reward = 0.0
         for index, limit in limits.items():
             excess = float(properties[index]) - limit

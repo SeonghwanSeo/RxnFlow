@@ -1,6 +1,6 @@
 # Custom rewards
 
-Implement `RewardFunction.score()` to return one score per objective for each molecule:
+Implement `RewardFunction.score()` to accept a list of SMILES strings and return one score per objective for each molecule:
 
 ```python
 import numpy as np
@@ -12,17 +12,22 @@ from rxnflow import RewardFunction
 class MyReward(RewardFunction):
     objectives = ("qed",)
 
-    def score(self, mols: list[Chem.Mol]) -> np.ndarray:
-        qeds = [QED.qed(mol) for mol in mols]
-        return np.array(qeds, dtype=np.float32).reshape(-1, 1)
+    def score(self, smiles_list: list[str]) -> np.ndarray:
+        """
+        inputs: list of unique, uncached SMILES strings.
+        outputs: NumPy array of shape [batch, num_objectives]
+        """
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
+        qeds = [QED.qed(m) for m in mols]
+        rewards = np.array(qeds, dtype=np.float32).reshape(-1, 1)
+        return rewards  # [batch, 1]
 ```
 
 - Return finite, non-negative scores.
-- Return a float32 NumPy array of shape `[batch, num_objectives]`, including for an empty batch. Columns follow the order in `objectives`.
-- Return the individual objective scores; RxnFlow applies preference weights and the configured [terminal property penalty](conditioning.md#property-rewards). Do not add the framework's property penalty as an MOO objective.
-- Assign zero scores to unwanted molecules inside `score()`, preserving the input order and batch size. This lowers their reward; it does not remove them from sample outputs.
-
-For direct evaluation, use `reward.run(mols)` or `reward(mols)` to obtain individual objective scores. See [MW/logP](../examples/mw_logp.py) for a runnable two-objective example.
+- Return a NumPy array of shape `[batch, num_objectives]`, preserving input molecule order and objectives column order.
+- Return the individual objective scores; RxnFlow applies preference weights and the configured [terminal property penalty](conditioning.md#property-rewards).
+- Scores are cached by SMILES in the `_cache` dictionary.
+- `run()` and `__call__()` accept `list[str | None]`, including duplicates and `None` for molecules that failed to generate. `score()` receives only unique, uncached SMILES strings.
 
 ## Pass reward settings
 
@@ -41,11 +46,12 @@ class MolecularWeightReward(RewardFunction):
     def __init__(self, target_mw: float):
         self.target_mw = target_mw
 
-    def score(self, mols: list[Chem.Mol]) -> np.ndarray:
-        rewards = [
-            1 / (1 + abs(Descriptors.ExactMolWt(mol) - self.target_mw)) for mol in mols
-        ]
-        return np.array(rewards, dtype=np.float32).reshape(-1, 1)
+    def score(self, smiles_list: list[str]) -> np.ndarray:
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
+        mws = [Descriptors.ExactMolWt(m) for m in mols]
+        mws = np.array(mws)
+        rewards = 1 / (1 + np.abs(mws - self.target_mw))
+        return rewards.reshape(-1, 1)  # [batch, 1]
 ```
 
 Set the target molecular weight in your training YAML, as in [mw_cond.yaml](../configs/mw_cond.yaml):
@@ -85,16 +91,15 @@ class MWLogPReward(RewardFunction):
         self.mw_scale = mw_scale
         self.logp_scale = logp_scale
 
-    def score(self, mols: list[Chem.Mol]) -> np.ndarray:
+    def score(self, smiles_list: list[str]) -> np.ndarray:
         # Convert both properties to positive rewards: lower MW and higher logP.
-        rewards = [
-            [
-                1 / (1 + Descriptors.ExactMolWt(mol) / self.mw_scale),
-                1 / (1 + np.exp(-Descriptors.MolLogP(mol) / self.logp_scale)),
-            ]
-            for mol in mols
-        ]
-        return np.array(rewards, dtype=np.float32).reshape(-1, 2)
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
+        mws = np.array([Descriptors.ExactMolWt(m) for m in mols])
+        logps = np.array([Descriptors.MolLogP(m) for m in mols])
+        mw_rewards = 1 / (1 + mws / self.mw_scale)
+        logp_rewards = 1 / (1 + np.exp(-logps / self.logp_scale))
+        rewards = np.stack([mw_rewards, logp_rewards], axis=1)
+        return rewards  # [batch, 2]
 ```
 
 The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`. Positive `mw_scale` and `logp_scale` control each score's sensitivity.

@@ -21,7 +21,8 @@ from rxnflow.trainer import RxnFlowTrainer
 class QEDReward(RewardFunction):
     objectives = ("qed",)
 
-    def score(self, mols: list[Chem.Mol]) -> np.ndarray:
+    def score(self, smiles_list: list[str]) -> np.ndarray:
+        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
         qeds = [QED.qed(mol) for mol in mols]
         return np.array(qeds, dtype=np.float32).reshape(-1, 1)
 
@@ -49,9 +50,10 @@ def main(argv: list[str] | None = None) -> None:
     trainer = RxnFlowTrainer(
         config,
         reward,
+        seed=args.seed,
         output_dir=args.output_dir,
         device=device,
-        seed=args.seed,
+        num_workers=4,
     )
     checkpoint = trainer.run(
         args.steps, resume_from_checkpoint=args.resume_from_checkpoint
