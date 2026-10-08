@@ -60,11 +60,15 @@ class RxnFlowTrainer:
         *,
         output_dir: str | Path,
         device: str | torch.device = "cuda",
+        num_workers: int = 4,
         seed: int = 1,
     ):
         # Validate the configuration
         config.validate()
+        if num_workers < 0:
+            raise ValueError("num_workers must be non-negative")
         self.config: Config = config
+        self.num_workers = num_workers
 
         # Set up the output directory
         self.output_dir = Path(output_dir)
@@ -74,8 +78,7 @@ class RxnFlowTrainer:
         self.config.save(self.output_dir / "config.yaml")
         self.checkpoint_dir = self.output_dir / "checkpoints"
         self.checkpoint_dir.mkdir()
-        self.sample_dir = self.output_dir / "samples"
-        self.sample_dir.mkdir()
+        self.sample_path = self.output_dir / "sample.jsonl"
         self.log_file = self.output_dir / "training.log"
         init_logger(self.log_file)
 
@@ -84,7 +87,17 @@ class RxnFlowTrainer:
         torch.manual_seed(seed)
         self.rng = np.random.default_rng(seed)
 
-        logger.info("Initializing trainer: device=%s, seed=%d", device, seed)
+        logger.info(
+            "Initializing trainer: device=%s, num_workers=%d, seed=%d",
+            device,
+            num_workers,
+            seed,
+        )
+        if num_workers == 0:
+            logger.warning(
+                "num_workers=0: retrosynthesis runs in the main process "
+                "and may slow training."
+            )
         logger.info(
             "Config:\n%s",
             OmegaConf.to_yaml(OmegaConf.create(config.to_file_dict())).rstrip(),
@@ -120,7 +133,7 @@ class RxnFlowTrainer:
             cfg.generation.max_synthons,
             cfg.generation.min_reactions,
             cfg.property_penalty,
-            cfg.training.retrosynthesis_workers,
+            self.num_workers,
         )
         logger.info(
             "Environment loaded: %s libraries, %s synthons.",
@@ -349,8 +362,7 @@ class RxnFlowTrainer:
 
     def _write_samples(self, trajectories: list[Trajectory]) -> None:
         """Retain online molecules, rewards and complete synthesis routes."""
-        sample_path = self.sample_dir / f"step_{self.step:06d}.jsonl"
-        with sample_path.open("w", encoding="utf-8") as handle:
+        with self.sample_path.open("a") as handle:
             for index, value in enumerate(trajectories):
                 traj = []
                 for transition in value.steps:

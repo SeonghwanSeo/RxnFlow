@@ -48,4 +48,3 @@ training:
   loss_fn: huber # mse | mae | huber
   random_action_prob: 0.05
   backward_synthon_penalty: 100.0
-  retrosynthesis_workers: 4

@@ -142,7 +142,6 @@ class TrainingConfig:
     loss_fn: Literal["mse", "mae", "huber"] = "huber"
     random_action_prob: float = 0.05
     backward_synthon_penalty: float = 100.0
-    retrosynthesis_workers: int = 4
 
     def validate(self) -> None:
         positive_ints = {
@@ -161,8 +160,6 @@ class TrainingConfig:
             raise ValueError("training.num_replay_insert must be non-negative or None")
         if self.replay_insert_priority not in ("uniform", "reward"):
             raise ValueError("training.replay_insert_priority must be uniform or reward")
-        if self.retrosynthesis_workers < 0:
-            raise ValueError("training.retrosynthesis_workers must be non-negative")
         if (
             not math.isfinite(self.backward_synthon_penalty)
             or self.backward_synthon_penalty <= 0
