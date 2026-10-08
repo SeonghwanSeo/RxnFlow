@@ -68,7 +68,7 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 
 - `objective_rewards` follows the reward class's `objectives` order.
 - `preference` stores effective weights: their sum is the number of objectives for `mul`, or one for `sum`.
-- `traj` records the pre-reaction state, reaction name and added synthon. Initial synthon selection is omitted because it is already represented in the first reaction's state.
+- `traj` includes generative trajectory.
 
 ### Training log metrics
 
@@ -116,10 +116,8 @@ Subset metrics are zero when their subset is empty.
 | `learning_rate` | Policy learning rate after the scheduler update. |
 | `policy_grad_norm` | Policy gradient L2 norm before clipping. |
 | `grad_norm` | Total gradient L2 norm, including the logZ head, before clipping. |
-| `policy_grad_clipped` | `1` when the policy gradient norm exceeds the clipping threshold of 100; otherwise `0`. |
 | `sampling_time` | Online trajectory generation time in seconds, excluding reward evaluation. |
-| `time` | Update time in seconds through metric collection, excluding output writing and checkpoint saving. |
-| `logging_time` | Time in seconds spent writing the per-step sample file. |
+| `time` | Update time in seconds through sample writing, excluding metric logging and checkpoint saving. |
 
 
 ## Sampling

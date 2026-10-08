@@ -7,7 +7,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from rdkit.Chem.rdChemReactions import ReactionToSmarts
 
 from rxnflow.config import Config
 from rxnflow.core.compatibility import (
@@ -76,22 +75,9 @@ class RxnFlowSampler:
     def _result(self, trajectory: Trajectory) -> SamplingResult:
         actions = []
         for step in trajectory.steps:
-            action = step.action
-            reaction_smarts = None
-            if not action.action_type.is_first:
-                reactions = (
-                    self.env.uni_reactions
-                    if action.action_type.is_unirxn
-                    else self.env.bi_reactions
-                )
-                # Export the executable template, including incoming-site orientation.
-                reaction_smarts = ReactionToSmarts(
-                    reactions[action.reaction].forward_reaction
-                )
             actions.append(
                 {
-                    **self.env.action_to_dict(action),
-                    "reaction_smarts": reaction_smarts,
+                    **self.env.action_to_dict(step.action),
                     "product_smiles": step.product_smiles,
                 }
             )
