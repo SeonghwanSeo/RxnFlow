@@ -1,14 +1,12 @@
-# RxnFlow: Generative Flows on Synthetic Pathway for Drug Design
-
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-purple.svg)](LICENSE)
+# RxnFlow: Synthesis-aware drug design with GFlowNets
 
 <img src="image/overview.png" alt="RxnFlow synthesis pathway overview" width="600">
 
-Official implementation of RxnFlow, a generative model for synthesis-aware drug design. [[Paper](https://arxiv.org/abs/2410.04542)]
-The model is trained using a generative flow network (GFlowNet) framework, yielding a diverse set of high-reward molecules.
+Official implementation of RxnFlow, a generative model for synthesis-aware drug design. The model is trained using a generative flow network (GFlowNet) framework, yielding a diverse set of high-reward molecules.
 
-- 2026.10.03: We updated this codebase based on our in-house model **Hyper Screening X (HSX)**, developed in collaboration with [HITS](https://hits.ai/index_en.html) and [eMolecules](https://www.emolecules.com/). The preprint is coming soon. The original ICLR 2025 version is still available in the `iclr2025` branch.
+The current codebase incorporates updates based on our in-house model **Hyper Screening X (HSX)**, developed in collaboration with [HITS](https://hits.ai/index_en.html) and [eMolecules](https://www.emolecules.com/).
+
+Papers: [RxnFlow (ICLR 2025)](https://arxiv.org/abs/2410.04542) · [HSX (preprint)](https://www.biorxiv.org/content/10.64898/2026.10.01.755933)
 
 ## Installation
 
@@ -78,13 +76,23 @@ See [sampling](docs/training.md#sampling) for more details on sampling.
 
 ## Citation
 
-If you use this code in your research, please cite the following paper:
+If you use this code in your research, please cite the following papers:
 
 ```bibtex
-@article{seo2024generative,
+@article{seo2026hsx,
+  title={Synthesis-aware generative design in trillion-scale chemical spaces for automated drug discovery},
+  author={Seonghwan Seo and Yulseung Sung and Sang-Yeon Hwang and Mincheol Kang and Joonseong Lee and Samuele Bordi and Luka Raguz and Jihye Choi and Daniil Melnichenko and Wan Namkung and Sehan Lee and Jaechang Lim and Benedikt M. Wanner and Jung Min Han and Woo Youn Kim},
+  year={2026},
+  doi={10.64898/2026.10.01.755933},
+  url={https://www.biorxiv.org/content/10.64898/2026.10.01.755933},
+  journal={bioRxiv}
+}
+
+@inproceedings{seo2025rxnflow,
   title={Generative Flows on Synthetic Pathway for Drug Design},
-  author={Seo, Seonghwan and Kim, Minsu and Shen, Tony and Ester, Martin and Park, Jinkyoo and Ahn, Sungsoo and Kim, Woo Youn},
-  journal={arXiv preprint arXiv:2410.04542},
-  year={2024}
+  author={Seonghwan Seo and Minsu Kim and Tony Shen and Martin Ester and Jinkyoo Park and Sungsoo Ahn and Woo Youn Kim},
+  booktitle={The Thirteenth International Conference on Learning Representations},
+  year={2025},
+  url={https://openreview.net/forum?id=pB1XSj2y4X}
 }
 ```
