@@ -2,7 +2,7 @@
 
 <img src="image/overview.png" alt="RxnFlow synthesis pathway overview" width="600">
 
-Official implementation of RxnFlow, a generative model for synthesis-aware drug design. The model is trained using a generative flow network (GFlowNet) framework, yielding a diverse set of high-reward molecules.
+Official implementation of RxnFlow, a generative model for synthesis-aware drug design. RxnFlow uses a generative flow network (GFlowNet) to generate diverse, high-reward molecules.
 
 **Updates:**
 
@@ -23,17 +23,20 @@ pip install -e .
 
 ## Quick start
 
-Start with the supplied [example SMILES file](data/building_blocks/example_5k.smi), containing 5,000 ZINC building blocks.
+Start with the supplied [example SMILES file](data/building_blocks/example_5k.smi), which contains 5,000 ZINC building blocks.
 
 ### Prepare a synthesis environment
 
-To construct a synthesis environment, you need a building-block library and reaction templates.
-The default set in `data/templates/explore/` includes 26 eMolecules bimolecular reaction templates and 4 unimolecular transformations.
-The 38-template bimolecular set used in [CGFlow](https://github.com/tsa87/cgflow) is available in `data/templates/cgflow/`.
+To prepare a synthesis environment, you need a building-block library and reaction templates. Three template sets are available in `data/templates/`:
 
-Prepare a building-block library, for example from [eMolecules](https://www.emolecules.com/data-downloads) or [Enamine](https://enamine.net/building-blocks/building-blocks-catalog), as a `.smi` file with one `SMILES<TAB>ID` record per line. Then run the following command to prepare the environment using the default templates.
+- `explore` (default): 26 curated bimolecular reaction templates, 4 unimolecular transformations, and reaction-reactant compatibility constraints to improve synthesizability.
+- `explore-expanded`: the same reactions without these compatibility constraints, allowing a broader chemical space.
+- `cgflow`: the set of 38 bimolecular reaction templates used in [CGFlow](https://github.com/tsa87/cgflow).
 
-Example command with 5k ZINC building blocks:
+Save your building-block library, for example from [eMolecules](https://www.emolecules.com/data-downloads) or [Enamine](https://enamine.net/building-blocks/building-blocks-catalog), as a `.smi` file with one `SMILES<TAB>ID` record per line.
+
+Prepare the supplied example library using the default templates:
+
 ```bash
 python scripts/prepare.py \
   --block-smi ./data/building_blocks/example_5k.smi \
@@ -54,7 +57,7 @@ Train with QED as the reward:
 python examples/qed.py --config configs/qed.yaml --steps 1000 --output-dir runs/qed
 ```
 
-See [define your own reward](docs/rewards.md) and [training](docs/training.md) for more details on training and reward configuration.
+See [custom rewards](docs/rewards.md) and [training](docs/training.md) for details on defining rewards and configuring training.
 
 **Multi-objective optimization**
 
@@ -77,7 +80,7 @@ python scripts/sample.py \
   --output samples.jsonl
 ```
 
-See [sampling](docs/training.md#sampling) for more details on sampling.
+See [sampling](docs/training.md#sampling) for available options and output formats.
 
 ## Citation
 

@@ -1,0 +1,128 @@
+# Synthon-space transformations based on the eMolecules eXplore Cookbook
+UniReaction:
+  deprotection_boc:
+    forward: "[#7:1]-[2*]>>[#7:1]-[1*]"
+    reverse: "[#7:1]-[1*]>>[#7:1]-[2*]"
+  deprotection_methyl_ester:
+    forward: "[#6:1]-[5*]>>[#6:1]-[3*]"
+    reverse: "[#6:1]-[3*]>>[#6:1]-[5*]"
+  deprotection_ethyl_ester:
+    forward: "[#6:1]-[6*]>>[#6:1]-[3*]"
+    reverse: "[#6:1]-[3*]>>[#6:1]-[6*]"
+  # Demko and Sharpless, J. Org. Chem. 2001, DOI: 10.1021/jo010635w.
+  tetrazole_formation_nitrile:
+    forward: "[#6:1]-[21*]>>[#6:1]-c1nnn[nH]1"
+    reverse: "[#6:1]-c1nnn[nH]1>>[#6:1]-[21*]"
+
+BiReaction:
+  amide_coupling:  # rxn101
+    forward: "[#7:1]-[1*].[#6:2]-[3*]>>[#7:1]-C(=O)-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):1]-C(=O)-[#6:2]>>[#7:1]-[1*].[#6:2]-[3*]"
+    ordered: true
+  acylation_acyl_chloride:  # rxn101
+    forward: "[#7:1]-[1*].[#6:2]-[4*]>>[#7:1]-C(=O)-[#6:2]"
+    reverse: "[N;$(N[#6][#6]);!$(N[#7]);!$(N(-C(=O))[C,S]=[N,O,S]):1]-C(=O)-[#6:2]>>[#7:1]-[1*].[#6:2]-[4*]"
+    ordered: true
+  buchwald_hartwig_coupling:  # rxn102a/b
+    forward: "[#7:1]-[1*].[c:2]-[16*]>>[#7:1]-[c:2]"
+    reverse: "[N;X3;!$(N[C,S]=[N,O,S]):1]-[c;D3;$(c1:[c,n]:[c,n]:[c,n]:[c,n]:[c,n]:1);$(c(:c):c):2]>>[#7:1]-[1*].[c:2]-[16*]"
+    ordered: true
+  # Type 17 encodes the activating group required for SNAr.
+  snar_amination:  # rxn208/209
+    forward: "[#7:1]-[1*].[c:2]-[17*]>>[#7:1]-[c:2]"
+    reverse: "[N;X3;!$(N[C,S]=[N,O,S]):1]-[c:2]>>[#7:1]-[1*].[c:2]-[17*]"
+    ordered: true
+  reductive_amination_aliphatic_aldehyde:  # rxn207
+    forward: "[#7:1]-[1*].[C:2]-[7*]>>[#7:1]-C-[C:2]"
+    reverse: "[N;X3;!$(N[C,S]=[N,O,S]):1]-[CH2]-[C:2]>>[#7:1]-[1*].[C:2]-[7*]"
+    ordered: true
+  reductive_amination_aromatic_aldehyde:  # rxn207
+    forward: "[#7:1]-[1*].[c:2]-[8*]>>[#7:1]-C-[c:2]"
+    reverse: "[N;X3;!$(N[C,S]=[N,O,S]):1]-[CH2]-[c:2]>>[#7:1]-[1*].[c:2]-[8*]"
+    ordered: true
+  reductive_amination_ketone:  # rxn207
+    forward: "[#7:1]-[1*].[CH0:2]=[9*]>>[#7:1]-[CH1:2]"
+    reverse: "[NX3;$(N[#6]);!$(N[#7]);!$(N[C,S]=[N,O,S]):1]-[CH1;$(C([#6,#0])[#6,#0]):2]>>[#7:1]-[1*].[CH0:2]=[9*]"
+    ordered: true
+  sulfonylation:  # rxn113
+    forward: "[#7:1]-[1*].[#6:2]-[13*]>>[#7:1]-S(=O)(=O)-[#6:2]"
+    reverse: "[N;X3;!$(N(-S(=O)(=O))[C,S]=[N,O,S]):1]-S(=O)(=O)-[#6:2]>>[#7:1]-[1*].[#6:2]-[13*]"
+    ordered: true
+  # Carbonylation of the two amines is implicit.
+  urea_formation_amines:  # rxn203
+    forward: "[#7:1]-[1*].[#7:2]-[1*]>>[#7:1]-C(=O)-[#7:2]"
+    reverse: "[N;X3;!$(N(C=O)[C,S]=[N,O,S]):1]-C(=O)-[N;X3;!$(N(C=O)[C,S]=[N,O,S]):2]>>[#7:1]-[1*].[#7:2]-[1*]"
+    ordered: false
+  urea_formation_isocyanate:  # rxn114a
+    forward: "[#7:1]-[1*].[NH1:2]-[14*]>>[#7:1]-C(=O)-[NH1:2]"
+    reverse: "[N;X3;!$(N(C=O)[C,S]=[N,O,S]):1]-C(=O)-[N;X3;H1;$(N-[#6]);!$(N(C=O)[C,S]=[N,O,S]):2]>>[#7:1]-[1*].[NH1:2]-[14*]"
+    ordered: true
+  # A neighboring carbon may be represented by an outgoing dummy in retro space.
+  esterification_primary_alcohol:
+    forward: "[#6:1]-[10*].[#6:2]-[3*]>>[#6:1]-OC(=O)-[#6:2]"
+    reverse: "[C;X4;H2;$(C[#6,#0]):1]-OC(=O)-[#6:2]>>[#6:1]-[10*].[#6:2]-[3*]"
+    ordered: true
+  esterification_secondary_alcohol:
+    forward: "[#6:1]-[11*].[#6:2]-[3*]>>[#6:1]-OC(=O)-[#6:2]"
+    reverse: "[C;X4;H1;$(C([#6,#0])[#6,#0]):1]-OC(=O)-[#6:2]>>[#6:1]-[11*].[#6:2]-[3*]"
+    ordered: true
+  mitsunobu_etherification:  # rxn205
+    forward: "[C:1]-[10*].[c:2]-[12*]>>[C:1]-O-[c:2]"
+    reverse: "[C;X4;H2;$(C[#6,#0]):1]-O-[c;$(c1ccccc1):2]>>[C:1]-[10*].[c:2]-[12*]"
+    ordered: true
+  suzuki_coupling:  # rxn110a/b
+    forward: "[c:1]-[18*].[c:2]-[16*]>>[c:1]-[c:2]"
+    reverse: "[c;D3;$(c(:c):c):1]-[c;D3;$(c1:[c,n]:[c,n]:[c,n]:[c,n]:[c,n]:1);$(c(:c):c):2]>>[c:1]-[18*].[c:2]-[16*]"
+    ordered: true
+  sonogashira_coupling:  # rxn108a/b
+    forward: "[c:1]-[16*].[#6:2]-[19*]>>[c:1]-C#C-[#6:2]"
+    reverse: "[c;D3;$(c1:[c,n]:[c,n]:[c,n]:[c,n]:[c,n]:1);$(c(:c):c):1]-C#C-[#6:2]>>[c:1]-[16*].[#6:2]-[19*]"
+    ordered: true
+  cyclization_benzimidazole_aliphatic_aldehyde:  # rxn304
+    forward: "[C:1]-[7*].[c:2]-[22*]>>[C:1]-[c:2]"
+    reverse: "[C:1]-[c;$(c1nc2ccccc2[nH]1):2]>>[C:1]-[7*].[c:2]-[22*]"
+    ordered: true
+  cyclization_benzimidazole_aromatic_aldehyde:  # rxn304
+    forward: "[c:1]-[8*].[c:2]-[22*]>>[c:1]-[c:2]"
+    reverse: "[c:1]-[c;$(c1nc2ccccc2[nH]1):2]>>[c:1]-[8*].[c:2]-[22*]"
+    ordered: true
+  cyclization_benzimidazole_carboxylic_acid:  # rxn305
+    forward: "[#6:1]-[3*].[c:2]-[22*]>>[#6:1]-[c:2]"
+    reverse: "[#6:1]-[c;$(c1nc2ccccc2[nH]1):2]>>[#6:1]-[3*].[c:2]-[22*]"
+    ordered: true
+  cyclization_benzoxazole_aromatic_aldehyde:  # rxn309
+    forward: "[c:1]-[8*].[c:2]-[23*]>>[c:1]-[c:2]"
+    reverse: "[c:1]-[c;$(c1nc2ccccc2o1):2]>>[c:1]-[8*].[c:2]-[23*]"
+    ordered: true
+  cyclization_benzoxazole_carboxylic_acid:  # rxn310
+    forward: "[#6:1]-[3*].[c:2]-[23*]>>[#6:1]-[c:2]"
+    reverse: "[#6:1]-[c;$(c1nc2ccccc2o1):2]>>[#6:1]-[3*].[c:2]-[23*]"
+    ordered: true
+  # Retro ring and neighbor queries preserve ketone and amidine substitution.
+  # External carbons abstracted by another handle must remain matchable as #0.
+  cyclization_imidazole_primary_amidine:  # rxn316
+    forward: "[CH1:4]=[CH0:5]-[24*].[NH1:1]=[C:2]-[NH1:3]-[25*]>>[cH0:4]1[cH0:5][nH1:3][cH0:2][nH0:1]1"
+    reverse: "[cH0;R1;$(c-[#6,#0]):4]1[cH0;R1;$(c-[#6,#0]):5][nH1;D2:3][cH0;$(c-c):2][nH0;D2:1]1>>[CH1:4]=[CH0:5]-[24*].[NH1:1]=[C:2]-[NH1:3]-[25*]"
+    ordered: true
+  cyclization_imidazole_n_substituted_amidine:  # rxn316
+    forward: "[CH1:4]=[CH0:5]-[24*].[NH1:1]=[C:2]-[NH0:3]-[26*]>>[cH0:4]1[cH0:5][nH0:3][cH0:2][nH0:1]1"
+    reverse: "[cH0;R1;$(c-[#6,#0]):4]1[cH0;R1;$(c-[#6,#0]):5][nH0;D3;$(n-[#6]);!$(n[C,S]=[O,S]):3][cH0;$(c-c):2][nH0;D2:1]1>>[CH1:4]=[CH0:5]-[24*].[NH1:1]=[C:2]-[NH0:3]-[26*]"
+    ordered: true
+  hantzsch_thiazole_synthesis:  # rxn322
+    forward: "[CH1:4]=[CH1:5]-[27*].[NH1:2](-[28*])-[C:3]=[S:6]>>[cH0:4]1[cH1:5][sH0:6][cH0:3][nH0:2]1"
+    reverse: "[cH0;R1;$(c-[#6,#0]):4]1[cH1;R1:5][sH0;D2:6][cH0;$(c-[#6,#0]):3][nH0;D2:2]1>>[CH1:4]=[CH1:5]-[27*].[NH1:2](-[28*])-[C:3]=[S:6]"
+    ordered: true
+  # Net nitrile activation, acylation and cyclization.
+  cyclization_124_oxadiazole_nitrile:  # rxn319
+    forward: "[#6:1]-[21*].[#6:2]-[3*]>>[#6:1]-c1[nH0+0][oH0+0]c(-[#6:2])[nH0]1"
+    reverse: "[#6:1]-c1[nH0+0][oH0+0]c(-[#6:2])[nH0]1>>[#6:1]-[21*].[#6:2]-[3*]"
+    ordered: true
+  cuaac:  # rxn303
+    forward: "[#6:1]-[20*].[#6:2]-[19*]>>[#6:2]c1c[nH0]([#6:1])[nH0][nH0]1"
+    reverse: "[#6:2]c1[cH1][nH0]([#6:1])[nH0][nH0]1>>[#6:1]-[20*].[#6:2]-[19*]"
+    ordered: true
+  # Azidation of the primary bromide precedes CuAAC.
+  azidation_cuaac_primary_bromide:  # rxn313
+    forward: "[C:1]-[15*].[#6:2]-[19*]>>[#6:2]-c1c[nH0](-[C:1])[nH0][nH0]1"
+    reverse: "[#6:2]-c1[cH1][nH0](-[CH2:1])[nH0][nH0]1>>[C:1]-[15*].[#6:2]-[19*]"
+    ordered: true

@@ -35,8 +35,12 @@ def write_signature(env_dir: str | Path) -> None:
         with (env_path / name).open("rb") as f:
             for chunk in iter(lambda: f.read(1024 * 1024), b""):
                 digest.update(chunk)
-    if (env_path / "exclude_smarts.yaml").exists():
-        digest.update((env_path / "exclude_smarts.yaml").read_bytes())
+    substructures_path = env_path / "exclude_substructures.yaml"
+    if substructures_path.is_file():
+        digest.update(substructures_path.read_bytes())
+    actions_path = env_path / "exclude_actions.yaml"
+    if actions_path.is_file():
+        digest.update(actions_path.read_bytes())
     for path in sorted((env_path / "action_spaces").glob("*.smi")):
         digest.update(path.stem.encode())
         with path.open("rb") as f:
@@ -50,11 +54,19 @@ def write_signature(env_dir: str | Path) -> None:
                 digest.update(chunk)
 
     synthesis = {}
-    for name in ("config", "reaction", "synthon", "exclude_smarts"):
+    for name in ("config", "reaction", "synthon"):
         template = env_path / f"{name}.yaml"
         synthesis[name] = (
             yaml.safe_load(template.read_text()) if template.is_file() else None
         )
+    synthesis["exclude_substructures"] = (
+        yaml.safe_load(substructures_path.read_text())
+        if substructures_path.is_file()
+        else None
+    )
+    synthesis["exclude_actions"] = (
+        yaml.safe_load(actions_path.read_text()) if actions_path.is_file() else None
+    )
     signature = {
         "rxnflow_version": __version__,
         "synthesis": synthesis,

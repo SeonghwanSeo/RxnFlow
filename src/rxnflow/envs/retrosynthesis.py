@@ -49,15 +49,25 @@ class Worker:
             for library_name, library in env.synthons.items()
         }
         self.brick_types = set(env.brick_types)
+        self._bi_actions = {
+            subspace.name
+            for space in env.reaction_action_spaces.values()
+            for subspace in space
+            if subspace.action_type.is_birxn
+        }
         signatures = [(), *((site,) for site in sorted(env.synthon_types))]
         # A coupling consumes the state's handle. A remaining product handle
         # belongs to the incoming linker and determines its catalog library.
+        # Use prepared action eligibility so retro obeys the forward exclusions.
         self._bi_candidates = {
             signature: [
                 (name, reaction)
                 for name, reaction in self.bi_reactions.items()
-                if "-".join(map(str, (reaction.attachment_type, *signature)))
-                in self.synthon_search
+                if (
+                    name,
+                    "-".join(map(str, (reaction.attachment_type, *signature))),
+                )
+                in self._bi_actions
             ]
             for signature in signatures
         }
@@ -260,6 +270,8 @@ class Worker:
                     library_name = "-".join(
                         map(str, (reaction.attachment_type, *synthon_sites[1:]))
                     )
+                    if (name, library_name) not in self._bi_actions:
+                        continue
                     library = self.synthon_search.get(library_name)
                     if library is None:
                         continue

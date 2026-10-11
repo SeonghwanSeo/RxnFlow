@@ -34,29 +34,34 @@ env_dir: /path/to/prepared/environment
 
 ## Choose a template set
 
-- `data/templates/explore/config.yaml` is the default: 26 bimolecular and 4 unimolecular templates.
+- `data/templates/explore/config.yaml` is the default: 26 bimolecular and 4 unimolecular templates with reaction-specific linker exclusions.
+- `data/templates/explore-expanded/config.yaml` provides the same reaction families with all type-compatible linker combinations enabled.
 - `data/templates/cgflow/config.yaml` supplies the CGFlow set: 38 bimolecular and 4 unimolecular templates.
+
+Each set contains its own definitions and can be edited independently.
 
 ## Customize the templates
 
-To change the supported reactions or synthon definitions, copy `data/templates/explore/` to a new directory and edit its YAML files. The `config.yaml` file references the reaction and synthon definitions and an optional exclusion list:
+To customize a set, copy its template directory and edit the YAML files there. For example, `explore/config.yaml` contains:
 
 ```yaml
 # Paths are relative to this configuration's directory.
 reaction: reaction.yaml
 synthon: synthon.yaml
-exclude_smarts: exclude_smarts.yaml
+exclude_substructures: exclude_substructures.yaml
+exclude_actions: exclude_actions.yaml
 ```
 
 - To add or remove a supported reaction, edit `reaction.yaml`. Define forward and reverse SMARTS; input and output types are inferred from labels such as `[2*]`. Set `ordered: true` for a bimolecular reaction to allow both state/incoming orientations.
 - To change which building-block functional groups become reaction sites, edit `synthon.yaml`. Each entry gives a numeric `type`, an `original` SMARTS pattern and a `convert` template. Use those same types in the reaction definitions.
-- To change which unused groups may remain in a synthon, edit `exclude_smarts.yaml`. Remove the `exclude_smarts` setting entirely to disable this filter.
+- To change which unused groups may remain in a synthon, edit `exclude_substructures.yaml`. Omit `exclude_substructures` to disable this filter.
+- To exclude linker type combinations in selected reactions, edit `exclude_actions.yaml`. Omit `exclude_actions` to disable these exclusions.
 
 Pass your configuration to preparation with `--config /path/to/custom/config.yaml`. Rebuild the environment after changing the catalog, templates or filter settings.
 
 ### Exclude functional groups
 
-Use `exclude_smarts.yaml` to specify protecting groups and functional groups that are allowed during synthesis but should not remain in final products. Write one quoted SMARTS pattern per YAML list entry:
+Use `exclude_substructures.yaml` to exclude unused protecting groups or functional groups from synthons. Groups selected as synthesis sites remain usable. Write one quoted SMARTS pattern per YAML list entry:
 
 ```yaml
 # Acyl halides
@@ -66,4 +71,16 @@ Use `exclude_smarts.yaml` to specify protecting groups and functional groups tha
 - '[SX4](=O)(=O)[Cl,Br,I]'
 ```
 
-See the supplied [exclusion list](../data/templates/explore/exclude_smarts.yaml) for the default patterns.
+See the supplied [exclusion list](../data/templates/explore/exclude_substructures.yaml) for the default patterns.
+
+### Exclude reaction actions
+
+Use `exclude_actions.yaml` to list excluded linker type pairs for each bimolecular reaction. Keys are reaction names from `reaction.yaml`; each list entry is a quoted `type-type` pair:
+
+```yaml
+buchwald_hartwig_coupling: ["1-1", "1-16", "16-16"]
+```
+
+This example excludes amine–amine, amine–aryl-halide and aryl-halide–aryl-halide linkers from Buchwald–Hartwig coupling. Pair order does not matter: `1-16` and `16-1` exclude both attachment directions. Exclusions apply only to the named reaction.
+
+See the [explore rules](../data/templates/explore/exclude_actions.yaml) for the supplied exclusions. These rules apply to the two marked linker sites.

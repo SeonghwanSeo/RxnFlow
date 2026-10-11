@@ -6,13 +6,49 @@ import json
 import logging
 from pathlib import Path
 
+import yaml
 from rdkit import Chem
 
-from rxnflow.core.reaction import load_reactions
+from rxnflow.core.reaction import BiReaction, load_reactions
 from rxnflow.core.synthon import get_dummy_atoms, load_synthon_templates
 from rxnflow.core.types import ActionKey
 
 logger = logging.getLogger(__name__)
+
+
+def load_action_exclusions(
+    path: Path,
+    reactions: dict[str, BiReaction],
+    synthon_types: set[int],
+) -> set[ActionKey]:
+    """Expand unordered linker type pairs into oriented reaction-library keys."""
+    rules = yaml.safe_load(path.read_text())
+    if not isinstance(rules, dict):
+        raise ValueError("The exclude_actions file must contain a YAML mapping")
+    excluded: set[ActionKey] = set()
+    for name, pairs in rules.items():
+        variants = [
+            reaction
+            for action_name, reaction in reactions.items()
+            if action_name in (name, f"{name}_r1", f"{name}_r2")
+        ]
+        if not variants:
+            raise ValueError(f"Unknown bimolecular reaction in exclude_actions: {name}")
+        if not isinstance(pairs, list):
+            raise ValueError(f"{name}: expected a list of linker type pairs")
+        for pair in pairs:
+            sites = tuple(map(int, pair.split("-")))
+            if len(sites) != 2 or not set(sites) <= synthon_types:
+                raise ValueError(f"{name}: expected two known synthon types in {pair}")
+            compatible = [r for r in variants if r.attachment_type in sites]
+            if not compatible:
+                raise ValueError(f"{name}: no matching reaction input type in {pair}")
+            left, right = sites
+            for reaction in compatible:
+                incoming = reaction.attachment_type
+                outgoing = right if incoming == left else left
+                excluded.add((reaction.name, f"{incoming}-{outgoing}"))
+    return excluded
 
 
 def _convert_oriented_synthons(env_path: Path, min_library_size: int) -> list[str]:
@@ -72,6 +108,12 @@ def _write_action_space(env_path: Path, libraries: list[str]) -> None:
     """Connect retained libraries to compatible reactions and save the action space."""
     synthon_types = set(load_synthon_templates(env_path / "synthon.yaml"))
     uni, bi = load_reactions(env_path / "reaction.yaml")
+    exclusion_path = env_path / "exclude_actions.yaml"
+    excluded = (
+        load_action_exclusions(exclusion_path, bi, synthon_types)
+        if exclusion_path.is_file()
+        else set()
+    )
     bricks = []
     by_attachment: dict[int, list[str]] = {}
     for name in libraries:
@@ -86,7 +128,8 @@ def _write_action_space(env_path: Path, libraries: list[str]) -> None:
         reactions[reaction.input_type].append((name, None))
     for name, reaction in bi.items():
         for library in by_attachment.get(reaction.attachment_type, []):
-            reactions[reaction.state_type].append((name, library))
+            if (name, library) not in excluded:
+                reactions[reaction.state_type].append((name, library))
     spaces = {
         "initial": [("first_synthon", name) for name in bricks],
         "reaction": reactions,

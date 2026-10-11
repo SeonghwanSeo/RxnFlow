@@ -1,4 +1,4 @@
-# Paths are relative to this file. Omit exclude_smarts to disable exclusions.
+# Paths are relative to this file. Omit exclude_substructures to disable exclusions.
 reaction: reaction.yaml
 synthon: synthon.yaml
-exclude_smarts: exclude_smarts.yaml
+exclude_substructures: exclude_substructures.yaml
