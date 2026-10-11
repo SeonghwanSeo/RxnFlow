@@ -4,7 +4,10 @@
 
 Official implementation of RxnFlow, a generative model for synthesis-aware drug design. The model is trained using a generative flow network (GFlowNet) framework, yielding a diverse set of high-reward molecules.
 
-The current codebase incorporates updates based on our in-house model **Hyper Screening X (HSX)**, developed in collaboration with [HITS](https://hits.ai/index_en.html) and [eMolecules](https://www.emolecules.com/).
+**Updates:**
+
+- **2026.10.11 — RxnFlow v2 released.** 
+  - This update incorporates our in-house model **Hyper Screening X (HSX)**, developed in collaboration with [HITS](https://hits.ai/index_en.html) and [eMolecules](https://www.emolecules.com/). Together with wet-lab collaborators at Yonsei University, we identified two first-in-class lead compounds targeting an SLC1A5 variant.
 
 Papers: [RxnFlow (ICLR 2025)](https://arxiv.org/abs/2410.04542) · [HSX (preprint)](https://www.biorxiv.org/content/10.64898/2026.10.01.755933)
 
