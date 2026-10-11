@@ -16,8 +16,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path(__file__).resolve().parents[1] / "data/templates/basic/config.yaml",
-        help="Environment preparation YAML (default: data/templates/basic/config.yaml)",
+        default=Path(__file__).resolve().parents[1]
+        / "data/templates/explore/config.yaml",
+        help="Environment preparation YAML (default: explore)",
     )
     parser.add_argument(
         "--num-workers", type=int, default=1, help="Preparation processes (default: 1)"

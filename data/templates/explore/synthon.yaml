@@ -1,0 +1,112 @@
+# Each conversion marks one synthesis handle. Protected handles count as sites.
+
+# Amines: carbon-bound substituents exclude acylated N and converted handles.
+- type: 1
+  original: "[N;X3;+0;H1,H2;$(N[#6]);!$(N[!#6]);!$(N[C,S]=[N,O,S]):1]"
+  convert: "[#7:1]-[1*]"
+
+- type: 2
+  original: "[N;X3;+0;H0,H1;!$(N[!#6]);!$(N(C=[O,N,S])C=[O,N,S]):1]-C(=O)-O-C([CH3])([CH3])[CH3]"
+  convert: "[N:1]-[2*]"
+
+- type: 3
+  original: "[#6:1]-C(=O)[OH,O-]"
+  convert: "[#6:1]-[3*]"
+- type: 4
+  original: "[#6:1]-C(=O)Cl"
+  convert: "[#6:1]-[4*]"
+- type: 5
+  original: "[#6:1]-C(=O)-[O;X2;+0]-[CH3;D1]"
+  convert: "[#6:1]-[5*]"
+- type: 6
+  original: "[#6:1]-C(=O)-[O;X2;+0]-[CH2;D2]-[CH3;D1]"
+  convert: "[#6:1]-[6*]"
+
+# Aliphatic/aromatic aldehydes have different ring-closure partners.
+- type: 7
+  original: "[C:1]-[CH]=O"
+  convert: "[#6:1]-[7*]"
+- type: 8
+  original: "[c:1]-[CH]=O"
+  convert: "[#6:1]-[8*]"
+- type: 9
+  original: "[#6:1]-[C:2](=O)[#6:3]"
+  convert: "[CH0:2](-[#6:1])(-[#6:3])=[9*]"
+
+# Alcohol types separate esterification from primary-alcohol Mitsunobu coupling.
+- type: 10
+  original: "[C;X4;H2;$(C[#6]):1]-[OH]"
+  convert: "[#6:1]-[10*]"
+- type: 11
+  original: "[C;X4;H1;$(C([#6])[#6]):1]-[OH]"
+  convert: "[#6:1]-[11*]"
+
+- type: 12
+  original: "[c;$(c1ccccc1):1]-[OH]"
+  convert: "[#6:1]-[12*]"
+
+- type: 13
+  original: "[#6:1]-S(=O)(=O)Cl"
+  convert: "[#6:1]-[13*]"
+
+# Retain isocyanate N and restore its carbonyl during coupling.
+- type: 14
+  original: "[#6:1]-[N;X2;+0:2]=C=O"
+  convert: "[#6:1]-[NH1:2]-[14*]"
+
+- type: 15
+  original: "[C;X4;H2;$(C[#6]):1]-Br"
+  convert: "[#6:1]-[15*]"
+
+# Shared aryl-halide scope is the intersection of Buchwald-Hartwig,
+# Suzuki and Sonogashira substrate restrictions.
+- type: 16
+  original: "[c;D3;$(c1:[c,n]:[c,n]:[c,n]:[c,n]:[c,n]:1);$(c(:c):c):1]-[Br,I]"
+  convert: "[c:1]-[16*]"
+
+# Recursive queries preserve the SNAr activating group during conversion.
+- type: 17
+  original: "[c;$(c1[c;D2]cccc1-[$([N+](=O)[O-]),$(S(=O)[OH]),$(C(=O)[OH,O-]),$(C#N)]),$(c1ccc(-[$([N+](=O)[O-]),$(S(=O)[OH]),$(C(=O)[OH,O-]),$(C#N)])c[c;D2]1):1]-[F,Cl]"
+  convert: "[#6:1]-[17*]"
+
+- type: 18
+  original: "[c;$(c([#6])[#6]):1]-B([OH])[OH]"
+  convert: "[#6:1]-[18*]"
+- type: 19
+  original: "[#6:1]-C#[CH]"
+  convert: "[#6:1]-[19*]"
+- type: 20
+  original: "[#6:1]-N=[N+]=[N-]"
+  convert: "[#6:1]-[20*]"
+- type: 21
+  original: "[#6:1]-C#N"
+  convert: "[#6:1]-[21*]"
+
+# Preassembled rings encode the diamine and aminophenol cyclization sites.
+- type: 22
+  original: "[N;X3;+0;H2:1][c;$(c1ccccc1):2]:[c;$(c1ccccc1):3][N;X3;+0;H2:4]"
+  convert: "[22*]-c1[nH0+0:1][c:2][c:3][nH+0:4]1"
+- type: 23
+  original: "[N;X3;+0;H2:1][c;$(c1ccccc1):2]:[c;$(c1ccccc1):3][O;X2;+0;H1:4]"
+  convert: "[23*]-c1[nH0+0:1][c:2][c:3][oH0+0:4]1"
+
+# Replacing O/X with C=C and one marker preserves both ring-forming carbons
+# and masks the carbonyl from ketone type 9. C=C is a synthon encoding.
+- type: 24
+  original: "[#6;!$([#6]Br):6]-[C;X3;R0:4](=O)-[C;X4;H1;R0;$(C([#6])[#6]):5]-Br"
+  convert: "[#6:6]-[CH1:4]=[CH0:5]-[24*]"
+
+# The marked amidine amino N becomes [nH] or carbon-substituted n.
+- type: 25
+  original: "[c:6]-[C;X3;R0:2](=[N;X2;+0;H1;D1:1])-[N;X3;+0;H2:3]"
+  convert: "[c:6]-[C:2](=[NH1:1])-[NH1:3]-[25*]"
+- type: 26
+  original: "[c:6]-[C;X3;R0:2](=[N;X2;+0;H1;D1:1])-[N;X3;+0;H1;!$(N[!#6]);!$(N[C,S]=[O,S]):3]"
+  convert: "[c:6]-[C:2](=[NH1:1])-[NH0:3]-[26*]"
+- type: 27
+  original: "[#6:6]-[C;X3;R0:4](=O)-[C;X4;H2;R0:5]-[Cl,Br,I]"
+  convert: "[#6:6]-[CH1:4]=[CH1:5]-[27*]"
+
+- type: 28
+  original: "[N;X3;+0;H2:2]-[C;X3;R0:3](=[S;X1;+0:4])-[#6:6]"
+  convert: "[28*]-[NH1:2]-[C:3](=[S:4])-[#6:6]"

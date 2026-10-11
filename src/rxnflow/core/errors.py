@@ -2,4 +2,4 @@
 
 
 class InvalidTransition(ValueError):
-    """A selected action violates synthesis budgets or has no valid product."""
+    """A selected action is unavailable or has no valid product."""

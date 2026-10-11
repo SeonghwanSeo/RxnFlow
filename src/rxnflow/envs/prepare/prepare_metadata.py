@@ -12,6 +12,8 @@ from rxnflow.core.synthon import (
     load_synthon_templates,
 )
 
+from .build_action_space import load_action_exclusions
+
 
 def prepare_metadata(config_path: str | Path, env_dir: str | Path) -> None:
     """Validate template contracts before processing any building blocks."""
@@ -20,8 +22,12 @@ def prepare_metadata(config_path: str | Path, env_dir: str | Path) -> None:
     if not isinstance(config, dict) or not {"synthon", "reaction"} <= config.keys():
         raise ValueError("Template config requires synthon and reaction paths")
     paths = {name: config_path.parent / config[name] for name in ("synthon", "reaction")}
-    if config.get("exclude_smarts"):
-        paths["exclude_smarts"] = config_path.parent / config["exclude_smarts"]
+    if config.get("exclude_substructures"):
+        paths["exclude_substructures"] = (
+            config_path.parent / config["exclude_substructures"]
+        )
+    if config.get("exclude_actions"):
+        paths["exclude_actions"] = config_path.parent / config["exclude_actions"]
 
     # Each conversion produces one typed site. Other existing sites are checked
     # on actual products during linker conversion, where their context is known.
@@ -62,7 +68,7 @@ def prepare_metadata(config_path: str | Path, env_dir: str | Path) -> None:
         if not types <= templates.keys():
             raise ValueError(f"Unknown synthon type in {reaction.name}")
     for reaction in bi.values():
-        if not set(reaction.synthon_types) <= templates.keys():
+        if not set(reaction.input_types) <= templates.keys():
             raise ValueError(f"Unknown synthon type in {reaction.name}")
     names = ["first_synthon", *uni, *bi]
     if len(names) != len(set(names)):
@@ -73,18 +79,22 @@ def prepare_metadata(config_path: str | Path, env_dir: str | Path) -> None:
             if errors:
                 raise ValueError(f"Invalid reaction SMARTS in {reaction.name}")
 
-    if "exclude_smarts" in paths:
-        patterns = yaml.safe_load(paths["exclude_smarts"].read_text())
+    if "exclude_substructures" in paths:
+        patterns = yaml.safe_load(paths["exclude_substructures"].read_text())
         if not isinstance(patterns, list):
-            raise ValueError("The exclude_smarts file must contain a YAML list")
+            raise ValueError("The exclude_substructures file must contain a YAML list")
         for pattern in patterns:
             if not isinstance(pattern, str) or Chem.MolFromSmarts(pattern) is None:
                 raise ValueError(f"Invalid exclusion SMARTS: {pattern}")
+    if "exclude_actions" in paths:
+        load_action_exclusions(paths["exclude_actions"], bi, set(templates))
 
     # Snapshot templates only after all definitions pass.
     env_path.mkdir(parents=True, exist_ok=True)
-    if "exclude_smarts" not in paths:
-        (env_path / "exclude_smarts.yaml").unlink(missing_ok=True)
+    if "exclude_substructures" not in paths:
+        (env_path / "exclude_substructures.yaml").unlink(missing_ok=True)
+    if "exclude_actions" not in paths:
+        (env_path / "exclude_actions.yaml").unlink(missing_ok=True)
     for name, source in paths.items():
         shutil.copyfile(source, env_path / f"{name}.yaml")
     (env_path / "config.yaml").write_text(

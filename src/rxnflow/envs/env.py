@@ -114,7 +114,7 @@ class SynthesisEnv:
             ):
                 raise ValueError(f"unknown synthon type in {reaction.name}")
         for reaction in self.bi_reactions.values():
-            if not set(reaction.synthon_types) <= self.synthon_types:
+            if not set(reaction.input_types) <= self.synthon_types:
                 raise ValueError(f"unknown synthon type in {reaction.name}")
 
     def _load_action_spaces(self) -> None:
@@ -295,7 +295,7 @@ class SynthesisEnv:
             space.name == name and space.action_type == action.action_type
             for space in self.get_action_space(state)
         ):
-            raise InvalidTransition("action cannot finish within the synthesis budgets")
+            raise InvalidTransition("action is not available in this state")
         product = self._apply_action(state.molecule, action)
         if product is None:
             raise InvalidTransition("the selected reaction failed structural checks")

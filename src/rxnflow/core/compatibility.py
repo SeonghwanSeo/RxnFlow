@@ -3,8 +3,8 @@
 from rxnflow.__version__ import __version__
 
 # Update each minimum only when its format or semantics become incompatible.
-LIBRARY_MIN_VERSION = "0.9.2"
-MODEL_MIN_VERSION = "0.9.2"
+LIBRARY_MIN_VERSION = "2.0.0"
+MODEL_MIN_VERSION = "2.0.0"
 
 
 def _version_tuple(version: str) -> tuple[int, int, int]:

@@ -121,7 +121,7 @@ def convert_synthons(
     with (env_path / "building_blocks.smi").open() as f:
         records = [tuple(line.rstrip("\n").split("\t")) for line in f]
     templates = load_synthon_templates(env_path / "synthon.yaml")
-    exclusion_path = env_path / "exclude_smarts.yaml"
+    exclusion_path = env_path / "exclude_substructures.yaml"
     exclude_patterns = []
     if exclusion_path.is_file():
         with exclusion_path.open() as f:
