@@ -27,7 +27,9 @@ Start with the supplied [example SMILES file](data/building_blocks/example_5k.sm
 
 ### Prepare a synthesis environment
 
-To construct a synthesis environment, you need a building-block library and reaction templates. The default set in `data/templates/basic/` includes 38 bimolecular reaction templates and 4 unimolecular transformations.
+To construct a synthesis environment, you need a building-block library and reaction templates.
+The default set in `data/templates/explore/` includes 26 eMolecules bimolecular reaction templates and 4 unimolecular transformations.
+The 38-template bimolecular set used in [CGFlow](https://github.com/tsa87/cgflow) is available in `data/templates/cgflow/`.
 
 Prepare a building-block library, for example from [eMolecules](https://www.emolecules.com/data-downloads) or [Enamine](https://enamine.net/building-blocks/building-blocks-catalog), as a `.smi` file with one `SMILES<TAB>ID` record per line. Then run the following command to prepare the environment using the default templates.
 
@@ -36,7 +38,7 @@ Example command with 5k ZINC building blocks:
 python scripts/prepare.py \
   --block-smi ./data/building_blocks/example_5k.smi \
   --env-dir ./data/envs/example_5k/ \
-  --config ./data/templates/basic/config.yaml \
+  --config ./data/templates/explore/config.yaml \
   --num-workers 16
 ```
 

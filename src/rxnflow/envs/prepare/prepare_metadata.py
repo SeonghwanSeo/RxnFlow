@@ -62,7 +62,7 @@ def prepare_metadata(config_path: str | Path, env_dir: str | Path) -> None:
         if not types <= templates.keys():
             raise ValueError(f"Unknown synthon type in {reaction.name}")
     for reaction in bi.values():
-        if not set(reaction.synthon_types) <= templates.keys():
+        if not set(reaction.input_types) <= templates.keys():
             raise ValueError(f"Unknown synthon type in {reaction.name}")
     names = ["first_synthon", *uni, *bi]
     if len(names) != len(set(names)):

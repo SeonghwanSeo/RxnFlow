@@ -114,7 +114,7 @@ class SynthesisEnv:
             ):
                 raise ValueError(f"unknown synthon type in {reaction.name}")
         for reaction in self.bi_reactions.values():
-            if not set(reaction.synthon_types) <= self.synthon_types:
+            if not set(reaction.input_types) <= self.synthon_types:
                 raise ValueError(f"unknown synthon type in {reaction.name}")
 
     def _load_action_spaces(self) -> None:

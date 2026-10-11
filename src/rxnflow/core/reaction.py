@@ -23,6 +23,15 @@ def _compile(smarts: str) -> ChemicalReaction:
     return reaction
 
 
+def _typed_sites(pattern: Chem.Mol) -> tuple[int, ...]:
+    """Read typed handles without treating mapped wildcards as synthesis sites."""
+    return tuple(
+        atom.GetIsotope()
+        for atom in pattern.GetAtoms()
+        if atom.GetAtomicNum() == 0 and atom.GetIsotope() > 0
+    )
+
+
 def _run(
     reaction: ChemicalReaction, reactants: tuple[Molecule, ...]
 ) -> list[tuple[Molecule, ...]]:
@@ -95,12 +104,8 @@ class UniReaction(Reaction):
         name: str,
         forward: str,
         reverse: str,
-        input_type: int,
-        output_type: int | None,
     ) -> None:
         super().__init__(name, forward, reverse)
-        self.input_type = input_type
-        self.output_type = output_type
         if (
             self.forward_reaction.GetNumReactantTemplates() != 1
             or self.forward_reaction.GetNumProductTemplates() != 1
@@ -108,27 +113,23 @@ class UniReaction(Reaction):
             or self.reverse_reaction.GetNumProductTemplates() != 1
         ):
             raise ValueError(f"invalid unimolecular reaction shape: {self.name}")
-        # Match each template's labeled dummy to its declared input/output type.
-        for pattern, expected in (
-            (self.forward_reaction.GetReactantTemplate(0), self.input_type),
-            (self.forward_reaction.GetProductTemplate(0), self.output_type),
-            (self.reverse_reaction.GetReactantTemplate(0), self.output_type),
-            (self.reverse_reaction.GetProductTemplate(0), self.input_type),
+        inputs = _typed_sites(self.forward_reaction.GetReactantTemplate(0))
+        outputs = _typed_sites(self.forward_reaction.GetProductTemplate(0))
+        if (
+            len(inputs) != 1
+            or len(outputs) > 1
+            or _typed_sites(self.reverse_reaction.GetReactantTemplate(0)) != outputs
+            or _typed_sites(self.reverse_reaction.GetProductTemplate(0)) != inputs
         ):
-            sites = [
-                atom.GetIsotope()
-                for atom in pattern.GetAtoms()
-                if atom.GetAtomicNum() == 0 and atom.GetIsotope() > 0
-            ]
-            if sites != ([] if expected is None else [expected]):
-                raise ValueError(
-                    f"unimolecular SMARTS site disagrees with its type: {self.name}"
-                )
+            raise ValueError(f"invalid unimolecular SMARTS sites: {self.name}")
+        self.input_type = inputs[0]
+        self.output_type = outputs[0] if outputs else None
 
 
 class BiReaction(Reaction):
     """A bimolecular template oriented as (state, incoming synthon).
 
+    Input types are inferred in the original forward SMARTS reactant order.
     The incoming synthon's unique isotope-0 dummy fixes its attachment site.
     Its chemical type is carried by the library key and ``attachment_type``. The
     reverse template recreates that marker so catalog lookup preserves direction.
@@ -139,11 +140,9 @@ class BiReaction(Reaction):
         name: str,
         forward: str,
         reverse: str,
-        synthon_types: tuple[int, int],
         synthon_first: bool = False,
     ) -> None:
         super().__init__(name, forward, reverse)
-        self.synthon_types = synthon_types
         self.synthon_first = synthon_first
         if (
             self.forward_reaction.GetNumReactantTemplates() != 2
@@ -152,10 +151,21 @@ class BiReaction(Reaction):
             or self.reverse_reaction.GetNumProductTemplates() != 2
         ):
             raise ValueError(f"invalid bimolecular reaction shape: {self.name}")
-        if len(self.synthon_types) != 2 or any(
-            value <= 0 for value in self.synthon_types
+        # Infer before the incoming handle loses its chemical type to isotope 0.
+        inputs = tuple(
+            _typed_sites(self.forward_reaction.GetReactantTemplate(i)) for i in (0, 1)
+        )
+        if (
+            any(len(sites) != 1 for sites in inputs)
+            or _typed_sites(self.forward_reaction.GetProductTemplate(0))
+            or _typed_sites(self.reverse_reaction.GetReactantTemplate(0))
+            or any(
+                _typed_sites(self.reverse_reaction.GetProductTemplate(i)) != inputs[i]
+                for i in (0, 1)
+            )
         ):
-            raise ValueError(f"invalid synthon types for reaction {self.name}")
+            raise ValueError(f"invalid bimolecular SMARTS sites: {self.name}")
+        self.input_types = (inputs[0][0], inputs[1][0])
 
         # Reorder both directions into (state, synthon), then change the synthon's
         # attachment query to isotope 0 while retaining the state's typed query.
@@ -185,11 +195,11 @@ class BiReaction(Reaction):
 
     @property
     def state_type(self) -> int:
-        return self.synthon_types[int(self.synthon_first)]
+        return self.input_types[int(self.synthon_first)]
 
     @property
     def attachment_type(self) -> int:
-        return self.synthon_types[int(not self.synthon_first)]
+        return self.input_types[int(not self.synthon_first)]
 
 
 def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReaction]]:
@@ -210,7 +220,7 @@ def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReac
     # Compile unimolecular reactions.
     uni: dict[str, UniReaction] = {}
     for name, spec in raw["UniReaction"].items():
-        uni[name] = UniReaction(name, **spec)
+        uni[name] = UniReaction(name, spec["forward"], spec["reverse"])
 
     # Compile the permitted state/synthon orientations for bimolecular reactions.
     bi: dict[str, BiReaction] = {}
@@ -218,7 +228,6 @@ def load_reactions(path: Path) -> tuple[dict[str, UniReaction], dict[str, BiReac
         shared = {
             "forward": spec["forward"],
             "reverse": spec["reverse"],
-            "synthon_types": tuple(spec["synthon_types"]),
         }
         if spec["ordered"]:
             # r1/r2 place the state in the first/second original SMARTS position.
