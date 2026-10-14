@@ -35,7 +35,7 @@ model:
   state_dim: 256
   num_state_layers: 4
   synthon_dim: 256
-  num_action_layers: 2
+  num_action_layers: 3
   num_synthon_layers: 2
 
 # RxnFlow training configuration
