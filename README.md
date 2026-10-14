@@ -21,6 +21,13 @@ cd RxnFlow/
 pip install -e .
 ```
 
+To install a specific version, use the following command:
+
+```bash
+git checkout v2.0.0
+pip install -e .
+```
+
 ## Quick start
 
 Start with the supplied [example SMILES file](data/building_blocks/example_5k.smi), which contains 5,000 ZINC building blocks.
