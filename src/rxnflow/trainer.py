@@ -13,11 +13,11 @@ import torch
 from omegaconf import OmegaConf
 
 from rxnflow import __version__
-from rxnflow.config import Config
-from rxnflow.core.compatibility import (
+from rxnflow.__version__ import (
     check_library_compatibility,
     check_model_compatibility,
 )
+from rxnflow.config import Config
 from rxnflow.core.types import Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler

@@ -8,11 +8,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from rxnflow.config import Config
-from rxnflow.core.compatibility import (
+from rxnflow.__version__ import (
     check_library_compatibility,
     check_model_compatibility,
 )
+from rxnflow.config import Config
 from rxnflow.core.types import SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler

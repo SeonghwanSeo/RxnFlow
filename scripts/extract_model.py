@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from rxnflow.core.compatibility import (
+from rxnflow.__version__ import (
     check_library_compatibility,
     check_model_compatibility,
 )

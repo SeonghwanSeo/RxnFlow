@@ -1,7 +1,7 @@
-"""Packed molecular graphs with directed bond features.
+"""Padded molecular batches with directed neighbor features.
 
-Each state stores only its atoms and bonds. Batching offsets local edge indices
-and records graph membership for pooling; virtual nodes are added by the encoder.
+Each state stores its atoms and bonds. Batches pad the atom and neighbor axes;
+masks exclude padding from message passing and pooling.
 """
 
 from __future__ import annotations
@@ -46,11 +46,12 @@ class GraphData:
 
 @dataclass
 class GraphBatch:
-    node_features: Tensor
-    batch_index: Tensor
-    num_nodes: Tensor
-    edge_index: Tensor
-    bond_features: Tensor
+    node_features: Tensor  # [B, N, D_node]
+    node_mask: Tensor  # [B, N]
+    num_nodes: Tensor  # [B]
+    neighbor_index: Tensor  # [B, N, K], local source indices for each target atom
+    neighbor_mask: Tensor  # [B, N, K]
+    bond_features: Tensor  # [B, N, K, D_bond]
     mol_features: Tensor
     size: Tensor
 
@@ -71,16 +72,47 @@ class GraphBatch:
     def from_list(cls, graphs: list[GraphData]) -> GraphBatch:
         assert graphs
         num_nodes = torch.tensor([len(graph.node_features) for graph in graphs])
-        offsets = num_nodes.cumsum(0) - num_nodes
-        num_edges = torch.tensor([graph.edge_index.shape[1] for graph in graphs])
-        edge_index = torch.cat([graph.edge_index for graph in graphs], dim=1)
-        edge_index += torch.repeat_interleave(offsets, num_edges)[None, :]
+        batch_size = len(graphs)
+        max_nodes = int(num_nodes.max())
+        max_neighbors = 0
+        for graph in graphs:
+            if graph.edge_index.numel():
+                degrees = torch.bincount(graph.edge_index[1])
+                max_neighbors = max(max_neighbors, int(degrees.max()))
+
+        node_features = graphs[0].node_features.new_zeros(
+            (batch_size, max_nodes, NODE_FEATURE_DIM)
+        )
+        node_mask = torch.arange(max_nodes)[None, :] < num_nodes[:, None]
+        neighbor_index = torch.zeros(
+            (batch_size, max_nodes, max_neighbors), dtype=torch.long
+        )
+        neighbor_mask = torch.zeros_like(neighbor_index, dtype=torch.bool)
+        bond_features = graphs[0].bond_features.new_zeros(
+            (batch_size, max_nodes, max_neighbors, BOND_FEATURE_DIM)
+        )
+        for index, graph in enumerate(graphs):
+            count = len(graph.node_features)
+            node_features[index, :count] = graph.node_features
+            source, target = graph.edge_index
+            # Each directed bond occupies one incoming-neighbor slot of its target.
+            next_slot = [0] * count
+            slots = []
+            for atom in target.tolist():
+                slots.append(next_slot[atom])
+                next_slot[atom] += 1
+            slots = torch.tensor(slots, dtype=torch.long)
+            neighbor_index[index, target, slots] = source
+            neighbor_mask[index, target, slots] = True
+            bond_features[index, target, slots] = graph.bond_features
+
         return cls(
-            node_features=torch.cat([graph.node_features for graph in graphs]),
-            batch_index=torch.repeat_interleave(torch.arange(len(graphs)), num_nodes),
+            node_features=node_features,
+            node_mask=node_mask,
             num_nodes=num_nodes,
-            edge_index=edge_index,
-            bond_features=torch.cat([graph.bond_features for graph in graphs]),
+            neighbor_index=neighbor_index,
+            neighbor_mask=neighbor_mask,
+            bond_features=bond_features,
             mol_features=torch.stack([graph.mol_features for graph in graphs]),
             size=torch.stack([graph.size for graph in graphs]),
         )

@@ -82,8 +82,9 @@ class TrajectoryBalance:
         scaled_log_R = torch.from_numpy(scaled_log_R.astype(np.float32)).to(device)
 
         # 2. Encode each trajectory's stored condition and predict logZ.
-        cond_info = model.encode_cond(beta, preference)
-        log_Z = model.logZ(cond_info).squeeze(-1)
+        cond_emb = model.encode_cond(beta, preference)
+        log_Z = model.logZ(cond_emb).squeeze(-1)
+        logit_scale = model.logit_scale(cond_emb).squeeze(-1)
 
         # 3. Score all observed transitions together, then sum by trajectory.
         transitions = []
@@ -138,7 +139,7 @@ class TrajectoryBalance:
                 "loss": loss.detach(),
                 "logZ": log_Z.mean(),
                 "beta": beta.mean(),
-                "logit_scale": model.logit_scale(cond_info).mean(),
+                "logit_scale": logit_scale.mean(),
                 "batch_entropy": -traj_log_p_F.mean(),
                 "traj_log_p_F": traj_log_p_F.mean(),
                 "traj_log_p_B": traj_log_p_B.mean(),

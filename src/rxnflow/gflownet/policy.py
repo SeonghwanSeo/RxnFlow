@@ -71,18 +71,25 @@ class SubsamplingPolicy:
 
 @dataclass
 class ActionCategorical:
-    action_logits: list[list[ActionLogits]]  # One list of subspaces per state.
-    state_emb: torch.Tensor
-    logit_scale: torch.Tensor
+    """Action distribution over sampled subspaces, grouped by state."""
+
+    action_logits: list[list[ActionLogits]]
     subsampling: dict[str, SubsamplingPolicy]
 
+    @property
+    def device(self) -> torch.device:
+        return self.action_logits[0][0].logits.device
+
     def log_partition(self) -> torch.Tensor:
-        """Estimate each state's log partition using library inclusion weights."""
+        """Return log(sum_a exp(logit_a) / p_a) for each state's sampled actions.
+
+        The inclusion probability p_a is K/N for K samples from an N-synthon
+        library, and 1 for unimolecular actions.
+        """
+        device = self.device
         partitions = []
         for state_logits in self.action_logits:
-            if not state_logits:
-                partitions.append(self.state_emb.new_tensor(math.log(1e-38)))
-                continue
+            assert state_logits
             sizes, weights = [], []
             for entry in state_logits:
                 sizes.append(len(entry.logits))
@@ -93,13 +100,13 @@ class ActionCategorical:
                     else self.subsampling[library_name].log_importance
                 )
             logits = torch.cat([entry.logits for entry in state_logits])
-            counts = torch.tensor(sizes, dtype=torch.long, device=logits.device)
+            counts = torch.tensor(sizes, dtype=torch.long, device=device)
             # Known output sizes avoid device synchronization during expansion.
             offsets = logits.new_tensor(weights).repeat_interleave(
                 counts, output_size=logits.numel()
             )
             weighted = logits + offsets
-            # Floor zero total mass without reviving excluded actions.
+            # Stable log-sum-exp with a finite floor when every logit is -inf.
             maximum = weighted.max().detach()
             maximum = torch.where(torch.isfinite(maximum), maximum, 0)
             total = (weighted - maximum).exp().sum()
@@ -109,10 +116,15 @@ class ActionCategorical:
     def sample(
         self, softmax_temperature: float, random_action_prob: float, importance: float
     ) -> list[Action]:
-        """Draw one action per state; fully excluded candidates are sampled uniformly."""
+        """Draw one action per state from the exploration distribution.
+
+        Add importance * log(N/K) to sampled synthon logits, then divide by
+        softmax_temperature. random_action_prob selects states that use
+        subspace-balanced random scores instead of model scores.
+        """
+        device = self.device
         random_states = (
-            torch.rand(len(self.action_logits), device=self.state_emb.device)
-            < random_action_prob
+            torch.rand(len(self.action_logits), device=device) < random_action_prob
         )
         columns = []
         for state_i, state_logits in enumerate(self.action_logits):
@@ -129,27 +141,29 @@ class ActionCategorical:
                 weights.append(importance * weight)
 
             logits = torch.cat([entry.logits for entry in state_logits])
-            counts = torch.tensor(sizes, dtype=torch.long, device=logits.device)
-            # Known output sizes avoid device synchronization during expansion.
+            counts = torch.tensor(sizes, dtype=torch.long, device=device)
             offsets = logits.new_tensor(weights).repeat_interleave(
                 counts, output_size=logits.numel()
             )
             values = logits + offsets
             if random_action_prob > 0:
-                # Each subspace has unit mass before masking at temperature 1.
+                # At temperature 1, each subspace has equal mass before masking,
+                # with uniform scores over its sampled actions.
                 random_logits = logits.new_tensor(
                     [-math.log(size) for size in sizes]
                 ).repeat_interleave(counts, output_size=logits.numel())
                 values = torch.where(random_states[state_i], random_logits, values)
-            values = values.masked_fill(~torch.isfinite(logits), -torch.inf)
-            values = values.clamp_min(math.log(1e-38))
+            valid = torch.isfinite(logits)
+            values = values.masked_fill(~valid, -torch.inf)
+            # If all candidates are masked, relax the mask and sample uniformly.
+            values = torch.where(valid.any(), values, torch.zeros_like(values))
             values = values / softmax_temperature
             # Gumbel-max samples from softmax without constructing probabilities.
             uniform = torch.rand_like(values).clamp_min(torch.finfo(values.dtype).tiny)
             gumbels = -(-uniform.log()).log()
             columns.append((values + gumbels).argmax())
 
-        # Transfer all winners together before decoding sampled subspace indices.
+        # Transfer indices to CPU once for the whole batch, then decode actions.
         actions: list[Action] = []
         for state_logits, column in zip(
             self.action_logits, torch.stack(columns).tolist(), strict=True
@@ -225,22 +239,29 @@ class RxnFlowPolicy:
         *,
         apply_property_penalty: bool = False,
     ) -> ActionCategorical:
-        """Score each state's actions using shared library samples and encodings.
-        This is not used; forward_batch is preferred for efficiency.
+        """Readable reference for constructing the forward action distribution.
+
+        Scores sampled candidates state by state; production paths use
+        get_action_categorical to batch the same computation.
         """
         assert states
-        # 1. Encode the states and prepare all needed synthons before scoring.
+        # 1. Late conditioning: h(s, c) = concat(encode_state(s), encode_cond(c)).
+        # The graph encoder itself is independent of c = (beta, preference).
         batch = self._get_state_inputs(states).to(self.device)
-        cond_info = self.model.encode_cond(beta, preference)
-        state_emb = self.model.encode_state(batch, cond_info)
-        logit_scale = self.model.logit_scale(cond_info)
+        state_emb = self.model.encode_state(batch)
+        cond_emb = self.model.encode_cond(beta, preference)
+        action_emb = torch.cat([state_emb, cond_emb], dim=-1)
+        logit_scale = self.model.logit_scale(cond_emb)
+
+        # 2. Share sampled candidates and their synthon encodings across states.
         action_spaces = self._prepare_action_space(states)
         synthon_cache = self._get_synthon_cache(action_spaces)
 
-        # 2. Score each state's subspaces; size/property masks guide sampling only.
+        # 3. Compute unnormalized action scores f_theta(s, a | c).
+        # Synthon actions use query(h) dot encode_synthon(a); unirxn uses a scalar head.
         action_logits: list[list[ActionLogits]] = []
         for state_i, action_space in enumerate(action_spaces):
-            emb = state_emb[state_i]
+            emb = action_emb[state_i]
             scale = logit_scale[state_i]
             state_prop, state_size = batch.mol_features[state_i], batch.size[state_i]
 
@@ -249,56 +270,54 @@ class RxnFlowPolicy:
                 action_name, library_name = subspace.name
                 action_type = subspace.action_type
                 if action_type.is_unirxn:
-                    logits = self._unirxn_logits(action_type, action_name, emb) * scale
-                elif action_type.is_first:
-                    synthon_emb, synthon_prop, synthon_size = synthon_cache[library_name]
-                    logits = self._first_synthon_logits(emb, synthon_emb) * scale
-                    if apply_property_penalty:
-                        size_mask = get_size_mask(
-                            state_size, synthon_size, self.env.max_atoms
-                        )
-                        property_penalty = get_property_penalty(
-                            state_prop, synthon_prop, self.env.property_limits
-                        )
-                        logits = logits.masked_fill(
-                            ~(size_mask & property_penalty), -torch.inf
-                        )
+                    # Unimolecular reactions have one action per subspace
+                    logits = self._unirxn_logits(action_type, action_name, emb)
+                    action_mask = None
                 else:
+                    # FirstSynthon and BiReactions have multiple actions per subspace.
                     synthon_emb, synthon_prop, synthon_size = synthon_cache[library_name]
-                    logits = (
-                        self._birxn_logits(action_type, action_name, emb, synthon_emb)
-                        * scale
-                    )
+                    # Compute the logits for the sampled synthons in this subspace.
+                    if action_type.is_first:
+                        logits = self._first_synthon_logits(emb, synthon_emb)
+                    else:
+                        logits = self._birxn_logits(
+                            action_type, action_name, emb, synthon_emb
+                        )
+
+                    # Apply property penalty to the logits
                     if apply_property_penalty:
                         size_mask = get_size_mask(
                             state_size, synthon_size, self.env.max_atoms
                         )
-                        property_penalty = get_property_penalty(
+                        property_mask = get_property_penalty(
                             state_prop, synthon_prop, self.env.property_limits
                         )
-                        logits = logits.masked_fill(
-                            ~(size_mask & property_penalty), -torch.inf
-                        )
+                        action_mask = size_mask & property_mask
+                    else:
+                        action_mask = None
+
+                # Scale the logits
+                logits = logits * scale
+
+                # Mask out invalid actions
+                if action_mask is not None:
+                    logits.masked_fill_(~action_mask, -torch.inf)
+
                 state_logits.append(ActionLogits(subspace, logits))
 
             action_logits.append(state_logits)
-        return ActionCategorical(action_logits, state_emb, logit_scale, self.subsampling)
+        return ActionCategorical(action_logits, self.subsampling)
 
-    def forward_batch(
+    def get_action_categorical(
         self,
         states: list[State],
-        beta: torch.Tensor,
-        preference: torch.Tensor,
+        batch: GraphBatch,
+        state_emb: torch.Tensor,
+        logit_scale: torch.Tensor,
         *,
         apply_property_penalty: bool = False,
     ) -> ActionCategorical:
-        """Batch states by attachment and score each head's libraries together."""
-        assert states
-        # 1. Encode states and all sampled synthons before scoring.
-        batch = self._get_state_inputs(states).to(self.device)
-        cond_info = self.model.encode_cond(beta, preference)
-        state_emb = self.model.encode_state(batch, cond_info)
-        logit_scale = self.model.logit_scale(cond_info)
+        # 1. Prepare sampled synthons before scoring.
         action_spaces = self._prepare_action_space(states)
         synthon_cache = self._get_synthon_cache(action_spaces)
 
@@ -392,7 +411,7 @@ class RxnFlowPolicy:
                     for subspace in action_spaces[state_i]
                 ]
 
-        return ActionCategorical(action_logits, state_emb, logit_scale, self.subsampling)
+        return ActionCategorical(action_logits, self.subsampling)
 
     def _prepare_action_space(self, states: list[State]) -> list[ActionSpace]:
         """Resolve eligible subspaces with one shared sample per library."""
@@ -556,9 +575,20 @@ class RxnFlowPolicy:
         beta: torch.Tensor,
         preference: torch.Tensor,
     ) -> list[Action]:
-        return self.forward_batch(
-            states, beta, preference, apply_property_penalty=True
-        ).sample(
+        assert states
+        batch = self._get_state_inputs(states).to(self.device)
+        state_emb = self.model.encode_state(batch)
+        cond_emb = self.model.encode_cond(beta, preference)
+        state_emb = torch.cat([state_emb, cond_emb], dim=-1)
+        logit_scale = self.model.logit_scale(cond_emb)
+        fwd_cat = self.get_action_categorical(
+            states,
+            batch,
+            state_emb,
+            logit_scale,
+            apply_property_penalty=True,
+        )
+        return fwd_cat.sample(
             softmax_temperature,
             random_action_prob,
             self.config.subsampling.importance_temp,
@@ -573,15 +603,22 @@ class RxnFlowPolicy:
     ) -> torch.Tensor:
         # The masked sampler is an exploration policy. TB uses the same
         # unmasked logits in its numerator and normalization estimate.
-        fwd_cat = self.forward_batch(
-            states, beta, preference, apply_property_penalty=False
-        )
-        numerator = self.get_action_logits(
-            fwd_cat.state_emb, actions, fwd_cat.logit_scale
-        )
-        # Independent denominator subsampling can underestimate total mass;
-        # cap log probabilities at zero to keep estimated probabilities <= 1.
-        return (numerator - fwd_cat.log_partition()).clamp(max=0.0)
+        assert states
+        batch = self._get_state_inputs(states).to(self.device)
+        state_emb = self.model.encode_state(batch)
+        cond_emb = self.model.encode_cond(beta, preference)
+        state_emb = torch.cat([state_emb, cond_emb], dim=-1)
+        logit_scale = self.model.logit_scale(cond_emb)
+
+        # Compute the selected action logits
+        action_logits = self.get_action_logits(state_emb, actions, logit_scale)
+
+        # Compute the log partition function
+        log_partitions = self.get_action_categorical(
+            states, batch, state_emb, logit_scale
+        ).log_partition()
+
+        return (action_logits - log_partitions).clamp(max=0.0)
 
     def calc_bck_logprob(
         self,

@@ -1,7 +1,5 @@
 """Condition and synthon encoders; weights are initialized by RxnFlowModel."""
 
-import math
-
 import torch
 from torch import nn
 
@@ -10,24 +8,36 @@ from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM, PROPERTY_SCALE
 from .nn import mlp
 
 
-class ConditionEncoder(nn.Module):
-    """Encode beta and objective weights, including fixed equal weights."""
+class GFNConditionEncoder(nn.Module):
+    """Encode GFlowNet conditions, i.e., temperature and preference vector."""
 
-    def __init__(self, hidden_dim: int, num_objectives: int) -> None:
+    def __init__(self, num_objectives: int, hidden_dim: int) -> None:
         super().__init__()
-        # Normalized beta plus four sine/cosine pairs.
-        self.emb_beta = mlp(9, hidden_dim, hidden_dim, 2)
-        self.emb_preference = mlp(num_objectives, hidden_dim, hidden_dim, 2)
+        self.emb_temp = mlp(1, hidden_dim, hidden_dim, 2)
+        self.emb_pref = mlp(num_objectives, hidden_dim, hidden_dim, 2)
 
-    def forward(self, beta: torch.Tensor, preference: torch.Tensor) -> torch.Tensor:
-        """beta: [B], preference: [B, num_objectives]; return [B, H]."""
-        # Fixed coordinates are independent of the sampling range. The linear
-        # term u distinguishes values that share the same periodic features.
-        u = (beta[:, None] - 1.0) / 63.0
-        frequencies = u.new_tensor((1.0, 2.0, 4.0, 8.0))
-        angles = 2 * math.pi * u * frequencies
-        features = torch.cat([u, angles.sin(), angles.cos()], dim=-1)
-        return self.emb_beta(features) + self.emb_preference(preference)
+    def forward(
+        self,
+        temperature: torch.Tensor,
+        preference: torch.Tensor,
+    ) -> torch.Tensor:
+        """temperature: [B], preference: [B, num_objectives]; return [B, H]."""
+        return self.emb_temp(temperature[:, None]) + self.emb_pref(preference)
+
+
+class ExternalConditionEncoder(nn.Module):
+    """Encode external conditions, e.g., a target protein embedding."""
+
+    def __init__(self, condition_dim: int, hidden_dim: int) -> None:
+        super().__init__()
+        self.emb_cond = mlp(condition_dim, hidden_dim, hidden_dim, 2)
+
+    def forward(
+        self,
+        condition: torch.Tensor,
+    ) -> torch.Tensor:
+        """condition: [B, condition_dim]; return [B, hidden_dim]."""
+        return self.emb_cond(condition)
 
 
 class SynthonEncoder(nn.Module):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from enum import IntEnum
 from functools import cached_property
@@ -206,6 +207,7 @@ class Trajectory:
     reward: float = 0.0
     valid: bool = True
     invalid_reason: InvalidReason | None = None
+    cond: Any = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -213,6 +215,7 @@ class Trajectory:
             "final_smiles": self.final_smiles,
             "beta": self.beta,
             "preference": list(self.preference),
+            "cond": deepcopy(self.cond),
             "objective_rewards": list(self.objective_rewards),
             "property_reward": self.property_reward,
             "property_violation": self.property_violation,
@@ -228,6 +231,7 @@ class Trajectory:
             final_smiles=data["final_smiles"],
             beta=data["beta"],
             preference=list(data["preference"]),
+            cond=deepcopy(data.get("cond")),
             objective_rewards=list(data["objective_rewards"]),
             property_reward=data["property_reward"],
             property_violation=data["property_violation"],
