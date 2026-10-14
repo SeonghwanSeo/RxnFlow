@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from rxnflow.core.compatibility import (
+from rxnflow.__version__ import (
     check_library_compatibility,
     check_model_compatibility,
 )
@@ -31,6 +31,7 @@ def main() -> None:
             "objectives",
             "environment",
             "rxnflow_version",
+            "condition_dim",
         )
     }
     torch.save(model, args.output)

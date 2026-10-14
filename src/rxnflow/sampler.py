@@ -8,12 +8,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from rxnflow.config import Config
-from rxnflow.core.compatibility import (
+from rxnflow.__version__ import (
     check_library_compatibility,
     check_model_compatibility,
 )
-from rxnflow.core.types import SamplingResult, Trajectory
+from rxnflow.conditioning import ConditioningModule
+from rxnflow.config import Config
+from rxnflow.core.types import Condition, SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy
@@ -27,10 +28,13 @@ class RxnFlowSampler:
         *,
         device: str | torch.device = "cpu",
         env_dir: str | Path | None = None,
+        conditioning: ConditioningModule | None = None,
     ) -> None:
         """Load EMA weights from a full checkpoint or extracted model.
 
         device selects the sampling device; env_dir overrides the saved catalog path.
+        Conditional checkpoints require the same condition feature mapping
+        used in training.
         """
         # Load once on CPU: sampling needs only EMA weights, not the optimizer
         # and replay tensors copied to the GPU with the entire checkpoint.
@@ -41,6 +45,12 @@ class RxnFlowSampler:
 
         if env_dir is not None:
             config.env_dir = str(env_dir)
+        self.conditioning = conditioning
+        condition_dim = conditioning.encoding_dim if conditioning is not None else None
+        if ckpt["condition_dim"] != condition_dim:
+            raise ValueError(
+                "supply a conditioning module matching the checkpoint dimension"
+            )
         self.config = config
         self.objectives = tuple(ckpt["objectives"])
         self.device = torch.device(device)
@@ -63,6 +73,7 @@ class RxnFlowSampler:
                 self.env,
                 config.model,
                 len(self.objectives),
+                condition_dim,
             )
             .to(self.device)
             .eval()
@@ -87,6 +98,9 @@ class RxnFlowSampler:
             metadata={
                 "beta": trajectory.beta,
                 "preference": trajectory.preference,
+                **{
+                    f"cond_{key}": value for key, value in (trajectory.cond or {}).items()
+                },
             },
         )
 
@@ -99,6 +113,7 @@ class RxnFlowSampler:
         batch_size: int = 64,
         softmax_temperature: float = 1.0,
         seed: int | None = None,
+        cond_list: list[Condition] | None = None,
     ) -> list[SamplingResult]:
         """Attempt num_samples trajectories and return the valid results.
 
@@ -106,6 +121,8 @@ class RxnFlowSampler:
         conditions use their training settings. batch_size is independent of the
         training batch size; softmax_temperature scales the policy softmax.
         A supplied seed resets sampling RNGs; None continues their current state.
+        cond_list fixes one raw condition per attempt; when omitted, the
+        conditioning module samples conditions for each batch.
         """
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
         if beta is None:
@@ -142,7 +159,7 @@ class RxnFlowSampler:
             raise ValueError("sample count must be positive")
         if seed is not None:
             self.rng.bit_generator.state = np.random.default_rng(seed).bit_generator.state
-            torch.manual_seed(seed)  # CPU conditions and device-side categorical draws.
+            torch.manual_seed(seed)  # Device-side categorical draws.
         if softmax_temperature <= 0:
             raise ValueError("softmax temperature must be positive")
         print(
@@ -168,18 +185,37 @@ class RxnFlowSampler:
             ),
             flush=True,
         )
+        if cond_list is not None:
+            if self.conditioning is None:
+                raise ValueError("cond_list requires a conditioning module")
+            if len(cond_list) != num_samples:
+                raise ValueError(
+                    "cond_list must contain one condition per attempted trajectory"
+                )
         # 2. Sample a fixed number of trajectories without retrying invalid ones.
         trajectories: list[Trajectory] = []
         for start in range(0, num_samples, batch_size):
             batch_count = min(batch_size, num_samples - start)
-            sampled_beta, weights = conditions.sample(batch_count)
+            sampled_beta, weights = conditions.sample(batch_count, self.rng)
+            batch_conditions, cond = None, None
+            if self.conditioning is not None:
+                batch_conditions = (
+                    self.conditioning.sample(batch_count, self.rng)
+                    if cond_list is None
+                    else cond_list[start : start + batch_count]
+                )
+                cond = torch.from_numpy(self.conditioning.encode(batch_conditions)).to(
+                    self.device
+                )
             batch = self.policy.sample_from_model(
                 batch_count,
-                softmax_temperature,
-                0.0,
-                analyze_backward=False,
                 beta=sampled_beta,
                 preference=weights,
+                cond=cond,
+                cond_list=batch_conditions,
+                softmax_temperature=softmax_temperature,
+                random_action_prob=0.0,
+                analyze_backward=False,
             )
             trajectories.extend(trajectory for trajectory in batch if trajectory.valid)
         return [self._result(trajectory) for trajectory in trajectories]

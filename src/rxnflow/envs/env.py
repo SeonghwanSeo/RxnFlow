@@ -8,7 +8,7 @@ from pathlib import Path
 
 from rdkit.Chem.rdChemReactions import ReactionToSmarts
 
-from rxnflow.core.compatibility import check_library_compatibility
+from rxnflow.__version__ import check_library_compatibility
 from rxnflow.core.errors import InvalidTransition
 from rxnflow.core.molecule import Molecule
 from rxnflow.core.reaction import load_reactions

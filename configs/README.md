@@ -14,13 +14,34 @@ See [custom rewards](../docs/rewards.md) for implementation and [conditioning](.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `reward.beta` | `"32"` | Reward exponent: a fixed value or `uniform(lower,upper)`. |
+| `reward.beta` | `"32"` | Reward exponent: a fixed value, `uniform(lower,upper)` or `log_uniform(lower,upper)`. |
 | `reward.moo_scalarization` | `mul` | Combine objectives by weighted product (`mul`) or weighted sum (`sum`). |
 | `reward.moo_preference` | `"none"` | Objective weights: `none`, `fixed(...)`, `dirichlet` or `dirichlet(...)`. |
 | `reward.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
 | `reward.settings` | `{}` | Constructor arguments for your reward class. |
 
 `dirichlet` defaults to concentration `1.5`. Use `dirichlet(alpha)` for a shared concentration or `dirichlet(alpha1,alpha2,...)` for per-objective concentrations.
+
+## External conditioning
+
+`conditioning` is a mapping of constructor arguments for your `ConditioningModule`, defaulting to `{}`. Instantiate the module in your training script and pass it as `conditioning=` to the trainer. See [external conditions](../docs/conditioning.md#external-conditions) for training and sampling examples.
+
+## Generation Constraints
+
+We apply hard constraints on the number of synthons and reactions in a completed route, and a soft constraint on the number of heavy atoms.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `generation.max_atoms` | `50` | Upper bound on the number of heavy atoms in a generated molecule. |
+| `generation.min_synthons` | `2` | Minimum selected synthons in a synthetic route. |
+| `generation.max_synthons` | `3` | Maximum selected synthons in a synthetic route. |
+| `generation.min_reactions` | `1` | Minimum reaction steps in a synthetic route. |
+| `generation.max_reactions` | `3` | Maximum reaction steps in a synthetic route. |
+
+
+Example:
+- `A-[1*] --(birxn)--> A-B-[2*] --(unirxn)--> A-B-[3*] --(birxn)--> A-B-C` has 3 reactions and 3 synthons.
+- `A-[4*] --(birxn)--> A-B` has 1 reaction and 2 synthons.
 
 ## Property penalty
 
@@ -45,23 +66,6 @@ Action subsampling evaluates a random subset of each synthon library, reducing c
 | `subsampling.sampling_ratio` | `0.1` | Fraction of each synthon library subsampled for action selection, in `(0, 1]`. |
 | `subsampling.min_sampling` | `50` | Minimum sampled candidates per library, capped by library size. |
 | `subsampling.importance_temp` | `1.0` | Subsampling correction strength: `1` applies the full correction, `0` disables it during action selection. |
-
-## Generation Constraints
-
-We apply hard constraints on the number of synthons and reactions in a completed route, and a soft constraint on the number of heavy atoms.
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `generation.max_atoms` | `50` | Upper bound on the number of heavy atoms in a generated molecule. |
-| `generation.min_synthons` | `2` | Minimum selected synthons in a synthetic route. |
-| `generation.max_synthons` | `3` | Maximum selected synthons in a synthetic route. |
-| `generation.min_reactions` | `1` | Minimum reaction steps in a synthetic route. |
-| `generation.max_reactions` | `3` | Maximum reaction steps in a synthetic route. |
-
-
-Example:
-- `A-[1*] --(birxn)--> A-B-[2*] --(unirxn)--> A-B-[3*] --(birxn)--> A-B-C` has 3 reactions and 3 synthons.
-- `A-[4*] --(birxn)--> A-B` has 1 reaction and 2 synthons.
 
 ## Model Configuration
 

@@ -12,7 +12,7 @@ from rxnflow.envs.env import SynthesisEnv
 from rxnflow.envs.features import PROPERTY_DIM
 from rxnflow.envs.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
 
-from .encoders import ConditionEncoder, SynthonEncoder
+from .encoders import ExternalConditionEncoder, GFNConditionEncoder, SynthonEncoder
 from .mpnn import MPNN
 from .nn import mlp
 
@@ -24,26 +24,34 @@ class RxnFlowModel(nn.Module):
         self,
         env: SynthesisEnv,
         cfg: ModelConfig,
-        num_objectives: int,
+        num_objectives: int = 1,
+        condition_dim: int | None = None,
     ):
         super().__init__()
-        # Number of objectives for multi-objective optimization
-        self.num_objectives = num_objectives
+        self.num_objectives: int = num_objectives
+        self.condition_dim: int | None = condition_dim
 
-        # Condition encoders
-        self.condition_encoder = ConditionEncoder(cfg.hidden_dim, num_objectives)
-        cond_dim = cfg.hidden_dim
-
-        # State graph encoder
+        # State encoder
         self.state_encoder = MPNN(
-            x_dim=NODE_FEATURE_DIM,
-            e_dim=BOND_FEATURE_DIM,
-            g_dim=PROPERTY_DIM,
-            cond_dim=cond_dim,
+            node_dim=NODE_FEATURE_DIM,
+            edge_dim=BOND_FEATURE_DIM,
+            graph_dim=PROPERTY_DIM,
             model_dim=cfg.state_dim,
             num_layers=cfg.num_state_layers,
         )
-        state_dim = 2 * cfg.state_dim
+
+        # GFN condition encoders, i.e., temperature and preference vector
+        self.gfn_condition_encoder = GFNConditionEncoder(num_objectives, cfg.hidden_dim)
+        # External condition encoder
+        if condition_dim is not None:
+            self.condition_encoder = ExternalConditionEncoder(
+                condition_dim, cfg.hidden_dim
+            )
+        else:
+            self.condition_encoder = None
+        cond_dim = 2 * cfg.hidden_dim
+
+        state_dim = cfg.state_dim + cond_dim
 
         # Reaction name embeddings
         reaction_names = list(env.uni_reactions.keys()) + list(env.bi_reactions.keys())
@@ -64,13 +72,7 @@ class RxnFlowModel(nn.Module):
         hidden_dim = cfg.hidden_dim
 
         def _action_mlp(in_dim, out_dim):
-            return mlp(
-                in_dim,
-                hidden_dim,
-                out_dim,
-                cfg.num_action_layers,
-                layernorm=True,
-            )
+            return mlp(in_dim, hidden_dim, out_dim, cfg.num_action_layers, layernorm=True)
 
         action_heads = {
             ActionType.FIRST_SYNTHON: _action_mlp(state_dim, synthon_dim),
@@ -82,10 +84,10 @@ class RxnFlowModel(nn.Module):
         self.action_heads = nn.ModuleDict({k.name: v for k, v in action_heads.items()})
 
         # Logit scaling (LogitGFN)
-        self._logit_scale = mlp(cond_dim, hidden_dim, 1, 2)
+        self._logit_scale = mlp(cond_dim, hidden_dim, d_out=1, n_layer=2)
 
         # Trajectory-balance (TB)
-        self._logZ = mlp(cond_dim, hidden_dim, 1, 2)
+        self._logZ = mlp(cond_dim, hidden_dim, d_out=1, n_layer=2)
 
         self.init_weight()
 
@@ -111,20 +113,35 @@ class RxnFlowModel(nn.Module):
         nn.init.zeros_(self._logZ[-1].bias)
 
     def logit_scale(self, cond: torch.Tensor) -> torch.Tensor:
-        r"""[bs, b_hid] → [bs] \in [0, ∞)."""
+        r"""[B, 2*hidden_dim] → [B] \in [0, ∞)."""
         return F.elu(self._logit_scale(cond)).squeeze(-1) + 1
 
     def logZ(self, cond: torch.Tensor) -> torch.Tensor:
-        """[bs, d_hid] → [bs, 1]."""
+        """Predict logZ from the full GFN and external condition embedding."""
         return self._logZ(cond)
 
-    def encode_cond(self, beta: torch.Tensor, preference: torch.Tensor) -> torch.Tensor:
-        """Encode beta and objective weights into one [bs, d_hid] condition."""
-        return self.condition_encoder(beta, preference)
+    def encode_cond(
+        self,
+        beta: torch.Tensor,
+        preference: torch.Tensor,
+        cond: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Encode beta [B], preference [B, O] and optional cond [B, condition_dim].
 
-    def encode_state(self, batch: GraphBatch, cond: torch.Tensor) -> torch.Tensor:
-        """cond: [bs, d_hid]; return [bs, 2*d_state]."""
-        return self.state_encoder(batch, cond)
+        Return [B, 2*hidden_dim], with a zero external embedding when no external
+        condition encoder is configured.
+        """
+        gfn_cond_emb = self.gfn_condition_encoder(beta, preference)
+        if self.condition_encoder is not None:
+            assert cond is not None, "external conditions must be provided"
+            ext_cond_emb = self.condition_encoder(cond)
+        else:
+            ext_cond_emb = torch.zeros_like(gfn_cond_emb)
+        return torch.cat([gfn_cond_emb, ext_cond_emb], dim=-1)
+
+    def encode_state(self, batch: GraphBatch) -> torch.Tensor:
+        """Encode a molecule graphs into state embeddings."""
+        return self.state_encoder(batch)
 
     def encode_synthon(
         self,
@@ -140,9 +157,7 @@ class RxnFlowModel(nn.Module):
         self,
         state_emb: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        [*, 2*d_state] → [*, d_synthon]
-        """
+        """Map conditioned state embeddings to first-synthon queries."""
         head = self.action_heads[ActionType.FIRST_SYNTHON.name]
         return head(state_emb)
 
@@ -152,9 +167,7 @@ class RxnFlowModel(nn.Module):
         action_name: str,
         action_type: ActionType,
     ) -> torch.Tensor:
-        """
-        [*, 2*d_state] → [*, 1]
-        """
+        """Score a unimolecular reaction from conditioned state embeddings."""
         assert state_emb.ndim in (1, 2)
         assert action_type.is_unirxn
         head = self.action_heads[action_type.name]
@@ -184,9 +197,7 @@ class RxnFlowModel(nn.Module):
         action_name: str,
         action_type: ActionType,
     ) -> torch.Tensor:
-        """
-        [*, 2*d_state] → [*, d_synthon]
-        """
+        """Form bimolecular synthon queries from conditioned state embeddings."""
         assert state_emb.ndim in (1, 2)
         assert action_type in (ActionType.BIRXN_BRICK, ActionType.BIRXN_LINKER)
         head = self.action_heads[action_type.name]
