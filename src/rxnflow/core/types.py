@@ -12,6 +12,8 @@ from rdkit import Chem
 
 from .molecule import Molecule
 
+InvalidReason = Literal["invalid_transition", "max_reactions"]
+
 
 class ActionType(IntEnum):
     FIRST_SYNTHON = 0
@@ -121,11 +123,6 @@ class Action:
         return cls(**data)
 
 
-# Reverse-ordered edges: (forward action, parent SMILES), ending at the empty
-# state's SMILES "" through FirstSynthon. The number of entries is the route length.
-BackwardTrajectory = list[tuple[Action, str]]
-
-
 # Action name and optional synthon library; unimolecular actions use None.
 ActionKey: TypeAlias = tuple[str, str | None]
 
@@ -191,7 +188,9 @@ class Transition:
         )
 
 
-InvalidReason = Literal["invalid_transition", "max_reactions"]
+# Reverse-ordered edges: (forward action, parent SMILES), ending at the empty
+# state's SMILES "" through FirstSynthon. The number of entries is the route length.
+BackwardTrajectory = list[tuple[Action, str]]
 
 
 @dataclass
