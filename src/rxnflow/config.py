@@ -20,7 +20,7 @@ def parse_distribution(value: str) -> tuple[str, list[float]]:
         return "none", []
     if value == "dirichlet":
         return "dirichlet", [1.5]
-    match = re.fullmatch(r"(fixed|uniform|dirichlet)\(([^)]+)\)", value)
+    match = re.fullmatch(r"(fixed|uniform|log_uniform|dirichlet)\(([^)]+)\)", value)
     if match:
         return match[1], [float(x) for x in match[2].split(",")]
     return "fixed", [float(value)]
@@ -198,6 +198,7 @@ class Config:
 
     env_dir: str = ""
     reward: RewardConfig = field(default_factory=RewardConfig)
+    conditioning: dict[str, Any] = field(default_factory=dict)
     property_penalty: dict[str, float] = field(default_factory=dict)
     subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
@@ -241,6 +242,7 @@ class Config:
         return {
             "env_dir": self.env_dir,
             "reward": reward,
+            "conditioning": dict(self.conditioning),
             "property_penalty": dict(self.property_penalty),
             "subsampling": asdict(self.subsampling),
             "generation": asdict(self.generation),
@@ -266,6 +268,7 @@ class Config:
         cfg = cls(
             env_dir=raw["env_dir"],
             reward=RewardConfig(**reward),
+            conditioning=dict(raw["conditioning"]),
             property_penalty=dict(raw["property_penalty"]),
             subsampling=SubsamplingConfig(**raw["subsampling"]),
             generation=GenerationConfig(**raw["generation"]),

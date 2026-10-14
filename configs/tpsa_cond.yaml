@@ -1,0 +1,9 @@
+# External conditioning on target TPSA values.
+env_dir: ./data/envs/example_5k/
+
+reward:
+  beta: "uniform(1,64)"
+
+conditioning:
+  min_tpsa: 0
+  max_tpsa: 200

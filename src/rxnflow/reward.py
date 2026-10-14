@@ -1,9 +1,10 @@
-"""Molecular objective evaluation."""
+"""Reward function definition"""
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from functools import cached_property
+from typing import Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -17,10 +18,15 @@ class RewardFunction(ABC):
     objectives: tuple[str, ...]
 
     @abstractmethod
-    def score(self, smiles_list: list[str]) -> NDArray[np.float32]:
+    def score(
+        self,
+        smiles_list: list[str],
+        cond_list: list[dict[str, Any]] | None = None,
+    ) -> NDArray[np.float32]:
         """Return float32 scores of shape ``(len(smiles_list), len(objectives))``.
 
-        Input: list of unique, uncached SMILES to score.
+        Without conditions, inputs are unique, uncached SMILES. With conditions,
+        molecules and conditions retain their matching order, including duplicates.
 
         Scores must be finite, non-negative and larger-is-better.
         """
@@ -33,15 +39,47 @@ class RewardFunction(ABC):
 
     @cached_property
     def _cache(self) -> dict[str, NDArray[np.float32]]:
-        """Internal cache to avoid re-scoring"""
+        """Cache scores by SMILES for calls without conditions."""
         return {}
 
-    def __call__(self, smiles_list: list[str | None]) -> NDArray[np.float32]:
+    def __call__(
+        self,
+        smiles_list: list[str | None],
+        cond_list: list[dict[str, Any]] | None = None,
+    ) -> NDArray[np.float32]:
         """Evaluate molecules through ``run``."""
-        return self.run(smiles_list)
+        return self.run(smiles_list, cond_list)
 
-    def run(self, smiles_list: list[str | None]) -> NDArray[np.float32]:
-        """Score a batch of molecules with caching."""
+    def run(
+        self,
+        smiles_list: list[str | None],
+        cond_list: list[dict[str, Any]] | None = None,
+    ) -> NDArray[np.float32]:
+        """Score a batch of molecules."""
+        num_samples = len(smiles_list)
+
+        # Initialize the result array with zeros
+        result = np.zeros((num_samples, self.num_objectives), dtype=np.float32)
+
+        if cond_list is not None:
+            # If conditions are provided, skip caching or deduplication
+            assert len(cond_list) == len(smiles_list), (
+                "Length of cond_list must match length of smiles_list"
+            )
+            indices = [i for i, smi in enumerate(smiles_list) if smi is not None]
+            if not indices:
+                return result
+            _smiles_list = [smiles_list[i] for i in indices]
+            _cond_list = [cond_list[i] for i in indices]
+            scores = self.score(_smiles_list, _cond_list).astype(np.float32)
+            if scores.shape != (len(_smiles_list), len(self.objectives)):
+                raise ValueError(
+                    "RewardFunction.score must return [batch, num_objectives]"
+                )
+            if not np.isfinite(scores).all() or (scores < 0).any():
+                raise ValueError("rewards must be finite and non-negative")
+            result[indices] = scores
+            return result
 
         # Create an index before removing None and duplicates
         mapping: dict[str, list[int]] = {}
@@ -68,7 +106,6 @@ class RewardFunction(ABC):
                 self._cache[smi] = values.copy()
 
         # Fill in the results for all molecules
-        result = np.zeros((len(smiles_list), len(self.objectives)), dtype=np.float32)
         for smi, indices in mapping.items():
             result[indices] = self._cache[smi]
 

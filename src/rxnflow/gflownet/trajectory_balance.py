@@ -44,6 +44,8 @@ class TrajectoryBalance:
     def compute_batch_losses(
         self,
         trajectories: list[Trajectory],
+        cond: torch.Tensor | None = None,
+        *,
         num_online: int,
         num_replay: int,
     ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
@@ -82,7 +84,10 @@ class TrajectoryBalance:
         scaled_log_R = torch.from_numpy(scaled_log_R.astype(np.float32)).to(device)
 
         # 2. Encode each trajectory's stored condition and predict logZ.
-        cond_emb = model.encode_cond(beta, preference)
+        if cond is not None:
+            assert cond.shape == (len(trajectories), model.condition_dim)
+            cond = cond.to(device)
+        cond_emb = model.encode_cond(beta, preference, cond)
         log_Z = model.logZ(cond_emb).squeeze(-1)
         logit_scale = model.logit_scale(cond_emb).squeeze(-1)
 
@@ -108,6 +113,7 @@ class TrajectoryBalance:
                 [step.action for step in transitions],
                 beta[batch_idx],
                 preference[batch_idx],
+                cond=cond[batch_idx] if cond is not None else None,
             )
             traj_log_p_F = torch.zeros(len(trajectories), device=device)
             traj_log_p_F.index_add_(0, batch_idx, log_p_F)

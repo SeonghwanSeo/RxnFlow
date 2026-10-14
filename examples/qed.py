@@ -13,9 +13,7 @@ import torch
 from rdkit import Chem
 from rdkit.Chem import QED
 
-from rxnflow.config import Config
-from rxnflow.reward import RewardFunction
-from rxnflow.trainer import RxnFlowTrainer
+from rxnflow import Config, RewardFunction, RxnFlowTrainer
 
 
 class QEDReward(RewardFunction):

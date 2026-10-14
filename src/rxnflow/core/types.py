@@ -13,6 +13,19 @@ from rdkit import Chem
 
 from .molecule import Molecule
 
+# Action name and optional synthon library; unimolecular actions use None.
+ActionKey: TypeAlias = tuple[str, str | None]
+
+# A list of ActionSubspace objects, one per reaction and library pair.
+ActionSpace = list["ActionSubspace"]
+
+# Reverse-ordered edges: (forward action, parent SMILES), ending at the empty
+# state's SMILES "" through FirstSynthon. The number of entries is the route length.
+BackwardTrajectory = list[tuple["Action", str]]
+
+# Named external conditions, e.g. pocket keys or target property values.
+Condition: TypeAlias = dict[str, Any]
+
 InvalidReason = Literal["invalid_transition", "max_reactions"]
 
 
@@ -124,10 +137,6 @@ class Action:
         return cls(**data)
 
 
-# Action name and optional synthon library; unimolecular actions use None.
-ActionKey: TypeAlias = tuple[str, str | None]
-
-
 @dataclass
 class ActionSubspace:
     """One (reaction, library) pair, independent of policy logits.
@@ -159,9 +168,6 @@ class ActionSubspace:
         )
 
 
-ActionSpace = list[ActionSubspace]
-
-
 @dataclass
 class Transition:
     """One observed action, its product, and the estimated backward log probability."""
@@ -189,11 +195,6 @@ class Transition:
         )
 
 
-# Reverse-ordered edges: (forward action, parent SMILES), ending at the empty
-# state's SMILES "" through FirstSynthon. The number of entries is the route length.
-BackwardTrajectory = list[tuple[Action, str]]
-
-
 @dataclass
 class Trajectory:
     steps: list[Transition]
@@ -207,7 +208,7 @@ class Trajectory:
     reward: float = 0.0
     valid: bool = True
     invalid_reason: InvalidReason | None = None
-    cond: Any = None
+    cond: Condition | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {

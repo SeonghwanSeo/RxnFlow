@@ -84,10 +84,10 @@ class RxnFlowModel(nn.Module):
         self.action_heads = nn.ModuleDict({k.name: v for k, v in action_heads.items()})
 
         # Logit scaling (LogitGFN)
-        self._logit_scale = mlp(cond_dim, hidden_dim, 1, 2)
+        self._logit_scale = mlp(cond_dim, hidden_dim, d_out=1, n_layer=2)
 
         # Trajectory-balance (TB)
-        self._logZ = mlp(cond_dim, hidden_dim, 1, 2)
+        self._logZ = mlp(cond_dim, hidden_dim, d_out=1, n_layer=2)
 
         self.init_weight()
 
@@ -128,15 +128,16 @@ class RxnFlowModel(nn.Module):
     ) -> torch.Tensor:
         """Encode beta [B], preference [B, O] and optional cond [B, condition_dim].
 
-        Return [B, 2*hidden_dim], with a zero external embedding when omitted.
+        Return [B, 2*hidden_dim], with a zero external embedding when no external
+        condition encoder is configured.
         """
         gfn_cond_emb = self.gfn_condition_encoder(beta, preference)
         if self.condition_encoder is not None:
             assert cond is not None, "external conditions must be provided"
-            cond_emb = self.condition_encoder(cond)
+            ext_cond_emb = self.condition_encoder(cond)
         else:
-            cond_emb = torch.zeros_like(gfn_cond_emb)
-        return torch.cat([gfn_cond_emb, cond_emb], dim=-1)
+            ext_cond_emb = torch.zeros_like(gfn_cond_emb)
+        return torch.cat([gfn_cond_emb, ext_cond_emb], dim=-1)
 
     def encode_state(self, batch: GraphBatch) -> torch.Tensor:
         """Encode a molecule graphs into state embeddings."""

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from copy import deepcopy
 from dataclasses import dataclass
 
 import numpy as np
@@ -19,6 +20,7 @@ from rxnflow.core.types import (
     ActionSubspace,
     ActionType,
     BackwardTrajectory,
+    Condition,
     InvalidReason,
     State,
     Trajectory,
@@ -236,6 +238,7 @@ class RxnFlowPolicy:
         states: list[State],
         beta: torch.Tensor,
         preference: torch.Tensor,
+        cond: torch.Tensor | None = None,
         *,
         apply_property_penalty: bool = False,
     ) -> ActionCategorical:
@@ -246,10 +249,10 @@ class RxnFlowPolicy:
         """
         assert states
         # 1. Late conditioning: h(s, c) = concat(encode_state(s), encode_cond(c)).
-        # The graph encoder itself is independent of c = (beta, preference).
+        # The graph encoder is independent of beta, preference and external features.
         batch = self._get_state_inputs(states).to(self.device)
         state_emb = self.model.encode_state(batch)
-        cond_emb = self.model.encode_cond(beta, preference)
+        cond_emb = self.model.encode_cond(beta, preference, cond)
         action_emb = torch.cat([state_emb, cond_emb], dim=-1)
         logit_scale = self.model.logit_scale(cond_emb)
 
@@ -570,15 +573,17 @@ class RxnFlowPolicy:
     def sample_actions(
         self,
         states: list[State],
-        softmax_temperature: float,
-        random_action_prob: float,
         beta: torch.Tensor,
         preference: torch.Tensor,
+        cond: torch.Tensor | None = None,
+        *,
+        softmax_temperature: float = 1.0,
+        random_action_prob: float = 0.0,
     ) -> list[Action]:
         assert states
         batch = self._get_state_inputs(states).to(self.device)
         state_emb = self.model.encode_state(batch)
-        cond_emb = self.model.encode_cond(beta, preference)
+        cond_emb = self.model.encode_cond(beta, preference, cond)
         state_emb = torch.cat([state_emb, cond_emb], dim=-1)
         logit_scale = self.model.logit_scale(cond_emb)
         fwd_cat = self.get_action_categorical(
@@ -600,13 +605,14 @@ class RxnFlowPolicy:
         actions: list[Action],
         beta: torch.Tensor,
         preference: torch.Tensor,
+        cond: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # The masked sampler is an exploration policy. TB uses the same
         # unmasked logits in its numerator and normalization estimate.
         assert states
         batch = self._get_state_inputs(states).to(self.device)
         state_emb = self.model.encode_state(batch)
-        cond_emb = self.model.encode_cond(beta, preference)
+        cond_emb = self.model.encode_cond(beta, preference, cond)
         state_emb = torch.cat([state_emb, cond_emb], dim=-1)
         logit_scale = self.model.logit_scale(cond_emb)
 
@@ -647,19 +653,30 @@ class RxnFlowPolicy:
     def sample_from_model(
         self,
         count: int,
-        softmax_temperature: float = 1.0,
-        random_action_prob: float = 0.0,
-        analyze_backward: bool = True,
         *,
         beta: torch.Tensor,
         preference: torch.Tensor,
+        cond: torch.Tensor | None = None,
+        cond_list: list[Condition] | None = None,
+        softmax_temperature: float = 1.0,
+        random_action_prob: float = 0.0,
+        analyze_backward: bool = True,
     ) -> list[Trajectory]:
-        """Grow a batch with fixed conditions and optional backward analysis."""
+        """Grow trajectories using fixed conditions and optional backward analysis.
+
+        cond contains encoded features [count, condition_dim]; cond_list retains
+        the corresponding raw values for reward evaluation and replay.
+        """
         # 1. Initialize trajectory state and keep conditions fixed for every step.
         if count <= 0:
             raise ValueError("sample count must be positive")
         assert beta.shape == (count,)
         assert preference.shape == (count, self.model.num_objectives)
+        assert (cond is None) == (cond_list is None)
+        if cond is not None:
+            assert len(cond_list) == count
+            assert cond.shape == (count, self.model.condition_dim)
+            cond = cond.to(self.device)
         # Retain condition values for serialization at termination.
         beta_values, preference_values = beta.tolist(), preference.tolist()
         beta, preference = beta.to(self.device), preference.to(self.device)
@@ -697,10 +714,11 @@ class RxnFlowPolicy:
                 break
             selected = self.sample_actions(
                 [states[index] for index in active],
-                softmax_temperature,
-                random_action_prob,
                 beta[active],
                 preference[active],
+                cond=cond[active] if cond is not None else None,
+                softmax_temperature=softmax_temperature,
+                random_action_prob=random_action_prob,
             )
             # Collect the preceding reverse search after forward sampling so
             # worker processes can overlap it with model computation. Parent
@@ -748,6 +766,7 @@ class RxnFlowPolicy:
                     steps=steps[index],
                     beta=beta_values[index],
                     preference=preference_values[index],
+                    cond=deepcopy(cond_list[index]) if cond_list is not None else None,
                     final_smiles=state.smiles if reasons[index] is None else "",
                     valid=reasons[index] is None,
                     invalid_reason=reasons[index],

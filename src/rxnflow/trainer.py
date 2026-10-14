@@ -17,6 +17,7 @@ from rxnflow.__version__ import (
     check_library_compatibility,
     check_model_compatibility,
 )
+from rxnflow.conditioning import ConditioningModule
 from rxnflow.config import Config
 from rxnflow.core.types import Trajectory
 from rxnflow.envs.env import SynthesisEnv
@@ -61,6 +62,7 @@ class RxnFlowTrainer:
         output_dir: str | Path,
         device: str | torch.device = "cuda",
         num_workers: int = 4,
+        conditioning: ConditioningModule | None = None,
     ):
         # Validate the configuration
         config.validate()
@@ -104,6 +106,7 @@ class RxnFlowTrainer:
         logger.info("Output directory: %s", self.output_dir)
 
         # Reward function and objectives
+        self.conditioning = conditioning
         self.reward: RewardFunction = reward
         self.objectives: tuple[str, ...] = tuple(reward.objectives)
         self.num_objectives: int = len(self.objectives)
@@ -143,11 +146,16 @@ class RxnFlowTrainer:
     def _setup_model(self) -> None:
         """Initialize the model and policy for online training"""
         cfg = self.config
-        self.model = RxnFlowModel(self.env, cfg.model, self.num_objectives).to(
-            self.device
+        condition_dim = (
+            self.conditioning.encoding_dim if self.conditioning is not None else None
         )
+        self.model = RxnFlowModel(
+            self.env, cfg.model, self.num_objectives, condition_dim
+        ).to(self.device)
         self.sampling_model = (
-            RxnFlowModel(self.env, cfg.model, self.num_objectives).to(self.device).eval()
+            RxnFlowModel(self.env, cfg.model, self.num_objectives, condition_dim)
+            .to(self.device)
+            .eval()
         )
         self.sampling_model.load_state_dict(self.model.state_dict())
         self.policy = RxnFlowPolicy(self.env, self.model, cfg, self.device, self.rng)
@@ -247,6 +255,7 @@ class RxnFlowTrainer:
                     if self.device.type == "cuda"
                     else None
                 ),
+                "condition_dim": self.model.condition_dim,
                 "objectives": self.objectives,
                 "reward_class": self._reward_class_name(),
             },
@@ -289,6 +298,8 @@ class RxnFlowTrainer:
             )
         if checkpoint["objectives"] != self.objectives:
             raise ValueError("reward objectives differ from the checkpoint")
+        if checkpoint["condition_dim"] != self.model.condition_dim:
+            raise ValueError("external condition dimension differs from the checkpoint")
         # Restore training state only after config, catalog, and reward match.
         self.model.load_state_dict(checkpoint["model"])
         self.sampling_model.load_state_dict(checkpoint["sampling_model"])
@@ -313,7 +324,10 @@ class RxnFlowTrainer:
         smiles_list = [
             value.final_smiles if value.valid else None for value in trajectories
         ]
-        values = self.reward.run(smiles_list)
+        cond_list = (
+            [t.cond for t in trajectories] if self.conditioning is not None else None
+        )
+        values = self.reward.run(smiles_list, cond_list)
         property_rewards, violations = compute_property_rewards(
             smiles_list,
             self.env.property_limits,
@@ -381,6 +395,7 @@ class RxnFlowTrainer:
                     "property_violation": value.property_violation,
                     "beta": value.beta,
                     "preference": value.preference,
+                    **{f"cond_{key}": item for key, item in (value.cond or {}).items()},
                     "valid": value.valid,
                     "invalid_reason": value.invalid_reason,
                     "traj": traj,
@@ -414,12 +429,20 @@ class RxnFlowTrainer:
                 started = perf_counter()
                 self.sampling_model.eval()
                 count = self.config.training.num_online
-                beta, preference = self.condition_sampler.sample(count)
+                beta, preference = self.condition_sampler.sample(count, self.rng)
+                cond_list, cond = None, None
+                if self.conditioning is not None:
+                    cond_list = self.conditioning.sample(count, self.rng)
+                    cond = torch.from_numpy(self.conditioning.encode(cond_list)).to(
+                        self.device
+                    )
                 online_trajs = self.sampling_policy.sample_from_model(
                     self.config.training.num_online,
-                    random_action_prob=self.config.training.random_action_prob,
                     beta=beta,
                     preference=preference,
+                    cond=cond,
+                    cond_list=cond_list,
+                    random_action_prob=self.config.training.random_action_prob,
                 )
                 sample_time = perf_counter() - started
                 self._assign_rewards(online_trajs)
@@ -433,8 +456,15 @@ class RxnFlowTrainer:
                 # 3. Update the policy/logZ, learning rates, and EMA sampling weights.
                 self.model.train()
                 self.optimizer.zero_grad(set_to_none=True)
+                # Replay retains its original conditions; never sample new labels here.
+                cond = None
+                if self.conditioning is not None:
+                    cond = torch.from_numpy(
+                        self.conditioning.encode([t.cond for t in batch])
+                    ).to(self.device)
                 loss, loss_info = self.tb.compute_batch_losses(
                     batch,
+                    cond=cond,
                     num_online=len(online_trajs),
                     num_replay=len(replay_trajs),
                 )

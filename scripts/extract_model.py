@@ -31,6 +31,7 @@ def main() -> None:
             "objectives",
             "environment",
             "rxnflow_version",
+            "condition_dim",
         )
     }
     torch.save(model, args.output)

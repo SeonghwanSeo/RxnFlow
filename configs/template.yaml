@@ -1,20 +1,18 @@
 # Complete RxnFlow configuration template. See configs/README.md for settings.
 env_dir: /path/to/prepared/environment
 
+# Reward configuration
 reward:
-  beta: "32" # scalar | uniform(lower,upper)
+  beta: "32" # scalar | uniform(lower,upper) | log_uniform(lower,upper)
   moo_scalarization: mul # mul | sum
   moo_preference: "none" # none | fixed(...) | dirichlet | dirichlet(...)
   property_penalty_ratio: 0.2
   settings: {}
 
-property_penalty: {}
+# External conditioning configuration
+conditioning: {}
 
-subsampling:
-  sampling_ratio: 0.1
-  min_sampling: 50
-  importance_temp: 1.0
-
+# Sampling configuration
 generation:
   max_atoms: 50
   min_synthons: 2
@@ -22,6 +20,16 @@ generation:
   min_reactions: 1
   max_reactions: 3
 
+# Property penalty configuration
+property_penalty: {}
+
+# RxnFlow action subsampling configuration
+subsampling:
+  sampling_ratio: 0.1
+  min_sampling: 50
+  importance_temp: 1.0
+
+# RxnFlow model configuration
 model:
   hidden_dim: 256
   state_dim: 256
@@ -30,6 +38,7 @@ model:
   num_action_layers: 2
   num_synthon_layers: 2
 
+# RxnFlow training configuration
 training:
   log_every: 10
   checkpoint_every: 1000

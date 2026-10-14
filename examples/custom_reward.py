@@ -1,12 +1,12 @@
 """Minimal local reward injection example."""
 
+from typing import Any
+
 import numpy as np
 from numpy.typing import NDArray
 from rdkit import Chem
 
-from rxnflow.config import Config
-from rxnflow.reward import RewardFunction
-from rxnflow.trainer import RxnFlowTrainer
+from rxnflow import Config, RewardFunction, RxnFlowTrainer
 
 
 class HeavyAtomReward(RewardFunction):
@@ -15,7 +15,11 @@ class HeavyAtomReward(RewardFunction):
     def __init__(self, scale: float = 40.0):
         self.scale = scale
 
-    def score(self, smiles_list: list[str]) -> NDArray[np.float32]:
+    def score(
+        self,
+        smiles_list: list[str],
+        cond_list: list[dict[str, Any]] | None = None,
+    ) -> NDArray[np.float32]:
         mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
         values = np.zeros((len(mols), 1), dtype=np.float32)
         for i, mol in enumerate(mols):
