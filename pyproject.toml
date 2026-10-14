@@ -19,7 +19,7 @@ classifiers = [
 ]
 keywords = ["gflownet", "molecular-generation", "synthesis"]
 dependencies = [
-  "numpy>=2.0",
+  "numpy>=1.26.4",
   "torch>=2.1",
   "omegaconf>=2.3",
   "tqdm",
