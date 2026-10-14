@@ -69,6 +69,16 @@ python examples/mw_logp.py --config configs/mw_logp.yaml --steps 3000 --output-d
 
 See [reward implementation](docs/rewards.md#define-multiple-objectives) and [conditioning](docs/conditioning.md) for details.
 
+**Conditional generation**
+
+Train with target TPSA values as external conditions:
+
+```bash
+python examples/tpsa_cond.py --config configs/tpsa_cond.yaml --steps 1000 --output-dir runs/tpsa_cond
+```
+
+See [external conditions](docs/conditioning.md#external-conditions) for defining a conditioning module and sampling with explicit targets.
+
 ### Sampling
 
 Generate molecules and their synthesis routes from a trained checkpoint:

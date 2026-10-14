@@ -2,7 +2,7 @@
 
 ## Define your reward
 
-Implement a `RewardFunction` subclass with an `objectives` tuple and a `score()` method returning a float32 array of shape `[batch, num_objectives]`. Each score must be finite, non-negative and larger-is-better. See [custom rewards](rewards.md) for the interface and examples. Save your implementation in `my_reward.py` as `MyReward`.
+Define `MyReward` in `my_reward.py` with an `objectives` tuple and `score(smiles_list, cond_list=None)`. See [custom rewards](rewards.md) for the output format and examples.
 
 ## Train your model
 
@@ -68,6 +68,7 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 
 `sample.jsonl` stores individual online attempts. Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `preference`, `valid`, `invalid_reason` and `traj`. The iteration index `step` starts at one; the `sample` index starts at zero within each step.
 
+- External condition entries appear as `cond_<key>` fields, for example `cond_target_mw`.
 - `objective_rewards` follows the reward class's `objectives` order.
 - `preference` stores effective weights: their sum is the number of objectives for `mul`, or one for `sum`.
 - `traj` records the synthesis trajectory.
@@ -146,6 +147,8 @@ python scripts/sample.py \
 
 Use `--beta 32` to select a fixed exponent, or `--preference "fixed(0.3,0.7)"` to select a trade-off for two objectives. See [sampling conditions](conditioning.md#choose-conditions-when-sampling) for the options supported by your training settings.
 
+For external conditioning, pass your conditioning module to `RxnFlowSampler` through the [Python interface](conditioning.md#sample-with-explicit-targets).
+
 - `--num-samples` sets the number of trajectory attempts. Invalid results are excluded without retrying, so fewer molecules may be returned.
 - Sampling prints the training reward configuration and the requested sampling settings before generating molecules.
 - `--env-dir` selects another compatible prepared environment. Its reaction, synthon and exclusion definitions must match training; BB identities and library sizes may differ. Types defined in the templates but unused during training may have untrained embeddings.
@@ -155,7 +158,7 @@ Use `--beta 32` to select a fixed exponent, or `--preference "fixed(0.3,0.7)"` t
 Supported output formats:
 
 - `.smi`: one `SMILES<TAB>sample_i` record per line, numbered from zero in saved-result order.
-- `.jsonl`: one record per line containing `smiles`, `traj` and `metadata`. Metadata holds `beta` and `preference`; trajectories include initial synthon selection and each action's product.
+- `.jsonl`: one record per line containing `smiles`, `traj` and `metadata`. Metadata holds `beta`, `preference` and any external condition entries as `cond_<key>`; trajectories include initial synthon selection and each action's product.
 - `.json`: the same records as a single array, formatted with two-space indentation.
 
 ### JSON and JSONL records
@@ -168,6 +171,7 @@ Both formats store the same sample records. JSON contains an array of records wi
 | `traj` | Ordered list of actions, starting with initial synthon selection and ending with the terminal product. |
 | `metadata.beta` | Reward exponent sampled for this trajectory, including when fixed during training. |
 | `metadata.preference` | Effective objective weights in the reward class's `objectives` order. They sum to the number of objectives for `mul`, or to one for `sum`. |
+| `metadata.cond_<key>` | Raw external condition values, when supplied; for example `cond_tpsa`. |
 
 For example, two objectives with equal weights under `mul` have:
 

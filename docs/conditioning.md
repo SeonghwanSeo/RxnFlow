@@ -10,8 +10,9 @@ Set `reward.beta`, `reward.moo_scalarization` and `reward.moo_preference` in you
 | --- | --- |
 | `beta: "32"` | Train with a fixed exponent. |
 | `beta: "uniform(1,64)"` | Train across uniformly sampled exponents. |
+| `beta: "log_uniform(1,64)"` | Sample exponents uniformly in log space, giving equal probability to intervals with the same ratio, such as `[1,2]` and `[2,4]`. |
 
-Beta must be positive. A uniform range requires `lower < upper`.
+Beta must be positive. Both range distributions require `0 < lower < upper`; bounds are beta values, not their logarithms.
 
 ## Combine objectives
 
@@ -63,8 +64,66 @@ reward:
 
 Omitted beta and preferences reuse their training settings.
 
-- Fixed-beta training requires the same beta at sampling. Uniform-beta training allows a fixed value or uniform subrange inside the training range.
+- Fixed-beta training requires the same beta at sampling. Uniform or log-uniform training allows a fixed value, uniform range or log-uniform range inside the training range.
 - `none` keeps equal weights. Fixed-preference training requires the same relative weights.
 - Training with `dirichlet` or `dirichlet(...)` allows you to choose a fixed trade-off or another preference distribution at sampling.
 
 Use `--beta` and `--preference` in the [sampling command](training.md#sampling), or the corresponding arguments to `RxnFlowSampler.sample()`.
+
+## External conditions
+
+External conditions describe the generation target, such as a pocket key or target TPSA. Each trajectory retains one `dict[str, Any]`, for example `{"tpsa": 80.0}`. Beta and objective preferences remain separate settings.
+
+Implement a `ConditioningModule` with:
+
+- `encoding_dim`: the fixed number of model input features.
+- `sample(num_samples, rng)`: return one raw condition dictionary per trajectory using the supplied NumPy generator.
+- `encode(cond_list)`: return a deterministic float32 NumPy array of shape `[len(cond_list), encoding_dim]`, preserving order.
+
+The supplied RNG is seeded and saved in training checkpoints. Use JSON-compatible condition values for sample logs and JSON exports.
+
+The conditioning module selects and encodes targets; the [reward function](rewards.md) evaluates molecules against the raw targets.
+
+### Train with target TPSA
+
+The [TPSA example](../examples/tpsa_cond.py) samples target TPSA values, divides them by 100 for model input, and rewards molecules with `1 / (1 + abs(TPSA - target))`. Its [configuration](../configs/tpsa_cond.yaml) supplies constructor settings:
+
+```yaml
+conditioning:
+  min_tpsa: 0
+  max_tpsa: 200
+```
+
+Set `env_dir` in the YAML to your compatible prepared environment, then run from the repository root:
+
+```bash
+python examples/tpsa_cond.py --config configs/tpsa_cond.yaml --steps 1000
+```
+
+In custom scripts, construct `TPSAConditioningModule(**config.conditioning)` and pass it as `conditioning=` to `RxnFlowTrainer`. Use the same module and settings when [resuming](training.md#resume-training).
+
+### Sample with explicit targets
+
+Provide `cond_list` to choose the targets yourself. The module's `sample()` method is then skipped; only `encode()` is used. Supply one condition per generation attempt, including attempts that may fail:
+
+```python
+from examples.tpsa_cond import TPSAConditioningModule
+from rxnflow import Config, RxnFlowSampler
+
+config = Config.from_file("runs/tpsa_cond/config.yaml")
+sampler = RxnFlowSampler(
+    "runs/tpsa_cond/checkpoints/latest.ckpt",
+    conditioning=TPSAConditioningModule(**config.conditioning),
+    device="cuda",
+)
+results = sampler.sample(
+    num_samples=100,
+    cond_list=[{"tpsa": 80.0} for _ in range(100)],
+    seed=1,
+)
+sampler.write(results, "samples_tpsa80.jsonl")
+```
+
+Omit `cond_list` to sample targets through the module. Keep the training feature mapping unchanged. External conditioning uses this Python interface; the generic sampling CLI does not construct custom modules.
+
+Each raw condition field appears as `cond_<key>` in sampling metadata and training `sample.jsonl` records, such as `cond_tpsa: 80.0`.
