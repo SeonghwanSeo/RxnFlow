@@ -117,6 +117,7 @@ def prepare_environment(
             env_path,
             druglikeness_threshold=druglikeness_threshold,
             druglikeness_device=druglikeness_device,
+            num_workers=num_workers,
         )
         done.touch()
         logger.info(

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from functools import partial
+from multiprocessing import get_context
 from pathlib import Path
 
 from rdkit import Chem
@@ -40,7 +42,7 @@ def _read_building_blocks(path: Path) -> list[tuple[str, str]]:
     return records
 
 
-def _clean_building_blocks(
+def _clean_batch(
     records: list[tuple[str, str]],
     allow_isotope: bool = False,
     remove_salts: bool = True,
@@ -66,10 +68,37 @@ def _clean_building_blocks(
         return canonical_smi
 
     cleaned_records = []
-    for smiles, identifier in tqdm(records, desc="Cleaning BBs", leave=False):
+    for smiles, identifier in records:
         canonical_smi = _canonicalize(smiles)
         if canonical_smi is not None:
             cleaned_records.append((canonical_smi, identifier))
+    return cleaned_records
+
+
+def _clean_building_blocks(
+    records: list[tuple[str, str]],
+    allow_isotope: bool = False,
+    remove_salts: bool = True,
+    num_workers: int = 1,
+) -> list[tuple[str, str]]:
+    """Clean ordered batches with identical chemistry in serial and spawn workers."""
+    if num_workers < 1:
+        raise ValueError("num_workers must be at least 1")
+    clean = partial(_clean_batch, allow_isotope=allow_isotope, remove_salts=remove_salts)
+    batches = (records[i : i + 512] for i in range(0, len(records), 512))
+    cleaned_records = []
+    with tqdm(total=len(records), desc="Cleaning BBs", leave=False) as progress:
+
+        def collect(results):
+            for i, result in enumerate(results):
+                cleaned_records.extend(result)
+                progress.update(min(512, len(records) - i * 512))
+
+        if num_workers == 1:
+            collect(map(clean, batches))
+        else:
+            with get_context("spawn").Pool(num_workers) as pool:
+                collect(pool.imap(clean, batches))
     if not cleaned_records:
         raise ValueError("No valid building blocks")
     logger.info(
@@ -83,12 +112,13 @@ def read_blocks(
     env_dir: str | Path,
     druglikeness_threshold: float | None = None,
     druglikeness_device: str = "cpu",
+    num_workers: int = 1,
 ) -> None:
     """Clean and optionally screen BBs; save ID-to-SMILES provenance for conversion."""
     env_path = Path(env_dir)
     source_path = Path(building_blocks)
     records = _read_building_blocks(source_path)
-    records = _clean_building_blocks(records)
+    records = _clean_building_blocks(records, num_workers=num_workers)
 
     # Screen cleaned source molecules before converting them to synthons.
     if druglikeness_threshold is not None:
