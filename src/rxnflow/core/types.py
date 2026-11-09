@@ -209,12 +209,16 @@ class Trajectory:
     valid: bool = True
     invalid_reason: InvalidReason | None = None
     cond: Condition | None = None
+    prior_beta: float = 0.0
+    prior_reward: float = 1.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "steps": [step.to_dict() for step in self.steps],
             "final_smiles": self.final_smiles,
             "beta": self.beta,
+            "prior_beta": self.prior_beta,
+            "prior_reward": self.prior_reward,
             "preference": list(self.preference),
             "cond": deepcopy(self.cond),
             "objective_rewards": list(self.objective_rewards),
@@ -231,6 +235,8 @@ class Trajectory:
             steps=[Transition.from_dict(step) for step in data["steps"]],
             final_smiles=data["final_smiles"],
             beta=data["beta"],
+            prior_beta=data["prior_beta"],
+            prior_reward=data["prior_reward"],
             preference=list(data["preference"]),
             cond=deepcopy(data.get("cond")),
             objective_rewards=list(data["objective_rewards"]),

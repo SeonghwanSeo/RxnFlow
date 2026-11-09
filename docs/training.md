@@ -2,11 +2,14 @@
 
 ## Define your reward
 
-Define `MyReward` in `my_reward.py` with an `objectives` tuple and `score(smiles_list, cond_list=None)`. See [custom rewards](rewards.md) for the output format and examples.
+Define `MyReward` in `my_reward.py` with an `objectives` tuple and `score(smiles_list, cond_list=None)`.
+See [custom rewards](rewards.md) for the output format and examples.
 
 ## Train your model
 
-Write your own configuration file based on the [configuration template](../configs/template.yaml), and set `env_dir` to your [prepared synthesis environment](environment.md). Configure reward conditioning and training settings using the [configuration reference](../configs/README.md). `reward.settings` contains constructor arguments for your reward class.
+Write your own configuration file based on the [configuration template](../configs/template.yaml), and set `env_dir` to your [prepared synthesis environment](environment.md).
+Configure reward conditioning and training settings using the [configuration reference](../configs/README.md).
+`reward.settings` contains constructor arguments for your reward class.
 
 ```python
 from my_reward import MyReward
@@ -27,7 +30,9 @@ if __name__ == "__main__":
     checkpoint = trainer.run(num_steps=1000)
 ```
 
-`trainer.run(steps)` performs the requested number of additional updates. Output directory, device, worker count, seed and update count are execution arguments, separate from YAML settings. Trainer's `num_workers` sets the number of retrosynthesis workers (default `4`); `0` runs in the main process and emits an initialization warning.
+`trainer.run(steps)` performs the requested number of additional updates.
+Output directory, device, worker count, seed and update count are execution arguments, separate from YAML settings.
+Trainer's `num_workers` sets the number of retrosynthesis workers (default `4`); `0` runs in the main process and emits an initialization warning.
 
 ## Resume training
 
@@ -51,10 +56,14 @@ checkpoint = trainer.run(
 ```
 
 This performs 2,000 additional updates.
+Reuse the same configuration, reward class, objectives, condition dimensions and synthesis environment.
+With prior guidance enabled, use the same teacher weights.
 
 ## Outputs
 
-Files are saved under the trainer’s `output_dir`, which must not already exist. Resumed runs write only their new updates into the new directory. Invalid attempts, such as trajectories with no feasible continuation, are also recorded in the sample files.
+Files are saved under the trainer’s `output_dir`, which must not already exist.
+Resumed runs write only their new updates into the new directory.
+Invalid attempts, such as trajectories with no feasible continuation, are also recorded in the sample files.
 
 | Path | Contents |
 | --- | --- |
@@ -66,7 +75,9 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 
 ### Sample records
 
-`sample.jsonl` stores individual online attempts. Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `preference`, `valid`, `invalid_reason` and `traj`. The iteration index `step` starts at one; the `sample` index starts at zero within each step.
+`sample.jsonl` stores individual online attempts.
+Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `prior_beta`, `prior_reward`, `preference`, `valid`, `invalid_reason` and `traj`.
+The iteration index `step` starts at one; the `sample` index starts at zero within each step.
 
 - External condition entries appear as `cond_<key>` fields, for example `cond_target_mw`.
 - `objective_rewards` follows the reward class's `objectives` order.
@@ -75,7 +86,8 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 
 ### Training log metrics
 
-`training.jsonl` contains one record per update. Generation metrics describe all new online attempts, including invalid ones; loss and flow metrics describe the combined online + replay batch before the parameter update.
+`training.jsonl` contains one record per update.
+Generation metrics describe all new online attempts, including invalid ones; loss and flow metrics describe the combined online + replay batch before the parameter update.
 
 **Generation and rewards**
 
@@ -85,13 +97,15 @@ Files are saved under the trainer’s `output_dir`, which must not already exist
 | `num_online`, `num_replay` | Actual numbers of new and replay trajectories used in the update. |
 | `num_valid`, `num_invalid` | Valid and invalid online trajectory counts. |
 | `num_unique` | Number of distinct valid online SMILES. |
-| `reward` | Mean online reward after combining objectives and applying the property penalty, before the reward exponent. |
+| `reward` | Mean combined online reward before applying betas. |
 | `objective_rewards` | Mean online scores by objective, keyed as `r_qed`, etc. |
 | `property_reward` | Mean online property penalty multiplier. |
+| `prior_reward` | Mean online prior score. |
 | `num_property_violations` | Number of online trajectories violating at least one property limit. |
 | `traj_lens` | Mean online trajectory length, including initial synthon selection. |
 
-The terminal summary reports valid percentage out of online attempts and unique percentage out of valid attempts. Its `replay` value is the current buffer size, rather than the number used in the update.
+The terminal summary reports valid percentage out of online attempts and unique percentage out of valid attempts.
+Its `replay` value is the current buffer size, rather than the number used in the update.
 
 **Loss and flow diagnostics**
 
@@ -102,9 +116,10 @@ The terminal summary reports valid percentage out of online attempts and unique 
 | `valid_losses`, `invalid_losses` | Mean loss within valid and invalid trajectories. |
 | `logZ` | Mean predicted log partition function for the batch conditions. |
 | `beta` | Mean reward exponent. |
+| `prior_beta` | Mean prior guidance exponent. |
 | `logit_scale` | Mean learned logit scale for the batch conditions. |
 | `traj_log_p_F`, `traj_log_p_B` | Mean forward and backward log probabilities, summed over each trajectory. |
-| `scaled_log_R` | Mean log reward used by TB after applying the reward exponent. |
+| `scaled_log_R` | Mean log training target. |
 | `tb_error` | Mean signed TB residual: `logZ + traj_log_p_F - traj_log_p_B - scaled_log_R`. Positive and negative errors can cancel. |
 | `batch_entropy` | Negative mean trajectory log forward probability; not categorical action entropy. |
 | `invalid_logprob` | Mean trajectory log forward probability among invalid trajectories. |
@@ -125,8 +140,6 @@ Subset metrics are zero when their subset is empty.
 
 ## Sampling
 
-Use your trained checkpoint; omitted beta and preferences reuse their training settings:
-
 ```bash
 # Sample from the extracted GFN model (EMA weights and config)
 python scripts/extract_model.py \
@@ -145,31 +158,35 @@ python scripts/sample.py \
   --output samples.jsonl
 ```
 
-Use `--beta 32` to select a fixed exponent, or `--preference "fixed(0.3,0.7)"` to select a trade-off for two objectives. See [sampling conditions](conditioning.md#choose-conditions-when-sampling) for the options supported by your training settings.
+Override [sampling conditions](conditioning.md#choose-conditions-when-sampling) with `--beta`, `--prior-beta` or `--preference`.
 
 For external conditioning, pass your conditioning module to `RxnFlowSampler` through the [Python interface](conditioning.md#sample-with-explicit-targets).
 
-- `--num-samples` sets the number of trajectory attempts. Invalid results are excluded without retrying, so fewer molecules may be returned.
+- `--num-samples` sets the number of trajectory attempts.
+  Invalid results are excluded without retrying, so fewer molecules may be returned.
 - Sampling prints the training reward configuration and the requested sampling settings before generating molecules.
-- `--env-dir` selects another compatible prepared environment. Its reaction, synthon and exclusion definitions must match training; BB identities and library sizes may differ. Types defined in the templates but unused during training may have untrained embeddings.
+- `--env-dir` selects another compatible prepared environment.
+  Its reaction, synthon and exclusion definitions must match training; BB identities and library sizes may differ.
+  Types defined in the templates but unused during training may have untrained embeddings.
 - `--batch-size` controls trajectories generated per batch (default 64), independently of the training batch size.
 - `--softmax-temperature` is an additional softmax temperature (default 1), separate from beta.
 
 Supported output formats:
 
 - `.smi`: one `SMILES<TAB>sample_i` record per line, numbered from zero in saved-result order.
-- `.jsonl`: one record per line containing `smiles`, `traj` and `metadata`. Metadata holds `beta`, `preference` and any external condition entries as `cond_<key>`; trajectories include initial synthon selection and each action's product.
+- `.jsonl`: one record per line.
 - `.json`: the same records as a single array, formatted with two-space indentation.
 
 ### JSON and JSONL records
 
-Both formats store the same sample records. JSON contains an array of records with two-space indentation; JSONL contains one record per line. Only valid sampling results are saved.
+Both formats save valid samples with the fields below.
 
 | Field | Contents |
 | --- | --- |
 | `smiles` | Final generated molecule's SMILES. |
 | `traj` | Ordered list of actions, starting with initial synthon selection and ending with the terminal product. |
-| `metadata.beta` | Reward exponent sampled for this trajectory, including when fixed during training. |
+| `metadata.beta` | Reward exponent. |
+| `metadata.prior_beta` | Prior guidance exponent. |
 | `metadata.preference` | Effective objective weights in the reward class's `objectives` order. They sum to the number of objectives for `mul`, or to one for `sum`. |
 | `metadata.cond_<key>` | Raw external condition values, when supplied; for example `cond_tpsa`. |
 
@@ -178,11 +195,14 @@ For example, two objectives with equal weights under `mul` have:
 ```json
 {
   "beta": 32.0,
+  "prior_beta": 0.0,
   "preference": [1.0, 1.0]
 }
 ```
 
-This is the `metadata` object within each record. Sampling does not evaluate rewards, so the records contain neither objective scores nor combined rewards. No sample name or likelihood is added.
+This is the `metadata` object within each record.
+Sampling does not evaluate rewards, so the records contain neither objective scores nor combined rewards.
+No sample name or likelihood is added.
 
 **Trajectory actions**
 
@@ -196,4 +216,5 @@ This is the `metadata` object within each record. Sampling does not evaluate rew
 | `synthon_smiles` | Selected synthon's SMILES in the orientation used by the action. Present only when selecting a synthon. |
 | `building_blocks` | Original building-block candidates corresponding to the selected synthon. Each entry contains `id` and `smiles`. Present only when selecting a synthon. |
 
-Initial selection and bimolecular reactions include the three synthon fields. Unimolecular reactions act on the current state without adding a synthon, so those fields are omitted rather than set to `null`.
+Initial selection and bimolecular reactions include the three synthon fields.
+Unimolecular reactions act on the current state without adding a synthon, so those fields are omitted rather than set to `null`.

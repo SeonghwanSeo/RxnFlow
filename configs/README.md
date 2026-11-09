@@ -1,6 +1,7 @@
 # Configuration reference
 
-Defaults apply when settings are omitted. Start from the [template](template.yaml); see the [training guide](../docs/training.md) for output directory, device, seed and update count.
+Defaults apply when settings are omitted.
+Start from the [template](template.yaml); see the [training guide](../docs/training.md) for output directory, device, seed and update count.
 
 ## Synthesis environment
 
@@ -20,11 +21,25 @@ See [custom rewards](../docs/rewards.md) for implementation and [conditioning](.
 | `reward.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
 | `reward.settings` | `{}` | Constructor arguments for your reward class. |
 
-`dirichlet` defaults to concentration `1.5`. Use `dirichlet(alpha)` for a shared concentration or `dirichlet(alpha1,alpha2,...)` for per-objective concentrations.
+`dirichlet` defaults to concentration `1.5`.
+Use `dirichlet(alpha)` for a shared concentration or `dirichlet(alpha1,alpha2,...)` for per-objective concentrations.
+
+## Chemical prior guidance
+
+`prior_guidance` defaults to `null` (disabled).
+See [chemical prior guidance](../docs/prior_guidance.md).
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `prior_guidance.model_name_or_path` | `chembl` | Model alias, model directory or Hub repository ID. |
+| `prior_guidance.beta` | `"25"` | Prior guidance exponent, in the same format as `reward.beta`. |
+| `prior_guidance.batch_size` | `16` | Scoring batch size. |
 
 ## External conditioning
 
-`conditioning` is a mapping of constructor arguments for your `ConditioningModule`, defaulting to `{}`. Instantiate the module in your training script and pass it as `conditioning=` to the trainer. See [external conditions](../docs/conditioning.md#external-conditions) for training and sampling examples.
+`conditioning` is a mapping of constructor arguments for your `ConditioningModule`, defaulting to `{}`.
+Instantiate the module in your training script and pass it as `conditioning=` to the trainer.
+See [external conditions](../docs/conditioning.md#external-conditions) for training and sampling examples.
 
 ## Generation Constraints
 
@@ -45,7 +60,9 @@ Example:
 
 ## Property penalty
 
-Set property upper bounds to guide sampling and reduce rewards for molecules that exceed them. Omitted properties are unconstrained. See [property rewards](../docs/conditioning.md#property-rewards) for details.
+Set property upper bounds to guide sampling and reduce rewards for molecules that exceed them.
+Omitted properties are unconstrained.
+See [property rewards](../docs/conditioning.md#property-rewards) for details.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
@@ -59,7 +76,8 @@ Set property upper bounds to guide sampling and reduce rewards for molecules tha
 
 ## Action Subsampling
 
-Action subsampling evaluates a random subset of each synthon library, reducing computation and GPU memory use for large building-block libraries. Smaller subsets increase the variance of the estimated action-distribution normalization; larger subsets reduce it at higher cost.
+Action subsampling evaluates a random subset of each synthon library, reducing computation and GPU memory use for large building-block libraries.
+Smaller subsets increase the variance of the estimated action-distribution normalization; larger subsets reduce it at higher cost.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

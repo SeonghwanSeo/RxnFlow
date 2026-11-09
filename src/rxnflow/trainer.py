@@ -27,6 +27,7 @@ from rxnflow.gflownet.property_penalty import compute_property_rewards
 from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.gflownet.trajectory_balance import TrajectoryBalance, scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
+from rxnflow.prior_guide import PriorRewardFunction
 from rxnflow.reward import RewardFunction
 
 logger = logging.getLogger(__name__)
@@ -106,13 +107,19 @@ class RxnFlowTrainer:
         logger.info("Output directory: %s", self.output_dir)
 
         # Reward function and objectives
-        self.conditioning = conditioning
         self.reward: RewardFunction = reward
         self.objectives: tuple[str, ...] = tuple(reward.objectives)
         self.num_objectives: int = len(self.objectives)
         if not self.objectives or len(set(self.objectives)) != len(self.objectives):
             raise ValueError("reward.objectives must contain unique objective names")
         logger.info("Objectives: %s", ", ".join(self.objectives))
+
+        self.conditioning = conditioning
+        self.prior_guidance = (
+            PriorRewardFunction(config.prior_guidance, self.device)
+            if config.prior_guidance is not None
+            else None
+        )
 
         self.setup()
 
@@ -152,12 +159,14 @@ class RxnFlowTrainer:
         self.model = RxnFlowModel(
             self.env, cfg.model, self.num_objectives, condition_dim
         ).to(self.device)
-        self.sampling_model = (
-            RxnFlowModel(self.env, cfg.model, self.num_objectives, condition_dim)
-            .to(self.device)
-            .eval()
-        )
+
+        # EMA sampling model
+        self.sampling_model = RxnFlowModel(
+            self.env, cfg.model, self.num_objectives, condition_dim
+        ).to(self.device)
+        self.sampling_model.eval()
         self.sampling_model.load_state_dict(self.model.state_dict())
+
         self.policy = RxnFlowPolicy(self.env, self.model, cfg, self.device, self.rng)
         self.sampling_policy = RxnFlowPolicy(
             self.env, self.sampling_model, cfg, self.device, self.rng
@@ -216,6 +225,11 @@ class RxnFlowTrainer:
             cfg.reward.moo_preference,
             self.num_objectives,
             cfg.reward.moo_scalarization,
+            prior_beta=(
+                cfg.prior_guidance.beta
+                if cfg.prior_guidance is not None
+                else ("fixed", [0.0])
+            ),
         )
 
     def _reward_class_name(self) -> str:
@@ -279,7 +293,7 @@ class RxnFlowTrainer:
         check_model_compatibility(checkpoint["rxnflow_version"])
         saved_environment = checkpoint["environment"]
         check_library_compatibility(saved_environment["rxnflow_version"])
-        if checkpoint.get("config") != self.config.to_dict():
+        if checkpoint["config"] != self.config.to_dict():
             raise ValueError(
                 "restart configuration differs from the resolved checkpoint configuration"
             )
@@ -320,7 +334,7 @@ class RxnFlowTrainer:
         )
 
     def _assign_rewards(self, trajectories: list[Trajectory]) -> None:
-        """Retain user scores and apply terminal property penalties before beta."""
+        """Store reward factors and untempered diagnostics."""
         smiles_list = [
             value.final_smiles if value.valid else None for value in trajectories
         ]
@@ -328,14 +342,19 @@ class RxnFlowTrainer:
             [t.cond for t in trajectories] if self.conditioning is not None else None
         )
         values = self.reward.run(smiles_list, cond_list)
+        prior_values = (
+            self.prior_guidance.run(smiles_list)[:, 0]
+            if self.prior_guidance is not None
+            else np.array([s is not None for s in smiles_list], dtype=np.float32)
+        )
+        for trajectory, prior in zip(trajectories, prior_values, strict=True):
+            trajectory.prior_reward = float(prior)
         property_rewards, violations = compute_property_rewards(
             smiles_list,
             self.env.property_limits,
             self.env.max_atoms,
             self.config.reward.property_penalty_ratio,
         )
-        # Property penalties multiply the scalarized reward, independently of
-        # MOO preference. Floor inputs here; TB also floors the final reward.
         reward_floor = self.config.training.reward_floor
         preference = np.array([t.preference for t in trajectories], dtype=np.float64)
         log_rewards = scalarize_log_rewards(
@@ -344,6 +363,7 @@ class RxnFlowTrainer:
             moo_preference=preference,
         )
         log_rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
+        log_rewards += np.log(prior_values.astype(np.float64).clip(min=reward_floor))
         scalar_rewards = np.exp(log_rewards).tolist()
         for trajectory, objectives, property_reward, violation, scalar in zip(
             trajectories,
@@ -394,6 +414,8 @@ class RxnFlowTrainer:
                     "property_reward": value.property_reward,
                     "property_violation": value.property_violation,
                     "beta": value.beta,
+                    "prior_beta": value.prior_beta,
+                    "prior_reward": value.prior_reward,
                     "preference": value.preference,
                     **{f"cond_{key}": item for key, item in (value.cond or {}).items()},
                     "valid": value.valid,
@@ -429,7 +451,9 @@ class RxnFlowTrainer:
                 started = perf_counter()
                 self.sampling_model.eval()
                 count = self.config.training.num_online
-                beta, preference = self.condition_sampler.sample(count, self.rng)
+                beta, preference, prior_beta = self.condition_sampler.sample(
+                    count, self.rng
+                )
                 cond_list, cond = None, None
                 if self.conditioning is not None:
                     cond_list = self.conditioning.sample(count, self.rng)
@@ -439,6 +463,7 @@ class RxnFlowTrainer:
                 online_trajs = self.sampling_policy.sample_from_model(
                     self.config.training.num_online,
                     beta=beta,
+                    prior_beta=prior_beta,
                     preference=preference,
                     cond=cond,
                     cond_list=cond_list,
@@ -521,6 +546,8 @@ class RxnFlowTrainer:
                         for i, name in enumerate(self.objectives)
                     },
                     "property_reward": sum(t.property_reward for t in online_trajs)
+                    / len(online_trajs),
+                    "prior_reward": sum(t.prior_reward for t in online_trajs)
                     / len(online_trajs),
                     "num_property_violations": sum(
                         t.property_violation for t in online_trajs

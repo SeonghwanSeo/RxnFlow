@@ -125,13 +125,15 @@ class RxnFlowModel(nn.Module):
         beta: torch.Tensor,
         preference: torch.Tensor,
         cond: torch.Tensor | None = None,
+        *,
+        prior_beta: torch.Tensor,
     ) -> torch.Tensor:
-        """Encode beta [B], preference [B, O] and optional cond [B, condition_dim].
+        """Encode both betas [B], preference [B, O] and optional cond [B, condition_dim].
 
         Return [B, 2*hidden_dim], with a zero external embedding when no external
         condition encoder is configured.
         """
-        gfn_cond_emb = self.gfn_condition_encoder(beta, preference)
+        gfn_cond_emb = self.gfn_condition_encoder(beta, preference, prior_beta)
         if self.condition_encoder is not None:
             assert cond is not None, "external conditions must be provided"
             ext_cond_emb = self.condition_encoder(cond)

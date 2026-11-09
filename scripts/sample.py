@@ -7,7 +7,6 @@ from pathlib import Path
 
 import torch
 
-from rxnflow.config import parse_distribution
 from rxnflow.sampler import RxnFlowSampler
 
 
@@ -47,12 +46,18 @@ def main(argv: list[str] | None = None) -> None:
     )
     parser.add_argument(
         "--beta",
+        "--task-beta",
         default=None,
         help=(
-            "Reward exponent beta: a positive scalar, fixed(value), "
+            "Reward exponent: scalar, "
             "uniform(low,high) or log_uniform(low,high) "
             "(default: checkpoint setting)"
         ),
+    )
+    parser.add_argument(
+        "--prior-beta",
+        default=None,
+        help="Prior guidance exponent (default: checkpoint setting)",
     )
     parser.add_argument(
         "--preference",
@@ -85,10 +90,9 @@ def main(argv: list[str] | None = None) -> None:
     sampler = RxnFlowSampler(args.checkpoint, device=device, env_dir=args.env_dir)
     results = sampler.sample(
         args.num_samples,
-        beta=parse_distribution(args.beta) if args.beta is not None else None,
-        preference=parse_distribution(args.preference)
-        if args.preference is not None
-        else None,
+        beta=args.beta,
+        prior_beta=args.prior_beta,
+        preference=args.preference,
         batch_size=args.batch_size,
         softmax_temperature=args.softmax_temperature,
         seed=args.seed,

@@ -67,19 +67,22 @@ class TrajectoryBalance:
             [t.property_reward for t in trajectories], dtype=np.float64
         ).clip(min=self.reward_floor)
 
-        # Scalarize the multi-objective rewards
+        prior_beta = np.array([t.prior_beta for t in trajectories], dtype=np.float64)
+        prior_rewards = np.array(
+            [t.prior_reward for t in trajectories], dtype=np.float64
+        ).clip(min=self.reward_floor)
+
         log_R = scalarize_log_rewards(
             objective_rewards, self.moo_scalarization, preference
         )
-        # Apply the property penalty to the scalarized reward
-        log_R += np.log(property_rewards)
-        # Apply a floor
         log_R = np.clip(log_R, a_min=math.log(self.reward_floor), a_max=None)
-        # Scale the log rewards by beta
         scaled_log_R = beta * log_R
+        scaled_log_R += prior_beta * np.log(prior_rewards)
+        scaled_log_R += np.log(property_rewards)
 
         # Move to torch tensors
         beta = torch.from_numpy(beta.astype(np.float32)).to(device)
+        prior_beta = torch.from_numpy(prior_beta.astype(np.float32)).to(device)
         preference = torch.from_numpy(preference.astype(np.float32)).to(device)
         scaled_log_R = torch.from_numpy(scaled_log_R.astype(np.float32)).to(device)
 
@@ -87,7 +90,7 @@ class TrajectoryBalance:
         if cond is not None:
             assert cond.shape == (len(trajectories), model.condition_dim)
             cond = cond.to(device)
-        cond_emb = model.encode_cond(beta, preference, cond)
+        cond_emb = model.encode_cond(beta, preference, cond, prior_beta=prior_beta)
         log_Z = model.logZ(cond_emb).squeeze(-1)
         logit_scale = model.logit_scale(cond_emb).squeeze(-1)
 
@@ -114,6 +117,7 @@ class TrajectoryBalance:
                 beta[batch_idx],
                 preference[batch_idx],
                 cond=cond[batch_idx] if cond is not None else None,
+                prior_beta=prior_beta[batch_idx],
             )
             traj_log_p_F = torch.zeros(len(trajectories), device=device)
             traj_log_p_F.index_add_(0, batch_idx, log_p_F)
@@ -162,4 +166,5 @@ class TrajectoryBalance:
                 / (~is_valid).sum().clamp_min(1),
                 "invalid_trajectories": (~is_valid).float().mean(),
             }
+        info["prior_beta"] = prior_beta.mean().detach()
         return loss, info

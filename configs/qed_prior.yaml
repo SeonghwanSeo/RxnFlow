@@ -1,0 +1,16 @@
+# Minimal QED + Prior training configuration.
+env_dir: ./data/envs/example_5k/
+
+prior_guidance:
+  model_name_or_path: chembl
+  beta: "uniform(0,50)"
+
+reward:
+  beta: "32"
+  settings: {}
+
+subsampling:
+  sampling_ratio: 0.2 # small library -> increase ratio for less variance
+
+property_penalty:
+  mw: 500

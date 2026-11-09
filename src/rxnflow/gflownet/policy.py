@@ -240,6 +240,7 @@ class RxnFlowPolicy:
         preference: torch.Tensor,
         cond: torch.Tensor | None = None,
         *,
+        prior_beta: torch.Tensor,
         apply_property_penalty: bool = False,
     ) -> ActionCategorical:
         """Readable reference for constructing the forward action distribution.
@@ -252,7 +253,7 @@ class RxnFlowPolicy:
         # The graph encoder is independent of beta, preference and external features.
         batch = self._get_state_inputs(states).to(self.device)
         state_emb = self.model.encode_state(batch)
-        cond_emb = self.model.encode_cond(beta, preference, cond)
+        cond_emb = self.model.encode_cond(beta, preference, cond, prior_beta=prior_beta)
         action_emb = torch.cat([state_emb, cond_emb], dim=-1)
         logit_scale = self.model.logit_scale(cond_emb)
 
@@ -577,13 +578,14 @@ class RxnFlowPolicy:
         preference: torch.Tensor,
         cond: torch.Tensor | None = None,
         *,
+        prior_beta: torch.Tensor,
         softmax_temperature: float = 1.0,
         random_action_prob: float = 0.0,
     ) -> list[Action]:
         assert states
         batch = self._get_state_inputs(states).to(self.device)
         state_emb = self.model.encode_state(batch)
-        cond_emb = self.model.encode_cond(beta, preference, cond)
+        cond_emb = self.model.encode_cond(beta, preference, cond, prior_beta=prior_beta)
         state_emb = torch.cat([state_emb, cond_emb], dim=-1)
         logit_scale = self.model.logit_scale(cond_emb)
         fwd_cat = self.get_action_categorical(
@@ -606,13 +608,15 @@ class RxnFlowPolicy:
         beta: torch.Tensor,
         preference: torch.Tensor,
         cond: torch.Tensor | None = None,
+        *,
+        prior_beta: torch.Tensor,
     ) -> torch.Tensor:
         # The masked sampler is an exploration policy. TB uses the same
         # unmasked logits in its numerator and normalization estimate.
         assert states
         batch = self._get_state_inputs(states).to(self.device)
         state_emb = self.model.encode_state(batch)
-        cond_emb = self.model.encode_cond(beta, preference, cond)
+        cond_emb = self.model.encode_cond(beta, preference, cond, prior_beta=prior_beta)
         state_emb = torch.cat([state_emb, cond_emb], dim=-1)
         logit_scale = self.model.logit_scale(cond_emb)
 
@@ -658,6 +662,7 @@ class RxnFlowPolicy:
         preference: torch.Tensor,
         cond: torch.Tensor | None = None,
         cond_list: list[Condition] | None = None,
+        prior_beta: torch.Tensor,
         softmax_temperature: float = 1.0,
         random_action_prob: float = 0.0,
         analyze_backward: bool = True,
@@ -671,6 +676,7 @@ class RxnFlowPolicy:
         if count <= 0:
             raise ValueError("sample count must be positive")
         assert beta.shape == (count,)
+        assert prior_beta.shape == (count,)
         assert preference.shape == (count, self.model.num_objectives)
         assert (cond is None) == (cond_list is None)
         if cond is not None:
@@ -679,7 +685,9 @@ class RxnFlowPolicy:
             cond = cond.to(self.device)
         # Retain condition values for serialization at termination.
         beta_values, preference_values = beta.tolist(), preference.tolist()
+        prior_beta_values = prior_beta.tolist()
         beta, preference = beta.to(self.device), preference.to(self.device)
+        prior_beta = prior_beta.to(self.device)
         states = [self.env.initial_state() for _ in range(count)]
         steps: list[list[Transition]] = [[] for _ in range(count)]
         reasons: list[InvalidReason | None] = [None] * count
@@ -717,6 +725,7 @@ class RxnFlowPolicy:
                 beta[active],
                 preference[active],
                 cond=cond[active] if cond is not None else None,
+                prior_beta=prior_beta[active],
                 softmax_temperature=softmax_temperature,
                 random_action_prob=random_action_prob,
             )
@@ -765,6 +774,7 @@ class RxnFlowPolicy:
                 Trajectory(
                     steps=steps[index],
                     beta=beta_values[index],
+                    prior_beta=prior_beta_values[index],
                     preference=preference_values[index],
                     cond=deepcopy(cond_list[index]) if cond_list is not None else None,
                     final_smiles=state.smiles if reasons[index] is None else "",

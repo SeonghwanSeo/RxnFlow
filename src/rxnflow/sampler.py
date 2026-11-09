@@ -13,7 +13,7 @@ from rxnflow.__version__ import (
     check_model_compatibility,
 )
 from rxnflow.conditioning import ConditioningModule
-from rxnflow.config import Config
+from rxnflow.config import Config, parse_moo_preference
 from rxnflow.core.types import Condition, SamplingResult, Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
@@ -97,6 +97,7 @@ class RxnFlowSampler:
             traj=actions,
             metadata={
                 "beta": trajectory.beta,
+                "prior_beta": trajectory.prior_beta,
                 "preference": trajectory.preference,
                 **{
                     f"cond_{key}": value for key, value in (trajectory.cond or {}).items()
@@ -108,8 +109,9 @@ class RxnFlowSampler:
         self,
         num_samples: int,
         *,
-        beta: tuple[str, list[float]] | None = None,
-        preference: tuple[str, list[float]] | None = None,
+        beta: str | tuple[str, list[float]] | None = None,
+        prior_beta: str | tuple[str, list[float]] | None = None,
+        preference: str | tuple[str, list[float]] | None = None,
         batch_size: int = 64,
         softmax_temperature: float = 1.0,
         seed: int | None = None,
@@ -117,18 +119,33 @@ class RxnFlowSampler:
     ) -> list[SamplingResult]:
         """Attempt num_samples trajectories and return the valid results.
 
-        beta and preference are (distribution, parameters) tuples. Omitted
-        conditions use their training settings. batch_size is independent of the
-        training batch size; softmax_temperature scales the policy softmax.
+        Betas and preferences accept config strings or (distribution, parameters)
+        tuples and default to checkpoint settings.
         A supplied seed resets sampling RNGs; None continues their current state.
         cond_list fixes one raw condition per attempt; when omitted, the
         conditioning module samples conditions for each batch.
         """
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
+        trained_beta = self.config.reward.beta
         if beta is None:
-            beta = self.config.reward.beta
+            beta = trained_beta
+        else:
+            beta = self.config.validate_sampling_beta(trained_beta, beta)
+        trained_prior_beta = (
+            self.config.prior_guidance.beta
+            if self.config.prior_guidance is not None
+            else ("fixed", [0.0])
+        )
+        if prior_beta is None:
+            prior_beta = trained_prior_beta
+        else:
+            prior_beta = self.config.validate_sampling_beta(
+                trained_prior_beta, prior_beta
+            )
         if preference is None:
             preference = self.config.reward.moo_preference
+        else:
+            preference = parse_moo_preference(preference)
         if (preference[0] == "none") != (self.config.reward.moo_preference[0] == "none"):
             raise ValueError("preference 'none' must match the checkpoint setting")
         conditions = ConditionSampler(
@@ -136,15 +153,8 @@ class RxnFlowSampler:
             preference,
             len(self.objectives),
             self.config.reward.moo_scalarization,
+            prior_beta=prior_beta,
         )
-        # Fixed training conditions support only the same value at inference.
-        # Variable beta supports fixed values or subranges inside its training range.
-        trained_beta = self.config.reward.beta
-        if trained_beta[0] == "fixed":
-            if beta != trained_beta:
-                raise ValueError("fixed-beta training requires the same fixed beta")
-        elif min(beta[1]) < trained_beta[1][0] or max(beta[1]) > trained_beta[1][1]:
-            raise ValueError("sampling beta must stay within the training range")
         trained_preference = self.config.reward.moo_preference
         if trained_preference[0] == "fixed":
             if preference[0] != "fixed":
@@ -174,6 +184,7 @@ class RxnFlowSampler:
                     "num_samples": num_samples,
                     "batch_size": batch_size,
                     "beta": beta,
+                    "prior_beta": prior_beta,
                     "preference": preference,
                     "moo_scalarization": self.config.reward.moo_scalarization,
                     "softmax_temperature": softmax_temperature,
@@ -196,7 +207,9 @@ class RxnFlowSampler:
         trajectories: list[Trajectory] = []
         for start in range(0, num_samples, batch_size):
             batch_count = min(batch_size, num_samples - start)
-            sampled_beta, weights = conditions.sample(batch_count, self.rng)
+            sampled_beta, weights, sampled_prior_beta = conditions.sample(
+                batch_count, self.rng
+            )
             batch_conditions, cond = None, None
             if self.conditioning is not None:
                 batch_conditions = (
@@ -210,6 +223,7 @@ class RxnFlowSampler:
             batch = self.policy.sample_from_model(
                 batch_count,
                 beta=sampled_beta,
+                prior_beta=sampled_prior_beta,
                 preference=weights,
                 cond=cond,
                 cond_list=batch_conditions,

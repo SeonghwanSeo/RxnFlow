@@ -11,19 +11,56 @@ from typing import Any, Literal
 from omegaconf import OmegaConf
 
 
-def parse_distribution(value: str) -> tuple[str, list[float]]:
-    """Parse a CLI/YAML condition."""
-    if not isinstance(value, str):
-        raise ValueError("external condition specifications must be strings")
-    value = value.strip()
-    if value == "none":
-        return "none", []
-    if value == "dirichlet":
-        return "dirichlet", [1.5]
-    match = re.fullmatch(r"(fixed|uniform|log_uniform|dirichlet)\(([^)]+)\)", value)
-    if match:
-        return match[1], [float(x) for x in match[2].split(",")]
-    return "fixed", [float(value)]
+def _parse_condition(
+    value: str | tuple[str, list[float]],
+) -> tuple[str, list[float]]:
+    if isinstance(value, str):
+        value = value.strip()
+        if value == "none":
+            return "none", []
+        if value == "dirichlet":
+            return "dirichlet", [1.5]
+        match = re.fullmatch(r"(fixed|uniform|log_uniform|dirichlet)\(([^)]+)\)", value)
+        if match:
+            return match[1], [float(x) for x in match[2].split(",")]
+        return "fixed", [float(value)]
+    if (
+        not isinstance(value, tuple)
+        or len(value) != 2
+        or not isinstance(value[0], str)
+        or not isinstance(value[1], list)
+    ):
+        raise ValueError("expected a condition string or (name, parameters) tuple")
+    return value
+
+
+def parse_reward_exponent(
+    value: str | tuple[str, list[float]],
+) -> tuple[str, list[float]]:
+    """Parse a fixed or sampled reward exponent."""
+    name, params = _parse_condition(value)
+    if (
+        name not in ("fixed", "uniform", "log_uniform")
+        or len(params) != (1 if name == "fixed" else 2)
+        or any(not math.isfinite(x) or x < 0 for x in params)
+        or (name == "log_uniform" and any(x == 0 for x in params))
+        or (name != "fixed" and params[0] >= params[1])
+    ):
+        raise ValueError(
+            "beta requires non-negative fixed(value), uniform(0 <= low < high), "
+            "or log_uniform(0 < low < high)"
+        )
+    return name, params
+
+
+def parse_moo_preference(
+    value: str | tuple[str, list[float]],
+) -> tuple[str, list[float]]:
+    """Parse objective preferences."""
+    name, params = _parse_condition(value)
+    if name not in ("none", "fixed", "dirichlet"):
+        raise ValueError("preference requires none, fixed or dirichlet distribution")
+    return name, params
 
 
 @dataclass
@@ -44,6 +81,29 @@ class SubsamplingConfig:
 
 
 @dataclass
+class PriorGuidanceConfig:
+    model_name_or_path: str = "chembl"
+    beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [25.0]))
+    batch_size: int = 16
+
+    def validate(self) -> None:
+        if (
+            not isinstance(self.model_name_or_path, str)
+            or not self.model_name_or_path.strip()
+        ):
+            raise ValueError(
+                "prior_guidance.model_name_or_path must be a nonempty string"
+            )
+        self.beta = parse_reward_exponent(self.beta)
+        if (
+            isinstance(self.batch_size, bool)
+            or not isinstance(self.batch_size, int)
+            or self.batch_size <= 0
+        ):
+            raise ValueError("prior_guidance.batch_size must be a positive integer")
+
+
+@dataclass
 class RewardConfig:
     """Reward transformation and constructor settings."""
 
@@ -55,16 +115,8 @@ class RewardConfig:
     settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
-        for spec in (self.beta, self.moo_preference):
-            if (
-                not isinstance(spec, tuple)
-                or len(spec) != 2
-                or not isinstance(spec[0], str)
-                or not isinstance(spec[1], list)
-            ):
-                raise ValueError(
-                    "internal conditions must be (distribution, parameters) tuples"
-                )
+        self.beta = parse_reward_exponent(self.beta)
+        self.moo_preference = parse_moo_preference(self.moo_preference)
         if self.moo_scalarization not in ("sum", "mul"):
             raise ValueError("reward.moo_scalarization must be sum or mul")
         if (
@@ -198,6 +250,7 @@ class Config:
 
     env_dir: str = ""
     reward: RewardConfig = field(default_factory=RewardConfig)
+    prior_guidance: PriorGuidanceConfig | None = None
     conditioning: dict[str, Any] = field(default_factory=dict)
     property_penalty: dict[str, float] = field(default_factory=dict)
     subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)
@@ -207,6 +260,8 @@ class Config:
 
     def validate(self) -> None:
         self.reward.validate()
+        if self.prior_guidance is not None:
+            self.prior_guidance.validate()
         from rxnflow.envs.features import PROPERTY_PENALTY_INDICES
 
         if not isinstance(self.property_penalty, dict):
@@ -228,6 +283,19 @@ class Config:
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
+    @staticmethod
+    def validate_sampling_beta(
+        trained: tuple[str, list[float]], requested: str | tuple[str, list[float]]
+    ) -> tuple[str, list[float]]:
+        """Parse and check beta against the training bounds."""
+        requested = parse_reward_exponent(requested)
+        if trained[0] == "fixed":
+            if requested != trained:
+                raise ValueError("fixed-beta training requires the same fixed beta")
+        elif min(requested[1]) < trained[1][0] or max(requested[1]) > trained[1][1]:
+            raise ValueError("sampling beta must stay within the training range")
+        return requested
+
     def to_file_dict(self) -> dict[str, Any]:
         """Return the shallow user-facing YAML representation."""
 
@@ -239,9 +307,14 @@ class Config:
                 if distribution == "none"
                 else f"{distribution}({','.join(str(x) for x in params)})"
             )
+        prior = asdict(self.prior_guidance) if self.prior_guidance is not None else None
+        if prior is not None:
+            distribution, params = prior["beta"]
+            prior["beta"] = f"{distribution}({','.join(str(x) for x in params)})"
         return {
             "env_dir": self.env_dir,
             "reward": reward,
+            "prior_guidance": prior,
             "conditioning": dict(self.conditioning),
             "property_penalty": dict(self.property_penalty),
             "subsampling": asdict(self.subsampling),
@@ -261,13 +334,23 @@ class Config:
         if unknown:
             raise ValueError(f"unknown configuration fields: {sorted(unknown)}")
         reward = dict(raw["reward"])
-        # JSON/OmegaConf serialize tuples as sequences; restore the typed config.
+        # Restore serialized tuples.
         for name in ("beta", "moo_preference"):
+            if not isinstance(reward.get(name), (list, tuple)):
+                continue
             dist, params = reward[name]
             reward[name] = (dist, list(params))
+        prior = raw.get("prior_guidance")
+        if prior is not None:
+            prior = dict(prior)
+            if isinstance(prior.get("beta"), (list, tuple)):
+                distribution, params = prior["beta"]
+                prior["beta"] = (distribution, list(params))
+            prior = PriorGuidanceConfig(**prior)
         cfg = cls(
             env_dir=raw["env_dir"],
             reward=RewardConfig(**reward),
+            prior_guidance=prior,
             conditioning=dict(raw["conditioning"]),
             property_penalty=dict(raw["property_penalty"]),
             subsampling=SubsamplingConfig(**raw["subsampling"]),
@@ -281,26 +364,29 @@ class Config:
     @classmethod
     def from_file(cls, path: str | Path) -> Config:
         # 1. Load the user-facing YAML settings.
-        base = OmegaConf.create(cls().to_dict())
+        base = OmegaConf.create(cls().to_file_dict())
         loaded = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
         if not isinstance(loaded, dict):
             raise ValueError("configuration file must contain a mapping")
-        normalized = loaded
-        # 2. Parse condition strings once, before constructing numeric config.
-        reward = normalized.get("reward")
-        if reward is not None:
-            if not isinstance(reward, dict):
+
+        # 2. Check mappings before merging.
+        if "reward" in loaded:
+            reward_cfg = loaded["reward"]
+            if not isinstance(reward_cfg, dict):
                 raise ValueError("reward must be a mapping")
-            for name in ("beta", "moo_preference"):
-                if name in reward:
-                    reward[name] = parse_distribution(reward[name])
-            if "settings" in reward and not isinstance(reward["settings"], dict):
+            if "settings" in reward_cfg and not isinstance(reward_cfg["settings"], dict):
                 raise ValueError("reward.settings must be a mapping")
-        property_penalty = normalized.get("property_penalty")
+        if "prior_guidance" in loaded and loaded["prior_guidance"] is not None:
+            prior_cfg = loaded["prior_guidance"]
+            if not isinstance(prior_cfg, dict):
+                raise ValueError("prior_guidance must be a mapping or null")
+
+        property_penalty = loaded.get("property_penalty")
         if property_penalty is not None and not isinstance(property_penalty, dict):
             raise ValueError("property_penalty must be a mapping")
+
         # 3. Merge omitted defaults and validate the resolved configuration.
-        merged = OmegaConf.merge(base, normalized)
+        merged = OmegaConf.merge(base, loaded)
         raw = OmegaConf.to_container(merged, resolve=True)
         assert isinstance(raw, dict)
         return cls.from_dict(raw)

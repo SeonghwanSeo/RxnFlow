@@ -2,12 +2,14 @@
 
 <img src="image/overview.png" alt="RxnFlow synthesis pathway overview" width="600">
 
-Official implementation of RxnFlow, a generative model for synthesis-aware drug design. RxnFlow uses a generative flow network (GFlowNet) to generate diverse, high-reward molecules.
+Official implementation of RxnFlow, a generative model for synthesis-aware drug design.
+RxnFlow uses a generative flow network (GFlowNet) to generate diverse, high-reward molecules.
 
 **Updates:**
 
-- **2026.10.11 — RxnFlow v2 released.** 
-  - This update incorporates our in-house model **Hyper Screening X (HSX)**, developed in collaboration with [HITS](https://hits.ai/index_en.html) and [eMolecules](https://www.emolecules.com/). Together with wet-lab collaborators at Yonsei University, we identified two first-in-class lead compounds targeting an SLC1A5 variant.
+- **2026.10.11 — RxnFlow v2 released.**
+  - This update incorporates our in-house model **Hyper Screening X (HSX)**, developed in collaboration with [HITS](https://hits.ai/index_en.html) and [eMolecules](https://www.emolecules.com/).
+    Together with wet-lab collaborators at Yonsei University, we identified two first-in-class lead compounds targeting an SLC1A5 variant.
 
 Papers: [RxnFlow (ICLR 2025)](https://arxiv.org/abs/2410.04542) · [HSX (preprint)](https://www.biorxiv.org/content/10.64898/2026.10.01.755933)
 
@@ -34,7 +36,8 @@ Start with the supplied [example SMILES file](data/building_blocks/example_5k.sm
 
 ### Prepare a synthesis environment
 
-To prepare a synthesis environment, you need a building-block library and reaction templates. Three template sets are available in `data/templates/`:
+To prepare a synthesis environment, you need a building-block library and reaction templates.
+Three template sets are available in `data/templates/`:
 
 - `explore` (default): 26 curated bimolecular reaction templates, 4 unimolecular transformations, and reaction-reactant compatibility constraints to improve synthesizability.
 - `explore-expanded`: the same reactions without these compatibility constraints, allowing a broader chemical space.
@@ -52,7 +55,8 @@ python scripts/prepare.py \
   --num-workers 16
 ```
 
-Set `env_dir` in your training configuration to the prepared directory. See [environment preparation](docs/environment.md) for more details.
+Set `env_dir` in your training configuration to the prepared directory.
+See [environment preparation](docs/environment.md) for more details.
 
 ### Train a GFlowNet
 
@@ -85,6 +89,18 @@ python examples/tpsa_cond.py --config configs/tpsa_cond.yaml --steps 1000 --outp
 ```
 
 See [external conditions](docs/conditioning.md#external-conditions) for defining a conditioning module and sampling with explicit targets.
+
+### Add chemical prior guidance
+
+Add `prior_guidance` to your training configuration.
+
+```yaml
+prior_guidance:
+  model_name_or_path: chembl
+  beta: "25"
+```
+
+See [chemical prior guidance](docs/prior_guidance.md).
 
 ### Sampling
 

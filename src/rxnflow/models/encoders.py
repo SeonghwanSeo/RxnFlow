@@ -15,14 +15,20 @@ class GFNConditionEncoder(nn.Module):
         super().__init__()
         self.emb_temp = mlp(1, hidden_dim, hidden_dim, 2)
         self.emb_pref = mlp(num_objectives, hidden_dim, hidden_dim, 2)
+        self.emb_prior_temp = mlp(1, hidden_dim, hidden_dim, 2)
 
     def forward(
         self,
         temperature: torch.Tensor,
         preference: torch.Tensor,
+        prior_beta: torch.Tensor,
     ) -> torch.Tensor:
-        """temperature: [B], preference: [B, num_objectives]; return [B, H]."""
-        return self.emb_temp(temperature[:, None]) + self.emb_pref(preference)
+        """Encode two [B] exponents and [B, num_objectives] preferences as [B, H]."""
+        embedding = self.emb_temp(temperature[:, None]) + self.emb_pref(preference)
+        if prior_beta.shape != temperature.shape:
+            raise ValueError("prior_beta must have shape [B]")
+        embedding = embedding + self.emb_prior_temp(prior_beta[:, None])
+        return embedding
 
 
 class ExternalConditionEncoder(nn.Module):
