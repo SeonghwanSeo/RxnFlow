@@ -1,4 +1,4 @@
-"""RDKit parsing and molecular/synthon descriptors."""
+"""RDKit parsing and features for atoms, bonds, molecules and synthons."""
 
 from __future__ import annotations
 
@@ -12,10 +12,126 @@ from rdkit.Chem import (
     rdMolDescriptors,
 )
 
-_MORGAN_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=512)
+from rxnflow.core.synthon import SYNTHON_TYPE_LIMIT
+
+
+def _get_index(value: object, choices: tuple, *, allow_unk: bool) -> int:
+    try:
+        return choices.index(value)
+    except ValueError:
+        if allow_unk:
+            return len(choices)
+        raise ValueError(f"Unknown feature value {value!r}") from None
+
+
+# === Atom features === #
+ATOM_FEATURE_DICT = {
+    "type": (0, 5, 6, 7, 8, 9, 14, 15, 16, 17, 35, 53),
+    "degree": (0, 1, 2, 3, 4, 5),
+    "charge": (-2, -1, 0, 1, 2),
+    "num_hs": (0, 1, 2, 3, 4),
+    "hybridization": (
+        Chem.HybridizationType.SP,
+        Chem.HybridizationType.SP2,
+        Chem.HybridizationType.SP3,
+        Chem.HybridizationType.SP3D,
+        Chem.HybridizationType.SP3D2,
+    ),
+    "chiral": (
+        Chem.ChiralType.CHI_UNSPECIFIED,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CW,
+        Chem.ChiralType.CHI_TETRAHEDRAL_CCW,
+    ),
+}
+NODE_DIM = (
+    sum(len(choices) + 1 for choices in ATOM_FEATURE_DICT.values())
+    + 2  # aromaticity and mass
+    + SYNTHON_TYPE_LIMIT
+)
+
+
+def get_atom_features(atom: Chem.Atom, out: np.ndarray | None = None) -> np.ndarray:
+    """Encode one atom, overwriting the supplied row when given."""
+    if out is None:
+        out = np.empty(NODE_DIM, dtype=np.float32)
+    out.fill(0)
+
+    atomic_num = atom.GetAtomicNum()
+    is_attachment = atomic_num == 0
+
+    atom_values = {
+        "type": atomic_num,
+        "degree": atom.GetDegree(),
+        "charge": atom.GetFormalCharge(),
+        "num_hs": atom.GetTotalNumHs(includeNeighbors=True),
+        "hybridization": atom.GetHybridization(),
+        "chiral": atom.GetChiralTag(),
+    }
+    offset = 0
+    for field, choices in ATOM_FEATURE_DICT.items():
+        index = _get_index(atom_values[field], choices, allow_unk=True)
+        out[offset + index] = 1
+        offset += len(choices) + 1
+
+    attachment_start = offset + 2
+    out[offset:attachment_start] = (
+        atom.GetIsAromatic(),
+        atom.GetMass() / 100.0 if not is_attachment else 0.0,
+    )
+    if is_attachment:
+        label = atom.GetIsotope()
+        if not 1 <= label <= SYNTHON_TYPE_LIMIT:
+            raise ValueError(
+                f"Invalid attachment label {label}. Expected 1–{SYNTHON_TYPE_LIMIT}."
+            )
+        out[attachment_start + (label - 1)] = 1
+    return out
+
+
+# === Bond features === #
+BOND_FEATURE_DICT = {
+    "bond_type": (
+        Chem.BondType.SINGLE,
+        Chem.BondType.DOUBLE,
+        Chem.BondType.TRIPLE,
+        Chem.BondType.AROMATIC,
+    ),
+    "stereo": (
+        Chem.BondStereo.STEREONONE,
+        Chem.BondStereo.STEREOANY,
+        Chem.BondStereo.STEREOZ,
+        Chem.BondStereo.STEREOE,
+        Chem.BondStereo.STEREOCIS,
+        Chem.BondStereo.STEREOTRANS,
+    ),
+}
+EDGE_DIM = (
+    len(BOND_FEATURE_DICT["bond_type"])
+    + (len(BOND_FEATURE_DICT["stereo"]) + 1)
+    + 2  # conjugation and ring
+)
+
+
+def get_bond_features(bond: Chem.Bond, out: np.ndarray | None = None) -> np.ndarray:
+    """Encode one bond, overwriting the supplied row when given."""
+    if out is None:
+        out = np.empty(EDGE_DIM, dtype=np.float32)
+    out.fill(0)
+
+    bond_types = BOND_FEATURE_DICT["bond_type"]
+    bond_type_index = _get_index(bond.GetBondType(), bond_types, allow_unk=False)
+    out[bond_type_index] = 1
+
+    stereo_types = BOND_FEATURE_DICT["stereo"]
+    stereo_index = _get_index(bond.GetStereo(), stereo_types, allow_unk=True)
+    out[len(bond_types) + stereo_index] = 1
+    out[-2:] = bond.GetIsConjugated(), bond.IsInRing()
+    return out
+
+
+# === Molecule features === #
 
 PROPERTY_DIM = 9
-FINGERPRINT_DIM = 678
 PROPERTY_NAMES = (
     "mw",
     "tpsa",
@@ -64,11 +180,14 @@ def heavy_atom_count(mol: Chem.Mol | None) -> int:
     return int(mol.GetNumHeavyAtoms())
 
 
-def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
-    """Return raw descriptors in PROPERTY_NAMES order; the empty state is zero."""
+def get_mol_features(mol: Chem.Mol | None, out: np.ndarray | None = None) -> np.ndarray:
+    """Write raw descriptors in PROPERTY_NAMES order, or zeros for the empty state."""
+    if out is None:
+        out = np.empty(PROPERTY_DIM, dtype=np.float32)
     if mol is None:
-        return np.zeros(PROPERTY_DIM, dtype=np.float32)
-    values = [
+        out.fill(0)
+        return out
+    out[:] = (
         Descriptors.ExactMolWt(mol),
         Descriptors.TPSA(mol),
         Lipinski.NumHDonors(mol),
@@ -77,9 +196,14 @@ def molecular_properties(mol: Chem.Mol | None) -> np.ndarray:
         Lipinski.NumRotatableBonds(mol),
         Lipinski.RingCount(mol),
         Lipinski.NumAromaticRings(mol),
-        heavy_atom_count(mol),
-    ]
-    return np.array(values, dtype=np.float32)
+        mol.GetNumHeavyAtoms(),
+    )
+    return out
+
+
+# === Synthon features === #
+FINGERPRINT_DIM = 512 + 166
+_MORGAN_GENERATOR = rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=512)
 
 
 def synthon_fingerprint(mol: Chem.Mol) -> np.ndarray:
@@ -103,8 +227,8 @@ def synthon_fingerprint(mol: Chem.Mol) -> np.ndarray:
     return np.concatenate([morgan_array.astype(np.uint8), maccs_array[1:]])
 
 
-def synthon_feature_row(smiles: str) -> tuple[np.ndarray, np.ndarray, int]:
+def get_synthon_features(smiles: str) -> tuple[np.ndarray, np.ndarray, int]:
     mol = parse_molecule(smiles)
     if mol is None:
         raise ValueError(f"invalid synthon SMILES: {smiles}")
-    return molecular_properties(mol), synthon_fingerprint(mol), heavy_atom_count(mol)
+    return get_mol_features(mol), synthon_fingerprint(mol), heavy_atom_count(mol)

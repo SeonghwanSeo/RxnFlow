@@ -7,7 +7,7 @@ import torch
 from numpy.typing import NDArray
 from rdkit import Chem
 
-from rxnflow.envs.features import PROPERTY_NAMES, molecular_properties
+from rxnflow.envs.features import PROPERTY_NAMES, get_mol_features
 
 
 def get_size_mask(
@@ -56,7 +56,7 @@ def compute_property_rewards(
     for i, smi in enumerate(smiles_list):
         if smi is None:
             continue
-        properties = molecular_properties(Chem.MolFromSmiles(smi))
+        properties = get_mol_features(Chem.MolFromSmiles(smi))
         log_reward = 0.0
         for index, limit in limits.items():
             excess = float(properties[index]) - limit
