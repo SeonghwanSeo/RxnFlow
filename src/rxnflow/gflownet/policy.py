@@ -267,7 +267,8 @@ class RxnFlowPolicy:
         for state_i, action_space in enumerate(action_spaces):
             emb = action_emb[state_i]
             scale = logit_scale[state_i]
-            state_prop, state_size = batch.mol_features[state_i], batch.size[state_i]
+            state_prop = batch.graph_features[state_i]
+            state_size = batch.num_heavy_atoms[state_i]
 
             state_logits: list[ActionLogits] = []
             for subspace in action_space:
@@ -375,10 +376,10 @@ class RxnFlowPolicy:
                 prop = torch.cat([synthon_cache[name][1] for name in library_names])
                 size = torch.cat([synthon_cache[name][2] for name in library_names])
                 size_mask = get_size_mask(
-                    batch.size[indices, None], size, self.env.max_atoms
+                    batch.num_heavy_atoms[indices, None], size, self.env.max_atoms
                 )
                 property_penalty = get_property_penalty(
-                    batch.mol_features[indices], prop, self.env.property_limits
+                    batch.graph_features[indices], prop, self.env.property_limits
                 )
                 widths = [len(synthon_cache[name][0]) for name in library_names]
                 masks = (size_mask & property_penalty).split(widths, dim=1)

@@ -1,10 +1,10 @@
 """Check artifact release versions against the last incompatible changes."""
 
-__version__ = "2.2.0"
+__version__ = "2.2.1"
 
 # Update each minimum only when its format or semantics become incompatible.
 LIBRARY_MIN_VERSION = "2.0.0"
-MODEL_MIN_VERSION = "2.2.0"
+MODEL_MIN_VERSION = "2.2.1"
 
 
 def _version_tuple(version: str) -> tuple[int, int, int]:

@@ -14,6 +14,12 @@ from tqdm import tqdm
 logger = logging.getLogger(__name__)
 
 ALLOWED_ATOMIC_TYPES = {"H", "B", "C", "N", "O", "F", "Si", "P", "S", "Cl", "Br", "I"}
+ALLOWED_BOND_TYPES = {
+    Chem.BondType.SINGLE,
+    Chem.BondType.DOUBLE,
+    Chem.BondType.TRIPLE,
+    Chem.BondType.AROMATIC,
+}
 
 
 def _read_building_blocks(path: Path) -> list[tuple[str, str]]:
@@ -59,6 +65,8 @@ def _clean_batch(
             if mol is None or not mol.GetNumAtoms():
                 return None
         if not all(atom.GetSymbol() in ALLOWED_ATOMIC_TYPES for atom in mol.GetAtoms()):
+            return None
+        if any(bond.GetBondType() not in ALLOWED_BOND_TYPES for bond in mol.GetBonds()):
             return None
         if not allow_isotope and any(atom.GetIsotope() for atom in mol.GetAtoms()):
             return None

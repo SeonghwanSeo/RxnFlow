@@ -8,6 +8,7 @@ import yaml
 from rdkit import Chem
 from rdkit.Chem.rdChemReactions import ChemicalReaction, ReactionFromSmarts
 
+SYNTHON_TYPE_LIMIT = 100
 _DUMMY_ATOM = Chem.MolFromSmarts("[#0]")
 
 
@@ -75,8 +76,10 @@ def load_synthon_templates(path: Path) -> dict[int, tuple[str, str]]:
         }:
             raise ValueError(f"{path}: invalid synthon entry {index + 1}")
         synthon_type = value["type"]
-        if not 1 <= synthon_type < 100:
-            raise ValueError(f"invalid synthon type: {synthon_type}")
+        if not 1 <= synthon_type <= SYNTHON_TYPE_LIMIT:
+            raise ValueError(
+                f"Invalid synthon type {synthon_type}. Expected 1–{SYNTHON_TYPE_LIMIT}."
+            )
         templates[synthon_type] = (value["original"], value["convert"])
         types.append(synthon_type)
     if not types or types != sorted(set(types)):
