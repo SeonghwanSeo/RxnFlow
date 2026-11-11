@@ -26,9 +26,9 @@ class GINELayer(nn.Module):
         h: torch.Tensor,
         v: torch.Tensor,
         e: torch.Tensor,
-        edge_index: torch.Tensor,
+        neighbor_index: torch.Tensor,
         node_mask: torch.Tensor,
-        edge_mask: torch.Tensor,
+        neighbor_mask: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Update atoms [B, N, D] and virtual nodes [B, D] simultaneously."""
         # Residual connections
@@ -39,9 +39,9 @@ class GINELayer(nn.Module):
 
         # Aggregate messages
         batch_index = torch.arange(h.shape[0], device=h.device)[:, None, None]
-        hij = h[batch_index, edge_index]  # [B, N, K, D]
+        hij = h[batch_index, neighbor_index]  # [B, N, K, D]
         m = F.relu(hij + e)
-        m = m.masked_fill(~edge_mask[..., None], 0)
+        m = m.masked_fill(~neighbor_mask[..., None], 0)
         aggr = m.sum(dim=2)
 
         # Exchange messages between atoms and the virtual node.
@@ -95,12 +95,12 @@ class MPNN(nn.Module):
     def forward(self, batch: GraphBatch) -> torch.Tensor:
         # Initialize molecular nodes [B, N, D] and bond embeddings [B, N, K, D].
         h = self.node_emb(batch.node_features)
-        e = self.edge_emb(batch.bond_features)
+        e = self.edge_emb(batch.edge_features)
         h = h.masked_fill(~batch.node_mask[..., None], 0)
         e = e.masked_fill(~batch.neighbor_mask[..., None], 0)
 
         # Initialize one virtual node with the graph features [B, D].
-        graph_feat = batch.mol_features / self.property_scale
+        graph_feat = batch.graph_features / self.property_scale
         v = self.graph_emb(graph_feat)  # [B, D]
 
         # Update the node and virtual node embeddings

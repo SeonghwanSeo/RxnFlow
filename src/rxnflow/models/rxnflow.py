@@ -9,8 +9,7 @@ from torch.nn import functional as F
 from rxnflow.config import ModelConfig
 from rxnflow.core.types import ActionType
 from rxnflow.envs.env import SynthesisEnv
-from rxnflow.envs.features import PROPERTY_DIM
-from rxnflow.envs.graph import BOND_FEATURE_DIM, NODE_FEATURE_DIM, GraphBatch
+from rxnflow.envs.graph import EDGE_DIM, GRAPH_DIM, NODE_DIM, GraphBatch
 
 from .encoders import ExternalConditionEncoder, GFNConditionEncoder, SynthonEncoder
 from .mpnn import MPNN
@@ -33,9 +32,9 @@ class RxnFlowModel(nn.Module):
 
         # State encoder
         self.state_encoder = MPNN(
-            node_dim=NODE_FEATURE_DIM,
-            edge_dim=BOND_FEATURE_DIM,
-            graph_dim=PROPERTY_DIM,
+            node_dim=NODE_DIM,
+            edge_dim=EDGE_DIM,
+            graph_dim=GRAPH_DIM,
             model_dim=cfg.state_dim,
             num_layers=cfg.num_state_layers,
         )
