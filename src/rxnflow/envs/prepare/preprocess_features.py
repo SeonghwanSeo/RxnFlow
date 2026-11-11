@@ -12,7 +12,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import numpy as np
 from tqdm import tqdm
 
-from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM, synthon_feature_row
+from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM, get_synthon_features
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,9 @@ def preprocess_features(env_dir: str | Path, num_workers: int = 1) -> None:
             fingerprints = np.empty((count, FINGERPRINT_DIM), dtype=np.uint8)
             heavy_atoms = np.empty(count, dtype=np.uint8)
             rows = (
-                pool.imap(synthon_feature_row, smiles, chunksize=256)
+                pool.imap(get_synthon_features, smiles, chunksize=256)
                 if pool is not None
-                else map(synthon_feature_row, smiles)
+                else map(get_synthon_features, smiles)
             )
             for index, (prop, fingerprint, atom_count) in enumerate(
                 tqdm(
