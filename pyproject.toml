@@ -28,9 +28,6 @@ dependencies = [
   "huggingface-hub>=0.23",
 ]
 
-[project.optional-dependencies]
-dev = ["build>=1", "ruff>=0.5", "wheel>=0.45"]
-
 [tool.setuptools.dynamic]
 version = { attr = "rxnflow.__version__.__version__" }
 
