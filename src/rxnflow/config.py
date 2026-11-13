@@ -179,12 +179,19 @@ class GenerationConfig:
 class TrainingConfig:
     log_every: int = 10
     checkpoint_every: int = 1000
+    # training batch size
     num_online: int = 64
     num_replay: int = 64
+    # ema for sampler
     ema_decay: float = 0.99
+    # random action probability for exploration
+    random_action_prob: float = 0.05
+    # replay
     replay_capacity: int = 100_000
     num_replay_insert: int | None = None
     replay_insert_priority: Literal["uniform", "reward"] = "uniform"
+    replay_sample_priority: Literal["uniform", "reward"] = "uniform"
+    # model training
     learning_rate: float = 1e-4
     learning_rate_logZ: float = 1e-2
     lr_decay_steps: float = 5_000
@@ -192,7 +199,6 @@ class TrainingConfig:
     grad_clip: float = 100.0
     reward_floor: float = 1e-5
     loss_fn: Literal["mse", "mae", "huber"] = "huber"
-    random_action_prob: float = 0.05
     backward_synthon_penalty: float = 100.0
 
     def validate(self) -> None:
@@ -212,6 +218,8 @@ class TrainingConfig:
             raise ValueError("training.num_replay_insert must be non-negative or None")
         if self.replay_insert_priority not in ("uniform", "reward"):
             raise ValueError("training.replay_insert_priority must be uniform or reward")
+        if self.replay_sample_priority not in ("uniform", "reward"):
+            raise ValueError("training.replay_sample_priority must be uniform or reward")
         if (
             not math.isfinite(self.backward_synthon_penalty)
             or self.backward_synthon_penalty <= 0

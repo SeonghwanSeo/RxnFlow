@@ -45,12 +45,19 @@ model:
 training:
   log_every: 10
   checkpoint_every: 1000
+  # training batch size
   num_online: 64
   num_replay: 64
+  # ema for sampler
   ema_decay: 0.99
+  # random action probability for exploration
+  random_action_prob: 0.05
+  # replay
   replay_capacity: 100000
-  num_replay_insert: null
+  num_replay_insert: null # null(entire) | int
   replay_insert_priority: uniform # uniform | reward
+  replay_sample_priority: uniform # uniform | reward
+  # model training
   learning_rate: 0.0001
   learning_rate_logZ: 0.01
   lr_decay_steps: 5000
@@ -58,5 +65,4 @@ training:
   grad_clip: 100.0
   reward_floor: 1e-5
   loss_fn: huber # mse | mae | huber
-  random_action_prob: 0.05
   backward_synthon_penalty: 100.0
