@@ -89,9 +89,11 @@ MLP layer counts include the output linear layer.
 | `training.num_online` | `64` | New trajectories per update. |
 | `training.num_replay` | `64` | Stored trajectories reused per update; `0` disables reuse. |
 | `training.ema_decay` | `0.99` | EMA coefficient for the sampling model; `0` copies current weights. |
+| `training.random_action_prob` | `0.05` | Exploration-action probability during online training. |
 | `training.replay_capacity` | `100000` | FIFO replay capacity; `0` disables storage. |
 | `training.num_replay_insert` | `null` | Maximum insertions per update; `null` keeps all, `0` keeps none. |
 | `training.replay_insert_priority` | `uniform` | Limited insertion selection: random (`uniform`) or highest reward (`reward`). |
+| `training.replay_sample_priority` | `uniform` | Sampling strategy: random (`uniform`) or weighted sampling by reward (`reward`). |
 | `training.learning_rate` | `1e-4` | Adam learning rate for policy parameters. |
 | `training.learning_rate_logZ` | `1e-2` | Adam learning rate for the logZ head. |
 | `training.lr_decay_steps` | `5000` | Updates over which both learning rates halve. |
@@ -99,5 +101,4 @@ MLP layer counts include the output linear layer.
 | `training.grad_clip` | `100.0` | Global L2 gradient clipping threshold for policy parameters, excluding the logZ head. |
 | `training.reward_floor` | `1e-5` | Reward lower bound before taking logarithms. |
 | `training.loss_fn` | `huber` | TB loss: `mse`, `mae`, or `huber` (delta=1). |
-| `training.random_action_prob` | `0.05` | Exploration-action probability during online training. |
 | `training.backward_synthon_penalty` | `100.0` | Backward-route penalty per additional synthon; values above `1` favor fewer synthons. |
