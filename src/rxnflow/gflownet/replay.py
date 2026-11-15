@@ -86,6 +86,4 @@ class ReplayBuffer:
     def load_state_dict(self, state: dict[str, object]) -> None:
         assert state["capacity"] == self.capacity
         self._items = list(state["items"])
-        # TODO: Require the saved next slot in the next version.
-        # Older checkpoints store items oldest-first, so slot zero is next.
-        self._next = state.get("next", 0)
+        self._next = state["next"]

@@ -295,10 +295,6 @@ class RxnFlowTrainer:
         saved_environment = checkpoint["environment"]
         check_library_compatibility(saved_environment["rxnflow_version"])
         saved_config = checkpoint.get("config")
-        if saved_config is not None:
-            # TODO: Remove the replay sampling default for saved configs in the next version.
-            # Older checkpoints always used uniform replay sampling.
-            saved_config["training"].setdefault("replay_sample_priority", "uniform")
         if saved_config != self.config.to_dict():
             raise ValueError(
                 "restart configuration differs from the resolved checkpoint configuration"
