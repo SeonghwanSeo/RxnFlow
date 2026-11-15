@@ -3,7 +3,7 @@ env_dir: ./data/envs/example_5k/
 
 prior_guidance:
   model_name_or_path: chembl
-  beta: "uniform(0,50)"
+  beta: "uniform(0,1)"
 
 reward:
   beta: "32"

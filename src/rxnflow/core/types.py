@@ -210,7 +210,8 @@ class Trajectory:
     invalid_reason: InvalidReason | None = None
     cond: Condition | None = None
     prior_beta: float = 0.0
-    prior_reward: float = 1.0
+    prior_score: float | None = None
+    prior_log_prob: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -218,7 +219,8 @@ class Trajectory:
             "final_smiles": self.final_smiles,
             "beta": self.beta,
             "prior_beta": self.prior_beta,
-            "prior_reward": self.prior_reward,
+            "prior_score": self.prior_score,
+            "prior_log_prob": self.prior_log_prob,
             "preference": list(self.preference),
             "cond": deepcopy(self.cond),
             "objective_rewards": list(self.objective_rewards),
@@ -236,7 +238,8 @@ class Trajectory:
             final_smiles=data["final_smiles"],
             beta=data["beta"],
             prior_beta=data["prior_beta"],
-            prior_reward=data["prior_reward"],
+            prior_score=data["prior_score"],
+            prior_log_prob=data["prior_log_prob"],
             preference=list(data["preference"]),
             cond=deepcopy(data.get("cond")),
             objective_rewards=list(data["objective_rewards"]),

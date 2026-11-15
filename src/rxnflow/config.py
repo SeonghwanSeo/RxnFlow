@@ -83,7 +83,7 @@ class SubsamplingConfig:
 @dataclass
 class PriorGuidanceConfig:
     model_name_or_path: str = "chembl"
-    beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [25.0]))
+    beta: tuple[str, list[float]] = field(default_factory=lambda: ("uniform", [0.0, 1.0]))
     batch_size: int = 16
 
     def validate(self) -> None:

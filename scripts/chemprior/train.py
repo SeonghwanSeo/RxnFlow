@@ -324,7 +324,7 @@ def train(
         model.load_state_dict(checkpoint["state_dict"])
         model.to(device)
     else:
-        model = ChemPrior.from_pretrained(model_path, device=device)
+        model = ChemPrior.from_pretrained(model_path, device=device, train=True)
 
     if compile_model:
         model.compile(dynamic=False)
@@ -407,7 +407,7 @@ def evaluate_test(
         dtype=torch.bfloat16,
         enabled=precision == "bfloat16",
     ):
-        scores = model.screening(smiles, batch_size=batch_size)
+        scores = model.screening(smiles, batch_size=batch_size, normalize=True)
     if smiles:
         (destination / "test_metrics.json").write_text(
             json.dumps(

@@ -9,21 +9,21 @@ Set `prior_guidance` in your training configuration.
 ```yaml
 prior_guidance:
   model_name_or_path: chembl
-  beta: "uniform(0,50)" # or "25" for a fixed value
+  beta: "uniform(0,1)" # or "0.5" for a fixed value
 ```
 
 See the [QED example configuration](../configs/qed_prior.yaml).
 
-With prior guidance enabled, the GFlowNet reward combines the task reward, the prior score, and the property penalty.
+With prior guidance enabled, the GFlowNet reward combines the task reward, the teacher log probability, and the property penalty.
 
 ```text
-R_gfn = R_task^beta * R_prior^prior_beta * property_penalty
+R_gfn(x) = R_task(x)^beta * p_prior(x)^prior_beta * property_penalty
 ```
 
-`R_prior` is derived from the prior model's sequence log-likelihood.
+The optional normalized score is a human-readable representation:
 
 ```text
-R_prior = clip(1 + log_likelihood / 100, 0, 1)
+s_prior = clip(1 + log p(x) / 100, 0, 1)
 ```
 
 ## Adjust prior guidance strength
@@ -33,7 +33,7 @@ If you train with a range of prior beta values, use `--prior-beta` to select a v
 ```bash
 python scripts/sample.py \
   --checkpoint runs/qed_prior/checkpoints/latest.ckpt \
-  --prior-beta 25 \
+  --prior-beta 0.5 \
   --num-samples 100 \
   --output samples.jsonl
 ```
@@ -71,3 +71,11 @@ Run `python scripts/chemprior/train.py --help` for all options.
 The script saves the model as `config.json` and `model.pth` in `runs/prior_finetune`.
 It saves the weights from the epoch with the lowest validation loss, or from the final epoch if validation is disabled.
 Set `prior_guidance.model_name_or_path` to `runs/prior_finetune` to use the fine-tuned model.
+
+## Teacher scoring API
+
+`ChemPrior.screening()` and `ChemPrior.evaluate_batch()` return sequence `log p(x)` by default (`normalize=False`).
+Use `normalize=True` for the human-readable normalized score `clip(1 + log p(x) / 100, 0, 1)`.
+Guidance uses log probability; normalized scores are for reporting and visualization.
+Invalid screening inputs return `-inf` by default and `0` with `normalize=True`.
+`PriorGuidance` converts nonfinite outputs to its finite invalid-trajectory penalty.

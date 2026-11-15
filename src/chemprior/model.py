@@ -84,11 +84,12 @@ class ChemPrior(nn.Module):
         pretrained_model_name_or_path: str | Path = "chembl",
         device: torch.device | str = "cpu",
         *,
+        train: bool = False,
         revision: str | None = None,
         cache_dir: str | Path | None = None,
         local_files_only: bool = False,
     ) -> Self:
-        """Load local or named HF weights and return a model ready for inference."""
+        """Load weights; train=True enables training mode and parameter gradients."""
         path = resolve_model_path(
             pretrained_model_name_or_path,
             revision=revision,
@@ -99,18 +100,20 @@ class ChemPrior(nn.Module):
         state = torch.load(path / "model.pth", map_location="cpu", weights_only=True)
         model = cls(config)
         model.load_state_dict(state)
-        return model.to(device).eval()
+        model = model.to(device).train(train)
+        model.requires_grad_(train)
+        return model
 
     @torch.no_grad()
     def screening(
         self,
         smiles_list: list[str],
         batch_size: int = 64,
-        normalize: bool = True,
+        normalize: bool = False,
     ) -> list[float]:
         """Score canonical parents in input order, preserving stereochemistry.
 
-        Return 0–1 scores by default or summed log probabilities with normalize=False.
+        Return summed log probabilities by default; normalize=True returns 0–1 scores.
         Invalid or empty inputs receive 0.0 or -inf, respectively.
         Unresolved mixtures raise ValueError.
         """
@@ -187,11 +190,11 @@ class ChemPrior(nn.Module):
     def evaluate_batch(
         self,
         smiles_list: list[str],
-        normalize: bool = True,
+        normalize: bool = False,
     ) -> list[float]:
         """Score prepared SMILES without cleaning or stereoisomer enumeration.
 
-        normalize=True returns 0–1 scores; False returns summed log probabilities.
+        Return summed log probabilities by default; normalize=True returns 0–1 scores.
         Use screening() for unvalidated input.
         """
         if not smiles_list:

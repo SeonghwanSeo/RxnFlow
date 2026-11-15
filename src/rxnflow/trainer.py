@@ -27,7 +27,7 @@ from rxnflow.gflownet.property_penalty import compute_property_rewards
 from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.gflownet.trajectory_balance import TrajectoryBalance, scalarize_log_rewards
 from rxnflow.models import RxnFlowModel
-from rxnflow.prior_guide import PriorRewardFunction
+from rxnflow.prior_guide import PriorGuidance
 from rxnflow.reward import RewardFunction
 
 logger = logging.getLogger(__name__)
@@ -116,7 +116,7 @@ class RxnFlowTrainer:
 
         self.conditioning = conditioning
         self.prior_guidance = (
-            PriorRewardFunction(config.prior_guidance, self.device)
+            PriorGuidance(config.prior_guidance, self.device)
             if config.prior_guidance is not None
             else None
         )
@@ -351,10 +351,14 @@ class RxnFlowTrainer:
         prior_values = (
             self.prior_guidance.run(smiles_list)[:, 0]
             if self.prior_guidance is not None
-            else np.array([s is not None for s in smiles_list], dtype=np.float32)
+            else [None] * len(smiles_list)
         )
         for trajectory, prior in zip(trajectories, prior_values, strict=True):
-            trajectory.prior_reward = float(prior)
+            trajectory.prior_log_prob = float(prior) if prior is not None else None
+            trajectory.prior_score = (
+                float(np.clip(1.0 + float(prior) / 100.0, 0.0, 1.0))
+                if prior is not None else None
+            )
         property_rewards, violations = compute_property_rewards(
             smiles_list,
             self.env.property_limits,
@@ -369,7 +373,8 @@ class RxnFlowTrainer:
             moo_preference=preference,
         )
         log_rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
-        log_rewards += np.log(prior_values.astype(np.float64).clip(min=reward_floor))
+        # reward is a task/property diagnostic only; TB uses prior_log_prob.
+        # Keep log likelihood out of exp and replay priority arithmetic.
         scalar_rewards = np.exp(log_rewards).tolist()
         for trajectory, objectives, property_reward, violation, scalar in zip(
             trajectories,
@@ -421,7 +426,8 @@ class RxnFlowTrainer:
                     "property_violation": value.property_violation,
                     "beta": value.beta,
                     "prior_beta": value.prior_beta,
-                    "prior_reward": value.prior_reward,
+                    "prior_score": value.prior_score,
+                    "prior_log_prob": value.prior_log_prob,
                     "preference": value.preference,
                     **{f"cond_{key}": item for key, item in (value.cond or {}).items()},
                     "valid": value.valid,
@@ -553,8 +559,14 @@ class RxnFlowTrainer:
                     },
                     "property_reward": sum(t.property_reward for t in online_trajs)
                     / len(online_trajs),
-                    "prior_reward": sum(t.prior_reward for t in online_trajs)
-                    / len(online_trajs),
+                    "prior_score": (
+                        sum(t.prior_score for t in online_trajs) / len(online_trajs)
+                        if self.prior_guidance is not None else None
+                    ),
+                    "prior_log_prob": (
+                        sum(t.prior_log_prob for t in online_trajs) / len(online_trajs)
+                        if self.prior_guidance is not None else None
+                    ),
                     "num_property_violations": sum(
                         t.property_violation for t in online_trajs
                     ),
