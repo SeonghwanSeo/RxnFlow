@@ -19,7 +19,6 @@ from chemprior import ChemPrior, SmilesTokenizer
 
 
 def load_smiles(path: str | Path, max_length: int = 255) -> list[str]:
-    """Read prepared SMILES and filter unsupported or overlong sequences before splitting."""
     tokenizer = SmilesTokenizer()
     accepted = []
     for line in Path(path).read_text().splitlines():
@@ -63,11 +62,10 @@ class SmilesDataset(Dataset):
 def validate_split_ratios(val_ratio: float, test_ratio: float) -> None:
     if (
         not all(math.isfinite(x) and 0 <= x < 1 for x in (val_ratio, test_ratio))
-        or val_ratio <= 0
         or val_ratio + test_ratio >= 1
     ):
         raise ValueError(
-            "Validation must be positive; split fractions must sum to less than 1"
+            "Validation and test fractions must be nonnegative and sum to less than 1"
         )
 
 
@@ -83,7 +81,7 @@ def split_smiles(
     # Preserve the original train suffix; partition only its held-out prefix.
     heldout_ratio = val_ratio + test_ratio
     n_holdout = round(len(smiles) * heldout_ratio)
-    n_val = int(n_holdout * val_ratio / heldout_ratio)
+    n_val = int(n_holdout * val_ratio / heldout_ratio) if heldout_ratio else 0
     n_test = n_holdout - n_val
     if (val_ratio and not n_val) or (test_ratio and not n_test):
         raise ValueError("Requested validation/test split is empty")
@@ -92,9 +90,7 @@ def split_smiles(
     test_data = [smiles[i] for i in order[n_val:n_holdout]]
 
     print(
-        f"Split: Train: {len(train_data)}, "
-        f"Val: {len(val_data)}, "
-        f"Test: {len(test_data)}"
+        f"Split: Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}"
     )
 
     return train_data, val_data, test_data
@@ -153,7 +149,9 @@ def train_epoch(
     precision: str = "float32",
 ) -> tuple[float, int]:
     """Return token-averaged training loss and the number of optimizer updates."""
-    loader = make_loader(dataset, batch_size, num_workers=num_workers, shuffle=True, seed=seed)
+    loader = make_loader(
+        dataset, batch_size, num_workers=num_workers, shuffle=True, seed=seed
+    )
     model.train()
     optimizer.zero_grad(set_to_none=True)
     total_nll = 0.0
@@ -165,7 +163,9 @@ def train_epoch(
         seq = seq.to(model.device)
         num_tokens = int((seq != model.pad_token_id).sum())
 
-        with torch.autocast(model.device.type, dtype=torch.bfloat16, enabled=precision == "bfloat16"):
+        with torch.autocast(
+            model.device.type, dtype=torch.bfloat16, enabled=precision == "bfloat16"
+        ):
             logits = model(seq).float()
 
         mask = torch.zeros(logits.size(-1), dtype=torch.bool, device=logits.device)
@@ -206,8 +206,12 @@ def train_epoch(
 
 @torch.no_grad()
 def val_epoch(
-    model: ChemPrior, dataset: SmilesDataset, *, batch_size: int,
-    num_workers: int = 0, precision: str = "float32",
+    model: ChemPrior,
+    dataset: SmilesDataset,
+    *,
+    batch_size: int,
+    num_workers: int = 0,
+    precision: str = "float32",
 ) -> dict[str, float]:
     """Evaluate every validation row, weighting loss by non-padding tokens."""
     loader = make_loader(dataset, batch_size, num_workers=num_workers, drop_last=False)
@@ -219,7 +223,9 @@ def val_epoch(
 
     for seq in loader:
         seq = seq.to(model.device)
-        with torch.autocast(model.device.type, dtype=torch.bfloat16, enabled=precision == "bfloat16"):
+        with torch.autocast(
+            model.device.type, dtype=torch.bfloat16, enabled=precision == "bfloat16"
+        ):
             logits = model(seq).float()
         log_p = model.calc_p_x(seq, logits)
         total_nll -= log_p.sum().item()
@@ -313,9 +319,10 @@ def train(
     resume: str | None = None,
     training_config: dict,
 ) -> None:
-    """Train on prepared datasets and export the best-validation checkpoint."""
+    """Export the best validation weights, or the final weights without validation."""
     device = torch.device(device)
     destination = Path(destination)
+    has_validation = len(val_dataset) > 0
     torch.manual_seed(seed)
     checkpoint = None
     if resume:
@@ -353,21 +360,33 @@ def train(
 
             # Training
             loss, updates = train_epoch(
-                model, train_dataset, optimizer, accumulate_grad,
-                batch_size=batch_size, seed=seed + epoch,
-                num_workers=num_workers, precision=precision,
+                model,
+                train_dataset,
+                optimizer,
+                accumulate_grad,
+                batch_size=batch_size,
+                seed=seed + epoch,
+                num_workers=num_workers,
+                precision=precision,
             )
             step += updates
             record = {"epoch": epoch + 1, "step": step, "train_loss": loss}
 
-            # Validation
-            record.update(val_epoch(model, val_dataset, batch_size=batch_size,
-                                    num_workers=num_workers, precision=precision))
-            if record["val_loss"] < best_loss:
-                best_loss = record["val_loss"]
-                best_state_dict = {
-                    k: v.detach().cpu().clone() for k, v in model.state_dict().items()
-                }
+            if has_validation:
+                record.update(
+                    val_epoch(
+                        model,
+                        val_dataset,
+                        batch_size=batch_size,
+                        num_workers=num_workers,
+                        precision=precision,
+                    )
+                )
+                if record["val_loss"] < best_loss:
+                    best_loss = record["val_loss"]
+                    best_state_dict = {
+                        k: v.detach().cpu().clone() for k, v in model.state_dict().items()
+                    }
 
             record["train_validation_seconds"] = time.monotonic() - epoch_started
             metrics.write(json.dumps(record) + "\n")
@@ -384,7 +403,8 @@ def train(
                 best_state_dict=best_state_dict,
             )
 
-    torch.save(best_state_dict, destination / "model.pth")
+    weights = best_state_dict if has_validation else model.state_dict()
+    torch.save(weights, destination / "model.pth")
     (destination / "config.json").write_text(
         json.dumps(asdict(model.config), indent=2) + "\n"
     )
@@ -399,7 +419,6 @@ def evaluate_test(
     device: str | torch.device,
     precision: str = "float32",
 ) -> ChemPrior:
-    """Reload best weights and score held-out SMILES through ChemPrior's public API."""
     destination = Path(model_dir)
     model = ChemPrior.from_pretrained(destination, device=device)
     with torch.autocast(
@@ -552,7 +571,7 @@ if __name__ == "__main__":
     if torch.device(args.device).type == "cuda":
         torch.cuda.empty_cache()
     if test_smiles:
-        # Evaluate the best checkpoint on the held-out test set.
+        # Evaluate the checkpoint on the held-out test set.
         evaluate_test(
             destination,
             test_smiles,

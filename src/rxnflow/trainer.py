@@ -353,7 +353,8 @@ class RxnFlowTrainer:
             trajectory.prior_log_prob = float(prior) if prior is not None else None
             trajectory.prior_score = (
                 float(np.clip(1.0 + float(prior) / 100.0, 0.0, 1.0))
-                if prior is not None else None
+                if prior is not None
+                else None
             )
         property_rewards, violations = compute_property_rewards(
             smiles_list,
@@ -557,11 +558,13 @@ class RxnFlowTrainer:
                     / len(online_trajs),
                     "prior_score": (
                         sum(t.prior_score for t in online_trajs) / len(online_trajs)
-                        if self.prior_guidance is not None else None
+                        if self.prior_guidance is not None
+                        else None
                     ),
                     "prior_log_prob": (
                         sum(t.prior_log_prob for t in online_trajs) / len(online_trajs)
-                        if self.prior_guidance is not None else None
+                        if self.prior_guidance is not None
+                        else None
                     ),
                     "num_property_violations": sum(
                         t.property_violation for t in online_trajs

@@ -49,13 +49,17 @@ class ScoreDataset(Dataset):
         """Pack graphs into CPU arrays; collate restores the training dtypes."""
         self.graph_cache = []
         dtypes = {
-            "h": np.float16, "e": np.bool_,
-            "edge_index": np.uint8, "edge_mask": np.bool_,
+            "h": np.float16,
+            "e": np.bool_,
+            "edge_index": np.uint8,
+            "edge_mask": np.bool_,
         }
         for start in range(0, len(self), 4096):
             graphs = [encode_mol(s) for s in self.smiles[start : start + 4096]]
             if any(g["h"].shape[0] > 256 for g in graphs):
-                raise ValueError("uint8 graph cache supports at most 256 atoms per molecule")
+                raise ValueError(
+                    "uint8 graph cache supports at most 256 atoms per molecule"
+                )
             offsets = np.cumsum([0] + [g["h"].shape[0] for g in graphs], dtype=np.int64)
             arrays = {
                 key: np.concatenate([g[key].numpy().astype(dtype) for g in graphs])
@@ -409,7 +413,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         nargs=3,
         help="Train/validation/test fractions for automatic splitting",
     )
-    parser.add_argument("--cache-graphs", action="store_true", help="Cache compressed train/validation graphs in CPU RAM")
+    parser.add_argument(
+        "--cache-graphs",
+        action="store_true",
+        help="Cache compressed train/validation graphs in CPU RAM",
+    )
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--model-dim", type=int, default=256)

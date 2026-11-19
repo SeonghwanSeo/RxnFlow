@@ -65,7 +65,6 @@ python scripts/chemprior/train.py \
 
 `--val-ratio` sets the validation fraction and defaults to `0.1`.
 Set it to `0` to skip validation.
-Training and validation both drop incomplete batches.
 Run `python scripts/chemprior/train.py --help` for all options.
 
 The script saves the model as `config.json` and `model.pth` in `runs/prior_finetune`.
