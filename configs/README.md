@@ -32,7 +32,7 @@ See [chemical prior guidance](../docs/prior_guidance.md).
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `prior_guidance.model_name_or_path` | `chembl` | Model alias, model directory or Hub repository ID. |
-| `prior_guidance.beta` | `"25"` | Prior guidance exponent, in the same format as `reward.beta`. |
+| `prior_guidance.beta` | `"uniform(0,1)"` | Coefficient of teacher sequence log p(x), in the same format as `reward.beta`. |
 | `prior_guidance.batch_size` | `16` | Scoring batch size. |
 
 ## External conditioning

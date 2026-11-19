@@ -97,7 +97,7 @@ Add `prior_guidance` to your training configuration.
 ```yaml
 prior_guidance:
   model_name_or_path: chembl
-  beta: "25"
+  beta: "uniform(0,1)"
 ```
 
 See [chemical prior guidance](docs/prior_guidance.md).

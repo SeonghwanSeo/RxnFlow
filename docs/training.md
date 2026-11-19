@@ -76,7 +76,7 @@ Invalid attempts, such as trajectories with no feasible continuation, are also r
 ### Sample records
 
 `sample.jsonl` stores individual online attempts.
-Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `prior_beta`, `prior_reward`, `preference`, `valid`, `invalid_reason` and `traj`.
+Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `prior_beta`, `prior_score`, `prior_log_prob`, `preference`, `valid`, `invalid_reason` and `traj`.
 The iteration index `step` starts at one; the `sample` index starts at zero within each step.
 
 - External condition entries appear as `cond_<key>` fields, for example `cond_target_mw`.
@@ -97,10 +97,11 @@ Generation metrics describe all new online attempts, including invalid ones; los
 | `num_online`, `num_replay` | Actual numbers of new and replay trajectories used in the update. |
 | `num_valid`, `num_invalid` | Valid and invalid online trajectory counts. |
 | `num_unique` | Number of distinct valid online SMILES. |
-| `reward` | Mean combined online reward before applying betas. |
+| `reward` | Mean combined online reward before applying temperature scaling. |
 | `objective_rewards` | Mean online scores by objective, keyed as `r_qed`, etc. |
 | `property_reward` | Mean online property penalty multiplier. |
-| `prior_reward` | Mean online prior score. |
+| `prior_score` | Mean normalized teacher score for display; null when guidance is disabled. |
+| `prior_log_prob` | Mean teacher sequence log p(x) used by guidance; null when guidance is disabled. |
 | `num_property_violations` | Number of online trajectories violating at least one property limit. |
 | `traj_lens` | Mean online trajectory length, including initial synthon selection. |
 
