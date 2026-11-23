@@ -9,6 +9,9 @@ reward:
   property_penalty_ratio: 0.2
   settings: {}
 
+# Chemical prior guidance
+prior_guidance: null
+
 # External conditioning configuration
 conditioning: {}
 

@@ -25,6 +25,7 @@ dependencies = [
   "tqdm",
   "rdkit>=2023.9.6",
   "druglikeness>=0.2.2",
+  "huggingface-hub>=0.23",
 ]
 
 [project.optional-dependencies]
@@ -32,6 +33,9 @@ dev = ["build>=1", "ruff>=0.5", "wheel>=0.45"]
 
 [tool.setuptools.dynamic]
 version = { attr = "rxnflow.__version__.__version__" }
+
+[tool.setuptools.package-data]
+chemprior = ["vocab.txt", "cleaning.json"]
 
 [tool.ruff]
 target-version = "py310"

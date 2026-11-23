@@ -36,10 +36,11 @@ class TrajectoryBalance:
     ) -> None:
         if loss_fn not in ("mse", "mae", "huber"):
             raise ValueError("loss_fn must be mse, mae, or huber")
-        self.policy = policy
-        self.moo_scalarization = moo_scalarization
-        self.reward_floor = reward_floor
-        self.loss_fn = loss_fn
+        self.policy: RxnFlowPolicy = policy
+        self.moo_scalarization: Literal["sum", "mul"] = moo_scalarization
+        self.eps: float = reward_floor
+        self.log_eps = math.log(reward_floor)
+        self.loss_fn: Literal["mse", "mae", "huber"] = loss_fn
 
     def compute_batch_losses(
         self,
@@ -57,37 +58,45 @@ class TrajectoryBalance:
         model = self.policy.model
         device = self.policy.device
 
-        # 1. Compute rewards.
+        # 1. Compute the objective rewards.
         beta = np.array([t.beta for t in trajectories], dtype=np.float64)
         preference = np.array([t.preference for t in trajectories], dtype=np.float64)
         objective_rewards = np.array(
             [t.objective_rewards for t in trajectories], dtype=np.float64
-        ).clip(min=self.reward_floor)
-        property_rewards = np.array(
-            [t.property_reward for t in trajectories], dtype=np.float64
-        ).clip(min=self.reward_floor)
-
-        # Scalarize the multi-objective rewards
+        ).clip(min=self.eps)
+        # scalarize and scale rewards for GFlowNet training
         log_R = scalarize_log_rewards(
             objective_rewards, self.moo_scalarization, preference
         )
-        # Apply the property penalty to the scalarized reward
-        log_R += np.log(property_rewards)
-        # Apply a floor
-        log_R = np.clip(log_R, a_min=math.log(self.reward_floor), a_max=None)
-        # Scale the log rewards by beta
-        scaled_log_R = beta * log_R
+
+        # 2. Compute the prior guidance
+        prior_beta = np.array([t.prior_beta for t in trajectories], dtype=np.float64)
+        log_p_prior = np.array(
+            [0.0 if t.prior_log_prob is None else t.prior_log_prob for t in trajectories],
+            dtype=np.float64,
+        )
+
+        # 3. Compute the property penalty
+        property_penalty = np.array(
+            [t.property_reward for t in trajectories], dtype=np.float64
+        ).clip(min=self.eps)
+        log_property_penalty = np.log(property_penalty)
+
+        # 4. Compute the scaled log rewards for TB loss
+        log_R_gfn = beta * log_R + prior_beta * log_p_prior + log_property_penalty
 
         # Move to torch tensors
-        beta = torch.from_numpy(beta.astype(np.float32)).to(device)
-        preference = torch.from_numpy(preference.astype(np.float32)).to(device)
-        scaled_log_R = torch.from_numpy(scaled_log_R.astype(np.float32)).to(device)
+        to_tensor = lambda x: torch.as_tensor(x, dtype=torch.float32, device=device)  # noqa
+        beta = to_tensor(beta)
+        prior_beta = to_tensor(prior_beta)
+        preference = to_tensor(preference)
+        log_R_gfn = to_tensor(log_R_gfn)
 
-        # 2. Encode each trajectory's stored condition and predict logZ.
+        # Encode each trajectory's stored condition and predict logZ.
         if cond is not None:
             assert cond.shape == (len(trajectories), model.condition_dim)
             cond = cond.to(device)
-        cond_emb = model.encode_cond(beta, preference, cond)
+        cond_emb = model.encode_cond(beta, preference, cond, prior_beta=prior_beta)
         log_Z = model.logZ(cond_emb).squeeze(-1)
         logit_scale = model.logit_scale(cond_emb).squeeze(-1)
 
@@ -114,6 +123,7 @@ class TrajectoryBalance:
                 beta[batch_idx],
                 preference[batch_idx],
                 cond=cond[batch_idx] if cond is not None else None,
+                prior_beta=prior_beta[batch_idx],
             )
             traj_log_p_F = torch.zeros(len(trajectories), device=device)
             traj_log_p_F.index_add_(0, batch_idx, log_p_F)
@@ -121,7 +131,7 @@ class TrajectoryBalance:
             traj_log_p_F = torch.zeros(len(trajectories), device=device)
 
         # 4. Compute the trajectory-balance loss.
-        tb_error = log_Z + traj_log_p_F - traj_log_p_B - scaled_log_R
+        tb_error = log_Z + traj_log_p_F - traj_log_p_B - log_R_gfn
         if self.loss_fn == "mse":
             tb_losses = tb_error.square()
         elif self.loss_fn == "mae":
@@ -149,7 +159,7 @@ class TrajectoryBalance:
                 "batch_entropy": -traj_log_p_F.mean(),
                 "traj_log_p_F": traj_log_p_F.mean(),
                 "traj_log_p_B": traj_log_p_B.mean(),
-                "scaled_log_R": scaled_log_R.mean(),
+                "scaled_log_R": log_R_gfn.mean(),
                 "tb_error": tb_error.mean(),
                 "online_loss": tb_losses[:num_online].sum() / max(1, num_online),
                 "replay_loss": tb_losses[num_online : num_online + num_replay].sum()
@@ -162,4 +172,5 @@ class TrajectoryBalance:
                 / (~is_valid).sum().clamp_min(1),
                 "invalid_trajectories": (~is_valid).float().mean(),
             }
+        info["prior_beta"] = prior_beta.mean().detach()
         return loss, info

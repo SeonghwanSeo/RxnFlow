@@ -1,6 +1,7 @@
 # Custom rewards
 
-Implement `RewardFunction.score(smiles_list, cond_list=None)` to return one score per objective for each molecule. `cond_list` contains raw external condition dictionaries (`dict[str, Any]`) in the same order as `smiles_list`; condition-independent rewards can ignore it:
+Implement `RewardFunction.score(smiles_list, cond_list=None)` to return one score per objective for each molecule.
+`cond_list` contains raw external condition dictionaries (`dict[str, Any]`) in the same order as `smiles_list`; condition-independent rewards can ignore it:
 
 ```python
 from typing import Any
@@ -23,14 +24,19 @@ class MyReward(RewardFunction):
         return rewards  # [batch, 1]
 ```
 
-- Return a float32 array of shape `[batch, num_objectives]` with finite, non-negative scores; larger values should be better.
-- Preserve input order and the column order in `objectives`. RxnFlow applies preference weights and [terminal property penalties](conditioning.md#property-rewards).
-- Call `reward(smiles_list, cond_list=conditions)` or `reward.run(...)`. Failed molecules (`None`) receive zero scores.
-- Without conditions, duplicate and cached SMILES are scored once. With conditions, every valid pair is scored without caching or deduplication.
+- Return raw, finite, non-negative scores as a float32 array of shape `[batch, num_objectives]`.
+  Higher scores should be better.
+- Preserve input order and the column order in `objectives`.
+  RxnFlow applies preference weights and [terminal property penalties](conditioning.md#property-rewards).
+- Call `reward(smiles_list, cond_list=conditions)` or `reward.run(...)`.
+  Failed molecules (`None`) receive zero scores.
+- Without conditions, duplicate and cached SMILES are scored once.
+  With conditions, every valid pair is scored without caching or deduplication.
 
 ## Pass reward settings
 
-Use `reward.settings` to configure your reward's constructor. For example, reward molecules whose molecular weight is close to a target:
+Use `reward.settings` to configure your reward's constructor.
+For example, reward molecules whose molecular weight is close to a target:
 
 ```python
 from typing import Any
@@ -74,11 +80,13 @@ config = Config.from_file("configs/mw.yaml")
 reward = MolecularWeightReward(**config.reward.settings)
 ```
 
-Setting names must match the constructor arguments. Initialize any scoring model or docking setup in the constructor.
+Setting names must match the constructor arguments.
+Initialize any scoring model or docking setup in the constructor.
 
 ## Use a target for each molecule
 
-Read each target from `cond_list` when it varies between molecules. For example, the [TPSA reward](../examples/tpsa_cond.py) compares each molecule with its supplied target:
+Read each target from `cond_list` when it varies between molecules.
+For example, the [TPSA reward](../examples/tpsa_cond.py) compares each molecule with its supplied target:
 
 ```python
 from examples.tpsa_cond import TPSAReward
@@ -90,11 +98,13 @@ scores = reward(
 )
 ```
 
-The two ethanol entries use different targets; the failed entry receives zero. See [external conditions](conditioning.md#external-conditions) to train and sample with these targets.
+The two ethanol entries use different targets; the failed entry receives zero.
+See [external conditions](conditioning.md#external-conditions) to train and sample with these targets.
 
 ## Define multiple objectives
 
-For multi-objective optimization, return one column per objective instead of combining the scores inside `score()`. For example, minimize molecular weight and maximize logP:
+For multi-objective optimization, return one column per objective instead of combining the scores inside `score()`.
+For example, minimize molecular weight and maximize logP:
 
 ```python
 from typing import Any
@@ -125,7 +135,8 @@ class MWLogPReward(RewardFunction):
         return rewards.astype(np.float32)  # [batch, 2]
 ```
 
-The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`. Positive `mw_scale` and `logp_scale` control each score's sensitivity.
+The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`.
+Positive `mw_scale` and `logp_scale` control each score's sensitivity.
 
 ```yaml
 reward:
@@ -134,9 +145,12 @@ reward:
   moo_preference: "dirichlet(1.5)"
 ```
 
-Construct `MWLogPReward()` in your training script. The [mw_logp.yaml](../configs/mw_logp.yaml) configuration varies beta and objective preferences. This is a descriptor optimization example; the extent of the trade-off depends on the available molecules.
+Construct `MWLogPReward()` in your training script.
+The [mw_logp.yaml](../configs/mw_logp.yaml) configuration varies beta and objective preferences.
+This is a descriptor optimization example; the extent of the trade-off depends on the available molecules.
 
 ## Training and conditioning
 
 - [Reward conditioning](conditioning.md): combine objectives, choose preference distributions and set the reward exponent.
 - [Training guide](training.md): train, resume and sample with your reward.
+- [Chemical prior guidance](prior_guidance.md)

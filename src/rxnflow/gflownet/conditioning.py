@@ -44,19 +44,11 @@ class ConditionSampler:
         preference: tuple[str, list[float]],
         num_objectives: int,
         scalarization: str = "mul",
+        *,
+        prior_beta: tuple[str, list[float]],
     ):
-        beta_dist, beta_params = beta
         pref_dist, pref_params = preference
-        if (
-            beta_dist not in ("fixed", "uniform", "log_uniform")
-            or len(beta_params) != (1 if beta_dist == "fixed" else 2)
-            or any(not math.isfinite(x) or x <= 0 for x in beta_params)
-            or (beta_dist != "fixed" and beta_params[0] >= beta_params[1])
-        ):
-            raise ValueError(
-                "beta requires positive fixed(value), uniform(low,high) "
-                "or log_uniform(low,high)"
-            )
+        self.prior_beta = prior_beta
         if pref_dist == "none":
             if pref_params:
                 raise ValueError("none preference takes no parameters")
@@ -84,7 +76,8 @@ class ConditionSampler:
 
     def sample(
         self, count: int, rng: np.random.Generator
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Sample task beta, preference, then prior beta in checkpoint RNG order."""
         beta = sample_distribution(self.beta, count, rng).squeeze(-1)
         # Equal relative weights without conditioning; normalize for the reward below.
         preference = (
@@ -93,4 +86,5 @@ class ConditionSampler:
             else sample_distribution(self.preference, count, rng, self.num_objectives)
         )
         preference = preference / preference.sum(-1, keepdim=True) * self.weight_sum
-        return beta, preference
+        prior_beta = sample_distribution(self.prior_beta, count, rng).squeeze(-1)
+        return beta, preference, prior_beta
