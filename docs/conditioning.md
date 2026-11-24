@@ -1,50 +1,47 @@
 # Reward conditioning
 
-Set `reward.beta`, `reward.moo_scalarization` and `reward.moo_preference` in your training configuration.
-Return individual objective scores from your [reward class](rewards.md); RxnFlow combines them and applies the reward exponent.
+Set `gflownet.beta` and `gflownet.moo_preference` in your training configuration.
+Return individual objective scores from your [reward class](rewards.md); RxnFlow combines them and multiplies the result by beta.
 
-## Reward exponent
+## Task beta
 
-Larger `reward.beta` values favor high rewards.
+Larger `gflownet.beta` values favor higher task scores. With the same prior and property factors, a one-unit increase in the task score multiplies relative probability by `exp(beta)`.
 See [reward composition](prior_guidance.md#enable-prior-guidance).
 
 | Setting | Use |
 | --- | --- |
-| `beta: "32"` | Fixed exponent. |
+| `beta: 32` | Fixed task beta. |
 | `beta: "uniform(1,64)"` | Sample uniformly between the bounds. |
 | `beta: "log_uniform(1,64)"` | Sample uniformly in log space. |
+
+The QED examples use the same reward and MW penalty. Choose [fixed beta](../configs/examples/qed.yaml) for one reward strength or [uniform beta](../configs/examples/qed_beta.yaml) to vary it when sampling.
 
 Fixed beta must be non-negative.
 Use `0 <= lower < upper` for `uniform` and `0 < lower < upper` for `log_uniform`.
 
 ## Combine objectives
 
-Choose how scores `r_i` and weights `w_i` form the reward `R`:
+Set `gflownet.moo_scalarization` to choose how raw component scores form the task reward `R(x)`. Both modes normalize preference weights to sum to one. Equal preferences for two objectives give weights `[0.5, 0.5]`, and `fixed(3,7)` gives `[0.3, 0.7]`.
 
-| `moo_scalarization` | Reward | Equal weights |
+| Mode | Task reward for two equally weighted objectives | Use |
 | --- | --- | --- |
-| `mul` | `R = product(r_i ** w_i)` | Product of scores. |
-| `sum` | `R = sum(w_i * r_i)` | Arithmetic mean of scores. |
+| `sum` (default) | `(r1 + r2) / 2` | Weighted arithmetic mean. Supports signed scores such as negative molecular weight. |
+| `mul` | `sqrt(max(r1, 1e-8) * max(r2, 1e-8))` | Weighted geometric mean. Use positive scores when a weak component should reduce the combined reward. |
 
-With `mul`, a low score in one objective reduces the reward even when another is high.
-With `sum`, higher scores can compensate for lower scores.
-Choose comparable score scales so one objective does not dominate unintentionally.
-
-Weights are normalized to sum to the number of objectives for `mul`, or to one for `sum`.
-For two objectives, `fixed(0.3,0.7)` gives weights `[0.6, 1.4]` for `mul` and `[0.3, 0.7]` for `sum`.
+For example, component scores of 0.2 and 0.8 give `R(x) = 0.5` with `sum` and `R(x) = 0.4` with `mul`. In both cases the task factor is `exp(beta * R(x))`. These means follow REINVENT4's `custom_sum` and `custom_product` for finite component scores, including the component floor in `mul`. [REINVENT4 aggregation code](https://github.com/MolecularAI/REINVENT4/blob/main/reinvent/scoring/aggregators/means.py)
 
 ## Property rewards
 
 Molecules exceeding `property_penalty` limits or `generation.max_atoms` receive lower rewards, independently of MOO preferences.
 
-- `reward.property_penalty_ratio` controls how gradually rewards decrease beyond a limit.
+- `gflownet.property_penalty_ratio` controls how gradually rewards decrease beyond a limit.
   The default `0.2` uses 20% of the limit as the smoothing width; larger values give gentler penalties.
 - If the ratio or a limit is zero, violating that limit gives zero reward.
 - Molecules and trajectories are retained even when they exceed a limit.
 
 ## Objective preferences
 
-Preferences follow the column order in your reward's `objectives` tuple.
+Preferences follow the order of the named rewards passed to `RxnFlowTrainer`.
 
 | `moo_preference` | Use |
 | --- | --- |
@@ -62,12 +59,11 @@ One value is shared across objectives: with three objectives, `dirichlet(0.5)` i
 You can also supply one concentration per objective.
 Equal concentrations of `1` sample uniformly on the preference simplex; values below `1` favor the boundaries, while values above `1` favor balanced preferences.
 
-For example, to train across both exponents and trade-offs:
+The [fixed MW/logP example](../configs/examples/mw_logp.yaml) weights both objectives equally at beta 32. The [conditioned MW/logP example](../configs/examples/mw_logp_pref.yaml) keeps beta at 32 and samples objective preferences during training.
 
 ```yaml
-reward:
-  beta: "uniform(1,64)"
-  moo_scalarization: mul
+gflownet:
+  beta: 32
   moo_preference: "dirichlet"
 ```
 
@@ -80,7 +76,7 @@ Sampling defaults to checkpoint settings.
   Fixed-preference training requires the same relative weights.
 - Training with `dirichlet` or `dirichlet(...)` allows you to choose a fixed trade-off or another preference distribution at sampling.
 
-Pass `beta`, `prior_beta` and `preference` to `RxnFlowSampler.sample()` or use the [sampling CLI](training.md#sampling).
+In `RxnFlowSampler.sample()`, `beta` sets the task beta, `prior_beta` sets the prior guidance strength and `preference` sets the objective weights. The corresponding CLI options are `--task-beta`, `--prior-beta` and `--preference`. See the [sampling guide](training.md#sampling).
 
 ## External conditions
 
@@ -101,8 +97,8 @@ The conditioning module selects and encodes targets; the [reward function](rewar
 
 ### Train with target TPSA
 
-The [TPSA example](../examples/tpsa_cond.py) samples target TPSA values, divides them by 100 for model input, and rewards molecules with `1 / (1 + abs(TPSA - target))`.
-Its [configuration](../configs/tpsa_cond.yaml) supplies constructor settings:
+The [TPSA example](../examples/tpsa_cond.py) samples target TPSA values, divides them by 100 for model input, and returns the negative absolute error scaled by `scale` (100 Å² by default), giving `-abs(TPSA - target) / scale`.
+Its [configuration](../configs/examples/tpsa_cond.yaml) supplies constructor settings:
 
 ```yaml
 conditioning:
@@ -113,7 +109,7 @@ conditioning:
 Set `env_dir` in the YAML to your compatible prepared environment, then run from the repository root:
 
 ```bash
-python examples/tpsa_cond.py --config configs/tpsa_cond.yaml --steps 1000
+python examples/tpsa_cond.py --config configs/examples/tpsa_cond.yaml --steps 1000
 ```
 
 In custom scripts, construct `TPSAConditioningModule(**config.conditioning)` and pass it as `conditioning=` to `RxnFlowTrainer`.

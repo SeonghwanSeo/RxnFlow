@@ -42,14 +42,14 @@ def main(argv: list[str] | None = None) -> None:
         "--softmax-temperature",
         type=float,
         default=1.0,
-        help="Softmax temperature (default: 1); independent of reward exponent beta",
+        help="Softmax temperature (default: 1); independent of task beta",
     )
     parser.add_argument(
         "--beta",
         "--task-beta",
         default=None,
         help=(
-            "Reward exponent: scalar, "
+            "Task beta: scalar, "
             "uniform(low,high) or log_uniform(low,high) "
             "(default: checkpoint setting)"
         ),
@@ -57,7 +57,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--prior-beta",
         default=None,
-        help="Prior guidance exponent (default: checkpoint setting)",
+        help="Prior guidance strength (default: checkpoint setting)",
     )
     parser.add_argument(
         "--preference",

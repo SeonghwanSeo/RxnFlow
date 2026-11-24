@@ -2,43 +2,52 @@
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import Any
+from math import isfinite
+from typing import Any, ClassVar
 
-import numpy as np
-from numpy.typing import NDArray
+INVALID_REWARD = -1000.0
 
 
-class RewardFunction(ABC):
-    """Abstract base class for reward functions.
-    Define ``objectives`` and implement ``score()`` to define a reward function.
+class RewardFunction:
+    r"""Base class for reward functions.
+    Set ``name`` to the objective key. Implement ``score`` for one molecule
+    or ``score_list`` for a batch.
+
+    For a single objective with unit prior and property factors,
+    p(x) ∝ exp(beta * R(x)).
     """
 
-    objectives: tuple[str, ...]
+    name: ClassVar[str] = ""
 
-    @abstractmethod
     def score(
+        self,
+        smiles: str,
+        cond: dict[str, Any] | None = None,
+    ) -> float:
+        """Return a score for a single molecule."""
+        raise NotImplementedError
+
+    def score_list(
         self,
         smiles_list: list[str],
         cond_list: list[dict[str, Any]] | None = None,
-    ) -> NDArray[np.float32]:
-        """Return float32 scores of shape ``(len(smiles_list), len(objectives))``.
+    ) -> list[float]:
+        """Return a list of scores for a list of molecules.
 
-        Without conditions, inputs are unique, uncached SMILES. With conditions,
-        molecules and conditions retain their matching order, including duplicates.
-
-        Scores must be finite, non-negative and larger-is-better.
+        The default implementation applies score to each molecule and its
+        optional condition in input order.
         """
-        raise NotImplementedError
-
-    @property
-    def num_objectives(self) -> int:
-        """Number of objectives."""
-        return len(self.objectives)
+        if cond_list is None:
+            return [self.score(smi) for smi in smiles_list]
+        else:
+            return [
+                self.score(smi, cond)
+                for smi, cond in zip(smiles_list, cond_list, strict=True)
+            ]
 
     @cached_property
-    def _cache(self) -> dict[str, NDArray[np.float32]]:
+    def _cache(self) -> dict[str, float]:
         """Cache scores by SMILES for calls without conditions."""
         return {}
 
@@ -46,7 +55,7 @@ class RewardFunction(ABC):
         self,
         smiles_list: list[str | None],
         cond_list: list[dict[str, Any]] | None = None,
-    ) -> NDArray[np.float32]:
+    ) -> list[float]:
         """Evaluate molecules through ``run``."""
         return self.run(smiles_list, cond_list)
 
@@ -54,59 +63,39 @@ class RewardFunction(ABC):
         self,
         smiles_list: list[str | None],
         cond_list: list[dict[str, Any]] | None = None,
-    ) -> NDArray[np.float32]:
+    ) -> list[float]:
         """Score a batch of molecules."""
-        num_samples = len(smiles_list)
+        if cond_list is not None and len(cond_list) != len(smiles_list):
+            raise ValueError("supply one condition per molecule")
 
-        # Initialize the result array with zeros
-        result = np.zeros((num_samples, self.num_objectives), dtype=np.float32)
-
-        if cond_list is not None:
-            # If conditions are provided, skip caching or deduplication
-            assert len(cond_list) == len(smiles_list), (
-                "Length of cond_list must match length of smiles_list"
-            )
-            indices = [i for i, smi in enumerate(smiles_list) if smi is not None]
-            if not indices:
-                return result
-            _smiles_list = [smiles_list[i] for i in indices]
-            _cond_list = [cond_list[i] for i in indices]
-            scores = self.score(_smiles_list, _cond_list).astype(np.float32)
-            if scores.shape != (len(_smiles_list), len(self.objectives)):
-                raise ValueError(
-                    "RewardFunction.score must return [batch, num_objectives]"
-                )
-            if not np.isfinite(scores).all() or (scores < 0).any():
-                raise ValueError("rewards must be finite and non-negative")
-            result[indices] = scores
+        result = [INVALID_REWARD] * len(smiles_list)
+        valid = [(i, smi) for i, smi in enumerate(smiles_list) if smi is not None]
+        if not valid:
             return result
 
-        # Create an index before removing None and duplicates
-        mapping: dict[str, list[int]] = {}
-        for index, smi in enumerate(smiles_list):
-            if smi is None:
-                continue
-            mapping.setdefault(smi, []).append(index)
+        if cond_list is not None:
+            pending = [smi for _, smi in valid]
+            scores = self.score_list(pending, [cond_list[i] for i, _ in valid])
+        else:
+            pending = list(
+                dict.fromkeys(smi for _, smi in valid if smi not in self._cache)
+            )
+            scores = self.score_list(pending) if pending else []
 
-        # Remove duplicates and cached molecules
-        pending = [smi for smi in mapping if smi not in self._cache]
+        if len(scores) != len(pending):
+            raise ValueError(
+                f"Score must return one float per molecule, "
+                f"got {len(scores)} scores for {len(pending)} molecules"
+            )
+        if not all(isfinite(score) for score in scores):
+            raise ValueError(f"Score must return finite floats, got {scores}")
 
-        # Score uncached molecules
-        if len(pending) > 0:
-            scores = self.score(pending).astype(np.float32)
-            # Validate scores
-            if scores.shape != (len(pending), len(self.objectives)):
-                raise ValueError(
-                    "RewardFunction.score must return [batch, num_objectives]"
-                )
-            if not np.isfinite(scores).all() or (scores < 0).any():
-                raise ValueError("rewards must be finite and non-negative")
-
-            for smi, values in zip(pending, scores, strict=True):
-                self._cache[smi] = values.copy()
-
-        # Fill in the results for all molecules
-        for smi, indices in mapping.items():
-            result[indices] = self._cache[smi]
-
+        if cond_list is not None:
+            for (i, _), score in zip(valid, scores, strict=True):
+                result[i] = float(score)
+        else:
+            for smi, score in zip(pending, scores, strict=True):
+                self._cache[smi] = float(score)
+            for i, smi in valid:
+                result[i] = self._cache[smi]
         return result

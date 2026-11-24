@@ -25,20 +25,23 @@ def _parse_condition(
             return match[1], [float(x) for x in match[2].split(",")]
         return "fixed", [float(value)]
     if (
-        not isinstance(value, tuple)
+        not isinstance(value, (tuple, list))
         or len(value) != 2
         or not isinstance(value[0], str)
         or not isinstance(value[1], list)
     ):
         raise ValueError("expected a condition string or (name, parameters) tuple")
-    return value
+    return value[0], value[1]
 
 
 def parse_reward_exponent(
-    value: str | tuple[str, list[float]],
+    value: float | str | tuple[str, list[float]],
 ) -> tuple[str, list[float]]:
-    """Parse a fixed or sampled reward exponent."""
-    name, params = _parse_condition(value)
+    """Parse a fixed or sampled task beta or prior guidance strength."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        name, params = "fixed", [float(value)]
+    else:
+        name, params = _parse_condition(value)
     if (
         name not in ("fixed", "uniform", "log_uniform")
         or len(params) != (1 if name == "fixed" else 2)
@@ -83,7 +86,9 @@ class SubsamplingConfig:
 @dataclass
 class PriorGuidanceConfig:
     model_name_or_path: str | None = "chembl"
-    beta: tuple[str, list[float]] = field(default_factory=lambda: ("uniform", [0.0, 1.0]))
+    strength: tuple[str, list[float]] = field(
+        default_factory=lambda: ("uniform", [0.0, 1.0])
+    )
     batch_size: int = 16
 
     def validate(self) -> None:
@@ -94,7 +99,7 @@ class PriorGuidanceConfig:
             raise ValueError(
                 "prior_guidance.model_name_or_path must be a nonempty string or null"
             )
-        self.beta = parse_reward_exponent(self.beta)
+        self.strength = parse_reward_exponent(self.strength)
         if (
             isinstance(self.batch_size, bool)
             or not isinstance(self.batch_size, int)
@@ -104,30 +109,26 @@ class PriorGuidanceConfig:
 
 
 @dataclass
-class RewardConfig:
-    """Reward transformation and constructor settings."""
+class GFNConditionConfig:
+    """GFlowNet task, preference and property-penalty settings."""
 
-    # Reward exponent and preference sampling specifications.
-    beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [32.0]))
+    beta: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [64.0]))
+    moo_scalarization: Literal["sum", "mul"] = "sum"
     moo_preference: tuple[str, list[float]] = field(default_factory=lambda: ("none", []))
-    moo_scalarization: Literal["sum", "mul"] = "mul"
     property_penalty_ratio: float = 0.2
-    settings: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         self.beta = parse_reward_exponent(self.beta)
         self.moo_preference = parse_moo_preference(self.moo_preference)
         if self.moo_scalarization not in ("sum", "mul"):
-            raise ValueError("reward.moo_scalarization must be sum or mul")
+            raise ValueError("gflownet.moo_scalarization must be sum or mul")
         if (
             not math.isfinite(self.property_penalty_ratio)
             or self.property_penalty_ratio < 0
         ):
             raise ValueError(
-                "reward.property_penalty_ratio must be finite and non-negative"
+                "gflownet.property_penalty_ratio must be finite and non-negative"
             )
-        if not isinstance(self.settings, dict):
-            raise ValueError("reward.settings must be a mapping")
 
 
 @dataclass
@@ -183,14 +184,14 @@ class TrainingConfig:
     num_online: int = 64
     num_replay: int = 64
     # ema for sampler
-    ema_decay: float = 0.99
+    ema_decay: float = 0.98
     # random action probability for exploration
     random_action_prob: float = 0.05
     # replay
-    replay_capacity: int = 100_000
+    replay_capacity: int = 64_000
     num_replay_insert: int | None = None
-    replay_insert_priority: Literal["uniform", "reward"] = "uniform"
-    replay_sample_priority: Literal["uniform", "reward"] = "uniform"
+    replay_insert_priority: Literal["uniform", "reward"] = "reward"
+    replay_sample_priority: Literal["uniform", "reward"] = "reward"
     # model training
     learning_rate: float = 1e-4
     learning_rate_logZ: float = 1e-2
@@ -257,7 +258,7 @@ class Config:
     """
 
     env_dir: str = ""
-    reward: RewardConfig = field(default_factory=RewardConfig)
+    gflownet: GFNConditionConfig = field(default_factory=GFNConditionConfig)
     prior_guidance: PriorGuidanceConfig | None = None
     conditioning: dict[str, Any] = field(default_factory=dict)
     property_penalty: dict[str, float] = field(default_factory=dict)
@@ -267,7 +268,7 @@ class Config:
     training: TrainingConfig = field(default_factory=TrainingConfig)
 
     def validate(self) -> None:
-        self.reward.validate()
+        self.gflownet.validate()
         if self.prior_guidance is not None:
             self.prior_guidance.validate()
         from rxnflow.envs.features import PROPERTY_PENALTY_INDICES
@@ -307,29 +308,22 @@ class Config:
     def to_file_dict(self) -> dict[str, Any]:
         """Return the shallow user-facing YAML representation."""
 
-        reward = asdict(self.reward)
-        for name in ("beta", "moo_preference"):
-            distribution, params = reward[name]
-            reward[name] = (
-                "none"
-                if distribution == "none"
-                else f"{distribution}({','.join(str(x) for x in params)})"
-            )
-        prior = asdict(self.prior_guidance) if self.prior_guidance is not None else None
-        if prior is not None:
-            distribution, params = prior["beta"]
-            prior["beta"] = f"{distribution}({','.join(str(x) for x in params)})"
-        return {
-            "env_dir": self.env_dir,
-            "reward": reward,
-            "prior_guidance": prior,
-            "conditioning": dict(self.conditioning),
-            "property_penalty": dict(self.property_penalty),
-            "subsampling": asdict(self.subsampling),
-            "generation": asdict(self.generation),
-            "model": asdict(self.model),
-            "training": asdict(self.training),
-        }
+        raw = self.to_dict()
+        for section, key in (
+            ("gflownet", "beta"),
+            ("gflownet", "moo_preference"),
+            ("prior_guidance", "strength"),
+        ):
+            if raw[section] is None:
+                continue
+            distribution, params = raw[section][key]
+            if distribution == "none":
+                raw[section][key] = "none"
+            elif distribution == "fixed" and key != "moo_preference":
+                raw[section][key] = params[0]
+            else:
+                raw[section][key] = f"{distribution}({','.join(str(x) for x in params)})"
+        return raw
 
     def save(self, path: str | Path) -> None:
         path = Path(path)
@@ -338,63 +332,34 @@ class Config:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> Config:
+        raw = dict(raw)
         unknown = set(raw) - {f.name for f in fields(cls)}
         if unknown:
             raise ValueError(f"unknown configuration fields: {sorted(unknown)}")
-        reward = dict(raw["reward"])
-        # Restore serialized tuples.
-        for name in ("beta", "moo_preference"):
-            if not isinstance(reward.get(name), (list, tuple)):
-                continue
-            dist, params = reward[name]
-            reward[name] = (dist, list(params))
+
         prior = raw.get("prior_guidance")
         if prior is not None:
-            prior = dict(prior)
-            if isinstance(prior.get("beta"), (list, tuple)):
-                distribution, params = prior["beta"]
-                prior["beta"] = (distribution, list(params))
-            prior = PriorGuidanceConfig(**prior)
-        cfg = cls(
-            env_dir=raw["env_dir"],
-            reward=RewardConfig(**reward),
-            prior_guidance=prior,
-            conditioning=dict(raw["conditioning"]),
-            property_penalty=dict(raw["property_penalty"]),
-            subsampling=SubsamplingConfig(**raw["subsampling"]),
-            generation=GenerationConfig(**raw["generation"]),
-            model=ModelConfig(**raw["model"]),
-            training=TrainingConfig(**raw["training"]),
-        )
+            if not isinstance(prior, dict):
+                raise ValueError("prior_guidance must be a mapping or null")
+            raw["prior_guidance"] = PriorGuidanceConfig(**prior)
+        for name, config_type in (
+            ("gflownet", GFNConditionConfig),
+            ("subsampling", SubsamplingConfig),
+            ("generation", GenerationConfig),
+            ("model", ModelConfig),
+            ("training", TrainingConfig),
+        ):
+            if name in raw:
+                if not isinstance(raw[name], dict):
+                    raise ValueError(f"{name} must be a mapping")
+                raw[name] = config_type(**raw[name])
+        cfg = cls(**raw)
         cfg.validate()
         return cfg
 
     @classmethod
     def from_file(cls, path: str | Path) -> Config:
-        # 1. Load the user-facing YAML settings.
-        base = OmegaConf.create(cls().to_file_dict())
-        loaded = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
-        if not isinstance(loaded, dict):
+        raw = OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+        if not isinstance(raw, dict):
             raise ValueError("configuration file must contain a mapping")
-
-        # 2. Check mappings before merging.
-        if "reward" in loaded:
-            reward_cfg = loaded["reward"]
-            if not isinstance(reward_cfg, dict):
-                raise ValueError("reward must be a mapping")
-            if "settings" in reward_cfg and not isinstance(reward_cfg["settings"], dict):
-                raise ValueError("reward.settings must be a mapping")
-        if "prior_guidance" in loaded and loaded["prior_guidance"] is not None:
-            prior_cfg = loaded["prior_guidance"]
-            if not isinstance(prior_cfg, dict):
-                raise ValueError("prior_guidance must be a mapping or null")
-
-        property_penalty = loaded.get("property_penalty")
-        if property_penalty is not None and not isinstance(property_penalty, dict):
-            raise ValueError("property_penalty must be a mapping")
-
-        # 3. Merge omitted defaults and validate the resolved configuration.
-        merged = OmegaConf.merge(base, loaded)
-        raw = OmegaConf.to_container(merged, resolve=True)
-        assert isinstance(raw, dict)
         return cls.from_dict(raw)

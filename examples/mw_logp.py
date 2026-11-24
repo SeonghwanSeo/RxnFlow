@@ -5,32 +5,30 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
 import torch
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 
-from rxnflow import Config, RewardFunction, RxnFlowTrainer
+from rxnflow import Config, RxnFlowTrainer
+from rxnflow.reward import RewardFunction
 
 
-class MWLogPReward(RewardFunction):
-    objectives = ("mw", "logp")
+class MWReward(RewardFunction):
+    name = "mw"
 
-    def __init__(self, mw_scale: float = 300.0, logp_scale: float = 1.0):
-        self.mw_scale = mw_scale
-        self.logp_scale = logp_scale
+    def __init__(self, scale: float = 300.0):
+        self.scale = scale
 
-    def score(self, smiles_list: list[str]) -> np.ndarray:
-        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
-        # Convert both properties to positive rewards: lower MW and higher logP.
-        rewards = [
-            [
-                1 / (1 + Descriptors.ExactMolWt(mol) / self.mw_scale),
-                1 / (1 + np.exp(-Descriptors.MolLogP(mol) / self.logp_scale)),
-            ]
-            for mol in mols
-        ]
-        return np.array(rewards, dtype=np.float32).reshape(-1, 2)
+    def score(self, smiles: str, cond=None) -> float:
+        mw = Descriptors.ExactMolWt(Chem.MolFromSmiles(smiles))
+        return -mw / self.scale
+
+
+class LogPReward(RewardFunction):
+    name = "logp"
+
+    def score(self, smiles: str, cond=None) -> float:
+        return Descriptors.MolLogP(Chem.MolFromSmiles(smiles))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -52,10 +50,13 @@ def main(argv: list[str] | None = None) -> None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     config = Config.from_file(args.config)
-    reward = MWLogPReward(**config.reward.settings)
+    rewards = [
+        MWReward(scale=100.0),
+        LogPReward(),
+    ]
     trainer = RxnFlowTrainer(
         config,
-        reward,
+        rewards,
         seed=args.seed,
         output_dir=args.output_dir,
         device=device,

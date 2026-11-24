@@ -70,9 +70,11 @@ class ReplayBuffer:
             if self.sample_priority == "uniform":
                 indices = rng.choice(size, count, replace=False)
             else:
-                weights = np.asarray([t["reward"] for t in self._items]).clip(min=1e-8)
-                p = weights / weights.sum()
-                indices = rng.choice(size, count, replace=False, p=p)
+                # Sample with Gumbel-max trick to avoid computing softmax
+                # p(x) \propto exp(r(x))
+                rewards = np.asarray([t["reward"] for t in self._items])
+                priorities = (rewards - rewards.max()) + rng.gumbel(size=size)
+                indices = np.argsort(-priorities)[:count]
 
         return [Trajectory.from_dict(self._items[i]) for i in indices]
 

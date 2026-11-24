@@ -56,35 +56,45 @@ Set `env_dir` in your training configuration to the prepared directory. See [env
 
 ### Train a GFlowNet
 
+Start with an [example configuration](configs/examples/README.md) for your objective, or [define a custom reward](docs/rewards.md).
+Each example below pairs a Python script that defines the reward with a YAML file that controls training.
+
 **Single-objective optimization**
 
-Train with QED as the reward:
+The [QED example](examples/qed.py) trains a model to generate molecules with high QED.
+A higher `beta` makes the model favor high-QED molecules more strongly.
+Training with [beta conditioning](configs/examples/qed_beta.yaml) lets you adjust that preference when generating molecules.
 
 ```bash
-python examples/qed.py --config configs/qed.yaml --steps 1000 --output-dir runs/qed
-```
+# Fixed beta
+python examples/qed.py --config configs/examples/qed.yaml --steps 2000 --output-dir runs/qed
 
-See [custom rewards](docs/rewards.md) and [training](docs/training.md) for details on defining rewards and configuring training.
+# Beta conditioning
+python examples/qed.py --config configs/examples/qed_beta.yaml --steps 2000 --output-dir runs/qed_beta
+```
 
 **Multi-objective optimization**
 
-Minimize molecular weight and maximize logP with beta and preference conditioning:
+The [MW/logP example](examples/mw_logp.py) favors molecules with lower MW and higher logP.
+The preference weights determine how much each objective contributes to the reward.
+Training with [preference conditioning](configs/examples/mw_logp_pref.yaml) lets you choose whether to emphasize lower MW or higher logP when generating molecules.
 
 ```bash
-python examples/mw_logp.py --config configs/mw_logp.yaml --steps 3000 --output-dir runs/mw_logp
-```
+# Equal objective weights: R = 0.5 * R_mw + 0.5 * R_logp
+python examples/mw_logp.py --config configs/examples/mw_logp.yaml --steps 2000 --output-dir runs/mw_logp
 
-See [reward implementation](docs/rewards.md#define-multiple-objectives) and [conditioning](docs/conditioning.md) for details.
+# Preference conditioning: R = w_1 * R_mw + w_2 * R_logp, where w_1 + w_2 = 1
+python examples/mw_logp.py --config configs/examples/mw_logp_pref.yaml --steps 2000 --output-dir runs/mw_logp_pref
+```
 
 **Conditional generation**
 
-Train with target TPSA values as external conditions:
+The [TPSA script](examples/tpsa_cond.py) trains the model to generate molecules near a target TPSA.
+The [external conditions guide](docs/conditioning.md#external-conditions) shows how to specify a target when sampling.
 
 ```bash
-python examples/tpsa_cond.py --config configs/tpsa_cond.yaml --steps 1000 --output-dir runs/tpsa_cond
+python examples/tpsa_cond.py --config configs/examples/tpsa_cond.yaml --steps 2000 --output-dir runs/tpsa_cond
 ```
-
-See [external conditions](docs/conditioning.md#external-conditions) for defining a conditioning module and sampling with explicit targets.
 
 ### Sampling
 

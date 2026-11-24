@@ -241,7 +241,7 @@ class Trajectory:
             prior_score=data["prior_score"],
             prior_log_prob=data["prior_log_prob"],
             preference=list(data["preference"]),
-            cond=deepcopy(data.get("cond")),
+            cond=deepcopy(data["cond"]),
             objective_rewards=list(data["objective_rewards"]),
             property_reward=data["property_reward"],
             property_violation=data["property_violation"],

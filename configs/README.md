@@ -1,6 +1,5 @@
 # Configuration reference
 
-Defaults apply when settings are omitted.
 Start from the [template](template.yaml); see the [training guide](../docs/training.md) for output directory, device, seed and update count.
 
 ## Synthesis environment
@@ -9,17 +8,16 @@ Start from the [template](template.yaml); see the [training guide](../docs/train
 | --- | --- | --- |
 | `env_dir` | Required | Prepared synthesis environment directory. |
 
-## Reward
+## GFlowNet parameters
 
-See [custom rewards](../docs/rewards.md) for implementation and [conditioning](../docs/conditioning.md) for distributions, objective weights and sampling options.
+Use `gflownet` to control how the objective scores shape the sampling distribution. See [conditioning](../docs/conditioning.md).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `reward.beta` | `"32"` | Reward exponent: a fixed value, `uniform(lower,upper)` or `log_uniform(lower,upper)`. |
-| `reward.moo_scalarization` | `mul` | Combine objectives by weighted product (`mul`) or weighted sum (`sum`). |
-| `reward.moo_preference` | `"none"` | Objective weights: `none`, `fixed(...)`, `dirichlet` or `dirichlet(...)`. |
-| `reward.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
-| `reward.settings` | `{}` | Constructor arguments for your reward class. |
+| `gflownet.beta` | `64` | Larger values concentrate sampling on higher task rewards. Accepts a fixed number, `uniform(lower,upper)` or `log_uniform(lower,upper)`. |
+| `gflownet.moo_scalarization` | `sum` | Combine raw objective scores with a weighted arithmetic mean (`sum`) or weighted geometric mean (`mul`). |
+| `gflownet.moo_preference` | `"none"` | Objective weights: `none`, `fixed(...)`, `dirichlet` or `dirichlet(...)`. |
+| `gflownet.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
 
 `dirichlet` defaults to concentration `1.5`.
 Use `dirichlet(alpha)` for a shared concentration or `dirichlet(alpha1,alpha2,...)` for per-objective concentrations.
@@ -32,7 +30,7 @@ See [chemical prior guidance](../docs/prior_guidance.md).
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `prior_guidance.model_name_or_path` | `chembl` | Model alias, model directory or Hub repository ID. |
-| `prior_guidance.beta` | `"uniform(0,1)"` | Coefficient of teacher sequence log p(x), in the same format as `reward.beta`. |
+| `prior_guidance.strength` | `"uniform(0,1)"` | Larger values favor molecules with higher prior probability. Accepts the same formats as `gflownet.beta`. |
 | `prior_guidance.batch_size` | `16` | Scoring batch size. |
 
 ## External conditioning
@@ -61,7 +59,7 @@ Example:
 ## Property penalty
 
 Set property upper bounds to guide sampling and reduce rewards for molecules that exceed them.
-Omitted properties are unconstrained.
+The template uses `property_penalty: {}`, so only the generation settings apply until you add property bounds.
 See [property rewards](../docs/conditioning.md#property-rewards) for details.
 
 | Setting | Default | Meaning |
@@ -106,17 +104,17 @@ MLP layer counts include the output linear layer.
 | `training.checkpoint_every` | `1000` | Checkpoint interval in updates; the final state is also saved. |
 | `training.num_online` | `64` | New trajectories per update. |
 | `training.num_replay` | `64` | Stored trajectories reused per update; `0` disables reuse. |
-| `training.ema_decay` | `0.99` | EMA coefficient for the sampling model; `0` copies current weights. |
+| `training.ema_decay` | `0.98` | EMA coefficient for the sampling model; smaller is more exploitative. |
 | `training.random_action_prob` | `0.05` | Exploration-action probability during online training. |
-| `training.replay_capacity` | `100000` | FIFO replay capacity; `0` disables storage. |
+| `training.replay_capacity` | `64000` | FIFO replay buffer capacity; `0` disables storage. |
 | `training.num_replay_insert` | `null` | Maximum insertions per update; `null` keeps all, `0` keeps none. |
-| `training.replay_insert_priority` | `uniform` | Limited insertion selection: random (`uniform`) or highest reward (`reward`). |
-| `training.replay_sample_priority` | `uniform` | Sampling strategy: random (`uniform`) or weighted sampling by reward (`reward`). |
+| `training.replay_insert_priority` | `reward` | Limited insertion selection: random (`uniform`) or highest reward (`reward`). |
+| `training.replay_sample_priority` | `reward` | Draw uniformly or weighted by reward. |
 | `training.learning_rate` | `1e-4` | Adam learning rate for policy parameters. |
 | `training.learning_rate_logZ` | `1e-2` | Adam learning rate for the logZ head. |
 | `training.lr_decay_steps` | `5000` | Updates over which both learning rates halve. |
 | `training.weight_decay` | `1e-8` | Adam weight decay. |
 | `training.grad_clip` | `100.0` | Global L2 gradient clipping threshold for policy parameters, excluding the logZ head. |
-| `training.reward_floor` | `1e-5` | Reward lower bound before taking logarithms. |
+| `training.reward_floor` | `1e-5` | Lower bound on the property multiplier before taking its logarithm. |
 | `training.loss_fn` | `huber` | TB loss: `mse`, `mae`, or `huber` (delta=1). |
 | `training.backward_synthon_penalty` | `100.0` | Backward-route penalty per additional synthon; values above `1` favor fewer synthons. |

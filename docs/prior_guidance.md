@@ -7,28 +7,31 @@ Prior guidance shifts the sampling distribution toward the chemical space learne
 Set `prior_guidance` in your training configuration.
 
 ```yaml
+gflownet:
+  beta: 32
+
 prior_guidance:
   model_name_or_path: chembl
-  beta: "uniform(0,1)" # or "0.5" for a fixed value
+  strength: "uniform(0,1)" # or 0.5 for fixed guidance strength
 ```
 
-See the [QED example configuration](../configs/qed_prior.yaml).
+See the [QED example configuration](../configs/examples/qed_prior.yaml).
 
-With prior guidance enabled, the GFlowNet reward combines the task reward, the teacher log probability, and the property penalty.
+Increasing `gflownet.beta` favors molecules with higher task rewards. Increasing `prior_guidance.strength` favors molecules with higher sequence probability under the prior. Setting either value to zero removes that factor from the target. The property penalty applies independently.
 
 ```text
-R_gfn(x) = R_task(x)^beta * p_prior(x)^prior_beta * property_penalty
+log p(x) = beta * R_task(x) + prior_strength * log p_prior(x) + log(property_penalty) - log Z
 ```
 
 The optional normalized score is a human-readable representation:
 
 ```text
-s_prior = clip(1 + log p(x) / 100, 0, 1)
+s_prior = clip(1 + log p_prior(x) / 100, 0, 1)
 ```
 
 ## Adjust prior guidance strength
 
-If you train with a range of prior beta values, use `--prior-beta` to select a value within that range when sampling.
+If you train with a range of guidance strengths, use `--prior-beta` to select a value within that range when sampling.
 
 ```bash
 python scripts/sample.py \

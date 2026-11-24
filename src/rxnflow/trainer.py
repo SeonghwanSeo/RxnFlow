@@ -25,7 +25,7 @@ from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy
 from rxnflow.gflownet.property_penalty import compute_property_rewards
 from rxnflow.gflownet.replay import ReplayBuffer
-from rxnflow.gflownet.trajectory_balance import TrajectoryBalance, scalarize_log_rewards
+from rxnflow.gflownet.trajectory_balance import TrajectoryBalance, scalarize_rewards
 from rxnflow.models import RxnFlowModel
 from rxnflow.prior_guide import PriorGuidance
 from rxnflow.reward import RewardFunction
@@ -57,7 +57,7 @@ class RxnFlowTrainer:
     def __init__(
         self,
         config: Config,
-        reward: RewardFunction,
+        reward: RewardFunction | list[RewardFunction],
         *,
         seed: int = 1,
         output_dir: str | Path,
@@ -65,24 +65,38 @@ class RxnFlowTrainer:
         num_workers: int = 4,
         conditioning: ConditioningModule | None = None,
     ):
-        # Validate the configuration
+        # Set up the configuration
         config.validate()
+        self.config: Config = config
+        self.num_workers: int = num_workers
         if num_workers < 0:
             raise ValueError("num_workers must be non-negative")
-        self.config: Config = config
-        self.num_workers = num_workers
+
+        # Set up the reward functions and objectives
+        self.rewards: list[RewardFunction] = (
+            list(reward) if isinstance(reward, list) else [reward]
+        )
+        if not self.rewards:
+            raise ValueError("supply at least one named reward")
+        self.objectives: tuple[str, ...] = tuple(reward.name for reward in self.rewards)
+        if not all(isinstance(name, str) and name.strip() for name in self.objectives):
+            raise ValueError("each reward class must define a nonempty string name")
+        if len(set(self.objectives)) != len(self.objectives):
+            raise ValueError("supplied reward names must be unique")
+        self.num_objectives: int = len(self.objectives)
 
         # Set up the output directory
-        self.output_dir = Path(output_dir)
+        self.output_dir: Path = Path(output_dir)
         if self.output_dir.exists():
             raise FileExistsError(f"output directory already exists: {self.output_dir}")
         self.output_dir.mkdir(parents=True)
         self.config.save(self.output_dir / "config.yaml")
-        self.checkpoint_dir = self.output_dir / "checkpoints"
+        self.checkpoint_dir: Path = self.output_dir / "checkpoints"
         self.checkpoint_dir.mkdir()
-        self.sample_path = self.output_dir / "sample.jsonl"
-        self.log_file = self.output_dir / "training.log"
+        self.sample_path: Path = self.output_dir / "sample.jsonl"
+        self.log_file: Path = self.output_dir / "training.log"
         init_logger(self.log_file)
+        logger.info("Objectives: %s", ", ".join(self.objectives))
 
         self.device: torch.device = torch.device(device)
         self.seed: int = seed
@@ -106,16 +120,8 @@ class RxnFlowTrainer:
         )
         logger.info("Output directory: %s", self.output_dir)
 
-        # Reward function and objectives
-        self.reward: RewardFunction = reward
-        self.objectives: tuple[str, ...] = tuple(reward.objectives)
-        self.num_objectives: int = len(self.objectives)
-        if not self.objectives or len(set(self.objectives)) != len(self.objectives):
-            raise ValueError("reward.objectives must contain unique objective names")
-        logger.info("Objectives: %s", ", ".join(self.objectives))
-
-        self.conditioning = conditioning
-        self.prior_guidance = (
+        self.conditioning: ConditioningModule | None = conditioning
+        self.prior_guidance: PriorGuidance | None = (
             PriorGuidance(config.prior_guidance, self.device)
             if config.prior_guidance is not None
             and config.prior_guidance.model_name_or_path is not None
@@ -217,25 +223,24 @@ class RxnFlowTrainer:
 
         self.tb = TrajectoryBalance(
             self.policy,
-            cfg.reward.moo_scalarization,
             cfg.training.reward_floor,
             loss_fn=cfg.training.loss_fn,
+            moo_scalarization=cfg.gflownet.moo_scalarization,
         )
         self.step = 0
         self.condition_sampler: ConditionSampler = ConditionSampler(
-            cfg.reward.beta,
-            cfg.reward.moo_preference,
+            cfg.gflownet.beta,
+            cfg.gflownet.moo_preference,
             self.num_objectives,
-            cfg.reward.moo_scalarization,
             prior_beta=(
-                cfg.prior_guidance.beta
+                cfg.prior_guidance.strength
                 if cfg.prior_guidance is not None
                 else ("fixed", [0.0])
             ),
         )
 
-    def _reward_class_name(self) -> str:
-        return f"{type(self.reward).__module__}.{type(self.reward).__qualname__}"
+    def _reward_class_names(self) -> list[str]:
+        return [f"{type(r).__module__}.{type(r).__qualname__}" for r in self.rewards]
 
     def save_checkpoint(self, path: str | Path | None = None) -> Path:
         """Save model, optimizer, replay, and RNG state for an exact restart."""
@@ -273,7 +278,7 @@ class RxnFlowTrainer:
                 ),
                 "condition_dim": self.model.condition_dim,
                 "objectives": self.objectives,
-                "reward_class": self._reward_class_name(),
+                "reward_classes": self._reward_class_names(),
             },
             temporary,
         )
@@ -295,8 +300,7 @@ class RxnFlowTrainer:
         check_model_compatibility(checkpoint["rxnflow_version"])
         saved_environment = checkpoint["environment"]
         check_library_compatibility(saved_environment["rxnflow_version"])
-        saved_config = checkpoint.get("config")
-        if saved_config != self.config.to_dict():
+        if checkpoint["config"] != self.config.to_dict():
             raise ValueError(
                 "restart configuration differs from the resolved checkpoint configuration"
             )
@@ -309,7 +313,7 @@ class RxnFlowTrainer:
             raise ValueError(
                 "prepared environment differs from the checkpoint environment"
             )
-        if checkpoint.get("reward_class") != self._reward_class_name():
+        if checkpoint["reward_classes"] != self._reward_class_names():
             raise ValueError(
                 "reward implementation differs from the checkpoint reward class"
             )
@@ -341,10 +345,6 @@ class RxnFlowTrainer:
         smiles_list = [
             value.final_smiles if value.valid else None for value in trajectories
         ]
-        cond_list = (
-            [t.cond for t in trajectories] if self.conditioning is not None else None
-        )
-        values = self.reward.run(smiles_list, cond_list)
         prior_values = (
             self.prior_guidance.run(smiles_list)[:, 0]
             if self.prior_guidance is not None
@@ -357,35 +357,41 @@ class RxnFlowTrainer:
                 if prior is not None
                 else None
             )
+
+        cond_list = (
+            [t.cond for t in trajectories] if self.conditioning is not None else None
+        )
+        scores = np.stack(
+            [reward.run(smiles_list, cond_list) for reward in self.rewards], axis=1
+        ).astype(np.float64)
+        reward_floor = self.config.training.reward_floor
         property_rewards, violations = compute_property_rewards(
             smiles_list,
             self.env.property_limits,
             self.env.max_atoms,
-            self.config.reward.property_penalty_ratio,
+            self.config.gflownet.property_penalty_ratio,
         )
-        reward_floor = self.config.training.reward_floor
         preference = np.array([t.preference for t in trajectories], dtype=np.float64)
-        log_rewards = scalarize_log_rewards(
-            values.astype(np.float64).clip(min=reward_floor),
-            moo_scalarization=self.config.reward.moo_scalarization,
-            moo_preference=preference,
+        rewards = scalarize_rewards(
+            scores,
+            preference,
+            self.config.gflownet.moo_scalarization,
+            valid=np.array([t.valid for t in trajectories], dtype=bool),
         )
-        log_rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
-        # reward is a task/property diagnostic only; TB uses prior_log_prob.
-        # Keep log likelihood out of exp and replay priority arithmetic.
-        scalar_rewards = np.exp(log_rewards).tolist()
+        rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
+        # Replay priority uses the untempered task and property terms.
         for trajectory, objectives, property_reward, violation, scalar in zip(
             trajectories,
-            values.tolist(),
+            scores.tolist(),
             property_rewards.tolist(),
             violations.tolist(),
-            scalar_rewards,
+            rewards.tolist(),
             strict=True,
         ):
             trajectory.objective_rewards = objectives
             trajectory.property_reward = property_reward
             trajectory.property_violation = violation
-            trajectory.reward = scalar if trajectory.valid else 0.0
+            trajectory.reward = scalar
 
     @torch.no_grad()
     def _update_ema(self) -> None:

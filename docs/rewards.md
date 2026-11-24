@@ -1,156 +1,107 @@
-# Custom rewards
+# Reward functions
 
-Implement `RewardFunction.score(smiles_list, cond_list=None)` to return one score per objective for each molecule.
-`cond_list` contains raw external condition dictionaries (`dict[str, Any]`) in the same order as `smiles_list`; condition-independent rewards can ignore it:
+Implement either method on `RewardFunction`:
+
+| Method | When to use it | Return value |
+| --- | --- | --- |
+| `score(smiles, cond=None)` | Compute a descriptor or other score one molecule at a time. The default `score_list` calls this method for each molecule and its condition. | One finite `float`. |
+| `score_list(smiles_list, cond_list=None)` | Evaluate several molecules together, for example in a model inference batch. | A `list[float]` with one finite score per input, in input order. |
+
+Call the reward as `reward(smiles_list, cond_list=conditions)` with either implementation. A condition is a dictionary for one molecule. In a batch, `cond_list[i]` belongs to `smiles_list[i]`, including when the same SMILES appears with different targets.
+
+Higher scores are more favorable. With one objective, no prior and unit property penalties, the target is `p(x) ∝ exp(beta * R(x))`. The [QED example](../examples/qed.py) implements single-molecule scoring:
 
 ```python
-from typing import Any
-
-import numpy as np
 from rdkit import Chem
 from rdkit.Chem import QED
 from rxnflow import RewardFunction
 
 
-class MyReward(RewardFunction):
-    objectives = ("qed",)
+class QEDReward(RewardFunction):
+    name = "qed"
 
-    def score(
-        self, smiles_list: list[str], cond_list: list[dict[str, Any]] | None = None
-    ) -> np.ndarray:
-        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
-        qeds = [QED.qed(m) for m in mols]
-        rewards = np.array(qeds, dtype=np.float32).reshape(-1, 1)
-        return rewards  # [batch, 1]
+    # example of `score()`
+    def score(self, smiles: str, cond=None) -> float:
+        return QED.qed(Chem.MolFromSmiles(smiles))
+    # example of `score_list()`
+    def score_list(self, smiles_list: list[str], cond_list=None) -> list[float]:
+        return [QED.qed(Chem.MolFromSmiles(s)) for s in smiles_list]
 ```
-
-- Return raw, finite, non-negative scores as a float32 array of shape `[batch, num_objectives]`.
-  Higher scores should be better.
-- Preserve input order and the column order in `objectives`.
-  RxnFlow applies preference weights and [terminal property penalties](conditioning.md#property-rewards).
-- Call `reward(smiles_list, cond_list=conditions)` or `reward.run(...)`.
-  Failed molecules (`None`) receive zero scores.
-- Without conditions, duplicate and cached SMILES are scored once.
-  With conditions, every valid pair is scored without caching or deduplication.
 
 ## Pass reward settings
 
-Use `reward.settings` to configure your reward's constructor.
+Pass constructor arguments when creating the reward in Python.
 For example, reward molecules whose molecular weight is close to a target:
 
 ```python
-from typing import Any
-
-import numpy as np
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rxnflow import RewardFunction
 
 
-class MolecularWeightReward(RewardFunction):
-    objectives = ("mw_target",)
+class MWReward(RewardFunction):
+    name = "mw"
 
-    def __init__(self, target_mw: float):
-        self.target_mw = target_mw
+    def __init__(self, target: float, scale: float = 100.0):
+        self.target = target
+        self.scale = scale
 
-    def score(
-        self, smiles_list: list[str], cond_list: list[dict[str, Any]] | None = None
-    ) -> np.ndarray:
-        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
-        mws = [Descriptors.ExactMolWt(m) for m in mols]
-        mws = np.array(mws)
-        rewards = 1 / (1 + np.abs(mws - self.target_mw))
-        return rewards.astype(np.float32).reshape(-1, 1)  # [batch, 1]
+    def score(self, smiles: str, cond=None) -> float:
+        mw = Descriptors.ExactMolWt(Chem.MolFromSmiles(smiles))
+        return -abs(mw - self.target) / self.scale
 ```
 
-Set the target molecular weight in your training YAML, as in [mw.yaml](../configs/mw.yaml):
-
-```yaml
-reward:
-  settings:
-    target_mw: 300.0
-```
-
-Pass these settings when constructing the reward in your training script:
+For a target of 300 Da, pass this instance as the trainer’s `reward` argument:
 
 ```python
-from rxnflow import Config
-
-config = Config.from_file("configs/mw.yaml")
-reward = MolecularWeightReward(**config.reward.settings)
+reward = MWReward(target=300.0, scale=100.0)
 ```
 
-Setting names must match the constructor arguments.
 Initialize any scoring model or docking setup in the constructor.
 
 ## Use a target for each molecule
 
-Read each target from `cond_list` when it varies between molecules.
-For example, the [TPSA reward](../examples/tpsa_cond.py) compares each molecule with its supplied target:
+Pass one condition dictionary per SMILES. The reward receives each molecule's target in `cond` and scores its absolute TPSA error in units of 100 Å².
 
 ```python
-from examples.tpsa_cond import TPSAReward
-
-reward = TPSAReward()
-scores = reward(
-    ["CCO", "CCO", None],
-    cond_list=[{"tpsa": 40.0}, {"tpsa": 80.0}, {"tpsa": 40.0}],
-)
-```
-
-The two ethanol entries use different targets; the failed entry receives zero.
-See [external conditions](conditioning.md#external-conditions) to train and sample with these targets.
-
-## Define multiple objectives
-
-For multi-objective optimization, return one column per objective instead of combining the scores inside `score()`.
-For example, minimize molecular weight and maximize logP:
-
-```python
-from typing import Any
-
-import numpy as np
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from rxnflow import RewardFunction
 
 
-class MWLogPReward(RewardFunction):
-    objectives = ("mw", "logp")
+class CondTPSAReward(RewardFunction):
+    name = "tpsa"
 
-    def __init__(self, mw_scale: float = 300.0, logp_scale: float = 1.0):
-        self.mw_scale = mw_scale
-        self.logp_scale = logp_scale
+    def score(self, smiles: str, cond=None) -> float:
+        assert cond is not None
+        tpsa = Descriptors.TPSA(Chem.MolFromSmiles(smiles))
+        return -abs(tpsa - cond["tpsa"]) / 100.0
 
-    def score(
-        self, smiles_list: list[str], cond_list: list[dict[str, Any]] | None = None
-    ) -> np.ndarray:
-        # Convert both properties to positive rewards: lower MW and higher logP.
-        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
-        mws = np.array([Descriptors.ExactMolWt(m) for m in mols])
-        logps = np.array([Descriptors.MolLogP(m) for m in mols])
-        mw_rewards = 1 / (1 + mws / self.mw_scale)
-        logp_rewards = 1 / (1 + np.exp(-logps / self.logp_scale))
-        rewards = np.stack([mw_rewards, logp_rewards], axis=1)
-        return rewards.astype(np.float32)  # [batch, 2]
+
+reward = CondTPSAReward()
+scores = reward(
+    ["CCO", "CCO"],
+    cond_list=[{"tpsa": 40.0}, {"tpsa": 80.0}],
+)
 ```
 
-The result has shape `[batch, 2]`, with MW rewards first and logP rewards second, matching `objectives`.
-Positive `mw_scale` and `logp_scale` control each score's sensitivity.
+The result contains two scores, one for each ethanol–target pair.
+See [external conditions](conditioning.md#external-conditions) to train and sample with these targets.
 
-```yaml
-reward:
-  beta: "uniform(1,64)"
-  moo_scalarization: mul
-  moo_preference: "dirichlet(1.5)"
+## Define multiple objectives
+
+Give each reward class a unique, nonempty string `name` and pass one instance or a list of instances as `reward`. For multiple rewards, list order determines the order of preference weights and logged objective scores.
+
+```python
+from examples.mw_logp import MWReward, LogPReward
+
+rewards = [MWReward(scale=100.0), LogPReward()]
 ```
 
-Construct `MWLogPReward()` in your training script.
-The [mw_logp.yaml](../configs/mw_logp.yaml) configuration varies beta and objective preferences.
-This is a descriptor optimization example; the extent of the trade-off depends on the available molecules.
+With equal weights and arithmetic scalarization, a reduction of 100 Da contributes as much as an increase of one logP unit. See the [MW/logP config](../configs/examples/mw_logp.yaml).
 
 ## Training and conditioning
 
-- [Reward conditioning](conditioning.md): combine objectives, choose preference distributions and set the reward exponent.
+- [Reward conditioning](conditioning.md): combine objectives, choose preference distributions and set task beta.
 - [Training guide](training.md): train, resume and sample with your reward.
 - [Chemical prior guidance](prior_guidance.md)

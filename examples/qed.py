@@ -1,6 +1,6 @@
 """Local QED reward and training example.
 
-Run: python examples/qed.py --config configs/qed.yaml --steps 1000.
+Run: python examples/qed.py --config configs/examples/qed.yaml --steps 1000.
 """
 
 from __future__ import annotations
@@ -8,21 +8,19 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
 import torch
 from rdkit import Chem
 from rdkit.Chem import QED
 
-from rxnflow import Config, RewardFunction, RxnFlowTrainer
+from rxnflow import Config, RxnFlowTrainer
+from rxnflow.reward import RewardFunction
 
 
 class QEDReward(RewardFunction):
-    objectives = ("qed",)
+    name = "qed"
 
-    def score(self, smiles_list: list[str]) -> np.ndarray:
-        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
-        qeds = [QED.qed(mol) for mol in mols]
-        return np.array(qeds, dtype=np.float32).reshape(-1, 1)
+    def score(self, smiles: str, cond=None) -> float:
+        return QED.qed(Chem.MolFromSmiles(smiles))
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -44,10 +42,10 @@ def main(argv: list[str] | None = None) -> None:
         else ("cuda" if torch.cuda.is_available() else "cpu")
     )
     config = Config.from_file(args.config)
-    reward = QEDReward(**config.reward.settings)
+    reward = QEDReward()
     trainer = RxnFlowTrainer(
         config,
-        reward,
+        reward=reward,
         seed=args.seed,
         output_dir=args.output_dir,
         device=device,

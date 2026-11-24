@@ -1,0 +1,13 @@
+# Minimal QED training configuration with beta conditioning
+
+# increase subsampling ratio since example library is small (5k)
+env_dir: ./data/envs/example_5k/
+subsampling:
+  sampling_ratio: 0.2
+
+gflownet:
+  # beta conditioning
+  beta: "uniform(1,64)"
+
+property_penalty:
+  mw: 500

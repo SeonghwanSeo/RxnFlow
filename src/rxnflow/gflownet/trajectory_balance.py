@@ -1,6 +1,5 @@
 """Conditional trajectory-balance loss and reward scalarization."""
 
-import math
 from typing import Literal
 
 import numpy as np
@@ -8,20 +7,23 @@ import torch
 
 from rxnflow.core.types import Trajectory
 from rxnflow.gflownet.policy import RxnFlowPolicy
+from rxnflow.reward import INVALID_REWARD
 
 
-def scalarize_log_rewards(
-    values: np.ndarray,
-    moo_scalarization: str,
-    moo_preference: np.ndarray,
+def scalarize_rewards(
+    scores: np.ndarray,
+    preference: np.ndarray,
+    method: Literal["sum", "mul"],
+    valid: np.ndarray,
 ) -> np.ndarray:
-    """Return scalarized log rewards from positive scores and normalized weights."""
-    assert moo_scalarization in ("sum", "mul"), "moo_scalarization must be 'sum' or 'mul'"
-    if moo_scalarization == "mul":
-        log_rewards = (np.log(values) * moo_preference).sum(-1)
-    else:
-        log_rewards = np.log((values * moo_preference).sum(-1))
-    return log_rewards
+    """Compute the arithmetic or geometric mean of finite component scores."""
+    weights = preference / preference.sum(axis=-1, keepdims=True)
+    if method == "sum":
+        return (weights * scores).sum(axis=-1)
+    assert method == "mul"
+    # REINVENT4 floors each component before taking the weighted geometric mean.
+    product = np.exp((weights * np.log(scores.clip(min=1e-8))).sum(axis=-1))
+    return np.where(valid, product, INVALID_REWARD)
 
 
 class TrajectoryBalance:
@@ -30,16 +32,16 @@ class TrajectoryBalance:
     def __init__(
         self,
         policy: RxnFlowPolicy,
-        moo_scalarization: Literal["sum", "mul"],
         reward_floor: float,
         loss_fn: Literal["mse", "mae", "huber"] = "mse",
+        *,
+        moo_scalarization: Literal["sum", "mul"] = "sum",
     ) -> None:
         if loss_fn not in ("mse", "mae", "huber"):
             raise ValueError("loss_fn must be mse, mae, or huber")
         self.policy: RxnFlowPolicy = policy
-        self.moo_scalarization: Literal["sum", "mul"] = moo_scalarization
+        self.moo_scalarization = moo_scalarization
         self.eps: float = reward_floor
-        self.log_eps = math.log(reward_floor)
         self.loss_fn: Literal["mse", "mae", "huber"] = loss_fn
 
     def compute_batch_losses(
@@ -63,10 +65,10 @@ class TrajectoryBalance:
         preference = np.array([t.preference for t in trajectories], dtype=np.float64)
         objective_rewards = np.array(
             [t.objective_rewards for t in trajectories], dtype=np.float64
-        ).clip(min=self.eps)
-        # scalarize and scale rewards for GFlowNet training
-        log_R = scalarize_log_rewards(
-            objective_rewards, self.moo_scalarization, preference
+        )
+        valid = np.array([t.valid for t in trajectories], dtype=bool)
+        task_reward = scalarize_rewards(
+            objective_rewards, preference, self.moo_scalarization, valid
         )
 
         # 2. Compute the prior guidance
@@ -83,7 +85,7 @@ class TrajectoryBalance:
         log_property_penalty = np.log(property_penalty)
 
         # 4. Compute the scaled log rewards for TB loss
-        log_R_gfn = beta * log_R + prior_beta * log_p_prior + log_property_penalty
+        log_R_gfn = beta * task_reward + prior_beta * log_p_prior + log_property_penalty
 
         # Move to torch tensors
         to_tensor = lambda x: torch.as_tensor(x, dtype=torch.float32, device=device)  # noqa
@@ -148,9 +150,7 @@ class TrajectoryBalance:
         # "batch_entropy" is trajectory surprisal on this online+replay batch,
         # not categorical entropy or an unbiased on-policy entropy estimate.
         with torch.no_grad():
-            is_valid = torch.tensor(
-                [value.valid for value in trajectories], device=device
-            )
+            is_valid = torch.as_tensor(valid, device=device)
             info = {
                 "loss": loss.detach(),
                 "logZ": log_Z.mean(),

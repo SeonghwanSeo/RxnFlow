@@ -78,7 +78,6 @@ def split_smiles(
     """Deterministic row split of a preprocessed, deduplicated dataset."""
     validate_split_ratios(val_ratio, test_ratio)
     order = np.random.default_rng(seed).permutation(len(smiles))
-    # Preserve the original train suffix; partition only its held-out prefix.
     heldout_ratio = val_ratio + test_ratio
     n_holdout = round(len(smiles) * heldout_ratio)
     n_val = int(n_holdout * val_ratio / heldout_ratio) if heldout_ratio else 0
@@ -248,6 +247,7 @@ def restore_checkpoint(
     for key in (
         "input",
         "val_ratio",
+        "test_ratio",
         "batch_size",
         "accumulate_grad",
         "lr",
@@ -259,12 +259,6 @@ def restore_checkpoint(
             raise ValueError(f"Resume requires unchanged {key}")
     if checkpoint["epoch"] >= training_config["epochs"]:
         raise ValueError("epochs must exceed the completed checkpoint epoch")
-    if checkpoint["args"].get("val_input"):
-        raise ValueError(
-            "Cannot resume an external-validation checkpoint with internal splits"
-        )
-    if checkpoint["args"].get("test_ratio", 0.0) != training_config["test_ratio"]:
-        raise ValueError("Resume requires unchanged test_ratio")
     optimizer.load_state_dict(checkpoint["optimizer"])
     return (
         checkpoint["epoch"],

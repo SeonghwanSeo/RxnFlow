@@ -1,13 +1,12 @@
 # Complete RxnFlow configuration template. See configs/README.md for settings.
 env_dir: /path/to/prepared/environment
 
-# Reward configuration
-reward:
-  beta: "32" # scalar | uniform(lower,upper) | log_uniform(lower,upper)
-  moo_scalarization: mul # mul | sum
+# GFlowNet configuration
+gflownet:
+  beta: 64 # scalar | uniform(lower,upper) | log_uniform(lower,upper)
+  moo_scalarization: sum
   moo_preference: "none" # none | fixed(...) | dirichlet | dirichlet(...)
   property_penalty_ratio: 0.2
-  settings: {}
 
 # Chemical prior guidance
 prior_guidance: null
@@ -48,15 +47,15 @@ training:
   # training batch size
   num_online: 64
   num_replay: 64
-  # ema for sampler
-  ema_decay: 0.99
+  # ema for sampler.
+  ema_decay: 0.98
   # random action probability for exploration
   random_action_prob: 0.05
   # replay
-  replay_capacity: 100000
+  replay_capacity: 64000
   num_replay_insert: null # null(entire) | int
-  replay_insert_priority: uniform # uniform | reward
-  replay_sample_priority: uniform # uniform | reward
+  replay_insert_priority: reward # uniform | reward
+  replay_sample_priority: reward # uniform | reward
   # model training
   learning_rate: 0.0001
   learning_rate_logZ: 0.01

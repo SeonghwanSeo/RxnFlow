@@ -11,32 +11,25 @@ import torch
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 
-from rxnflow import ConditioningModule, Config, RewardFunction, RxnFlowTrainer
+from rxnflow import ConditioningModule, Config, RxnFlowTrainer
+from rxnflow.reward import RewardFunction
 
 
-class TPSAReward(RewardFunction):
+class CondTPSAReward(RewardFunction):
     """Reward function for TPSA conditioning."""
 
-    objectives = ("tpsa",)
+    name = "tpsa"
 
-    def score(
-        self,
-        smiles_list: list[str],
-        cond_list: list[dict[str, Any]] | None = None,
-    ) -> np.ndarray:
-        assert cond_list is not None, "TPSAReward requires conditions"
+    def __init__(self, scale: float = 100.0):
+        self.scale = scale
 
-        # Compute TPSA for each molecule
-        mols = [Chem.MolFromSmiles(smi) for smi in smiles_list]
-        sample_tpsa = np.array([Descriptors.TPSA(mol) for mol in mols], dtype=np.float32)
-
-        # Compute the difference between sample TPSA and target TPSA from conditions
-        target_tpsa = np.array([cond["tpsa"] for cond in cond_list], dtype=np.float32)
-        diff = np.abs(sample_tpsa - target_tpsa)
-
-        # Compute rewards
-        rewards = 1 / (1 + diff)
-        return rewards.reshape(-1, 1)
+    def score(self, smiles: str, cond: dict[str, Any] | None = None) -> float:
+        assert cond is not None, "CondTPSAReward requires conditions"
+        mol = Chem.MolFromSmiles(smiles)
+        tpsa = Descriptors.TPSA(mol)
+        target = cond["tpsa"]
+        diff = abs(tpsa - target)
+        return -diff / self.scale
 
 
 class TPSAConditioningModule(ConditioningModule):
@@ -82,16 +75,16 @@ def main(argv: list[str] | None = None) -> None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
     config = Config.from_file(args.config)
-    conditioning_module = TPSAConditioningModule(**config.conditioning)
-    reward = TPSAReward(**config.reward.settings)
+    conditioning = TPSAConditioningModule(**config.conditioning)
+    reward = CondTPSAReward(scale=100.0)
     trainer = RxnFlowTrainer(
         config,
-        reward,
+        reward=reward,
         seed=args.seed,
         output_dir=args.output_dir,
         device=device,
         num_workers=4,
-        conditioning=conditioning_module,
+        conditioning=conditioning,
     )
     checkpoint = trainer.run(
         args.steps, resume_from_checkpoint=args.resume_from_checkpoint

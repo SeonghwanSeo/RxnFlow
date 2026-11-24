@@ -441,7 +441,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             parser.error(f"Checkpoint not found: {resume_path}")
         checkpoint = torch.load(resume_path, map_location="cpu", weights_only=True)
         saved_args = checkpoint["args"]
-        saved_args.setdefault("model_dim", 256)
         run_dir = resume_path.parent.parent
         defaults = dict(saved_args)
         defaults.update(resume=str(resume_path), save_dir=str(run_dir))

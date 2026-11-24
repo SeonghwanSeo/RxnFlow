@@ -43,7 +43,6 @@ class ConditionSampler:
         beta: tuple[str, list[float]],
         preference: tuple[str, list[float]],
         num_objectives: int,
-        scalarization: str = "mul",
         *,
         prior_beta: tuple[str, list[float]],
     ):
@@ -72,19 +71,17 @@ class ConditionSampler:
         self.beta = beta
         self.preference = preference
         self.num_objectives = num_objectives
-        self.weight_sum = num_objectives if scalarization == "mul" else 1
 
     def sample(
         self, count: int, rng: np.random.Generator
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Sample task beta, preference, then prior beta in checkpoint RNG order."""
         beta = sample_distribution(self.beta, count, rng).squeeze(-1)
-        # Equal relative weights without conditioning; normalize for the reward below.
         preference = (
             torch.ones(count, self.num_objectives)
             if self.preference[0] == "none"
             else sample_distribution(self.preference, count, rng, self.num_objectives)
         )
-        preference = preference / preference.sum(-1, keepdim=True) * self.weight_sum
+        preference = preference / preference.sum(-1, keepdim=True)
         prior_beta = sample_distribution(self.prior_beta, count, rng).squeeze(-1)
         return beta, preference, prior_beta

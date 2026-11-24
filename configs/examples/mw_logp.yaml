@@ -1,0 +1,9 @@
+# Minimize MW and maximize logP.
+
+# increase subsampling ratio since example library is small (5k)
+env_dir: ./data/envs/example_5k/
+subsampling:
+  sampling_ratio: 0.2
+
+gflownet:
+  beta: 32

@@ -126,13 +126,13 @@ class RxnFlowSampler:
         conditioning module samples conditions for each batch.
         """
         # 1. Resolve requested conditions and reset sampling RNGs when seeded.
-        trained_beta = self.config.reward.beta
+        trained_beta = self.config.gflownet.beta
         if beta is None:
             beta = trained_beta
         else:
             beta = self.config.validate_sampling_beta(trained_beta, beta)
         trained_prior_beta = (
-            self.config.prior_guidance.beta
+            self.config.prior_guidance.strength
             if self.config.prior_guidance is not None
             else ("fixed", [0.0])
         )
@@ -143,19 +143,20 @@ class RxnFlowSampler:
                 trained_prior_beta, prior_beta
             )
         if preference is None:
-            preference = self.config.reward.moo_preference
+            preference = self.config.gflownet.moo_preference
         else:
             preference = parse_moo_preference(preference)
-        if (preference[0] == "none") != (self.config.reward.moo_preference[0] == "none"):
+        if (preference[0] == "none") != (
+            self.config.gflownet.moo_preference[0] == "none"
+        ):
             raise ValueError("preference 'none' must match the checkpoint setting")
         conditions = ConditionSampler(
             beta,
             preference,
             len(self.objectives),
-            self.config.reward.moo_scalarization,
             prior_beta=prior_beta,
         )
-        trained_preference = self.config.reward.moo_preference
+        trained_preference = self.config.gflownet.moo_preference
         if trained_preference[0] == "fixed":
             if preference[0] != "fixed":
                 raise ValueError("fixed-preference training requires fixed preference")
@@ -173,8 +174,8 @@ class RxnFlowSampler:
         if softmax_temperature <= 0:
             raise ValueError("softmax temperature must be positive")
         print(
-            "Training reward config: "
-            + json.dumps(self.config.to_file_dict()["reward"], sort_keys=True),
+            "Training GFlowNet config: "
+            + json.dumps(self.config.to_file_dict()["gflownet"], sort_keys=True),
             flush=True,
         )
         print(
@@ -186,7 +187,6 @@ class RxnFlowSampler:
                     "beta": beta,
                     "prior_beta": prior_beta,
                     "preference": preference,
-                    "moo_scalarization": self.config.reward.moo_scalarization,
                     "softmax_temperature": softmax_temperature,
                     "seed": seed,
                     "device": str(self.device),

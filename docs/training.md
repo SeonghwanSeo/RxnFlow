@@ -2,14 +2,18 @@
 
 ## Define your reward
 
-Define `MyReward` in `my_reward.py` with an `objectives` tuple and `score(smiles_list, cond_list=None)`.
+Define `MyReward` in `my_reward.py` with the class attribute `name = "my_reward"` and either `score(smiles, cond=None)` for one molecule or `score_list(smiles_list, cond_list=None)` for a batch.
 See [custom rewards](rewards.md) for the output format and examples.
 
 ## Train your model
 
 Write your own configuration file based on the [configuration template](../configs/template.yaml), and set `env_dir` to your [prepared synthesis environment](environment.md).
 Configure reward conditioning and training settings using the [configuration reference](../configs/README.md).
-`reward.settings` contains constructor arguments for your reward class.
+For the training script below, save this configuration as `configs/custom_rewards.yaml`.
+
+```yaml
+env_dir: ./data/envs/example_5k/
+```
 
 ```python
 from my_reward import MyReward
@@ -18,10 +22,10 @@ from rxnflow import Config, RxnFlowTrainer
 
 if __name__ == "__main__":
     config = Config.from_file("configs/custom_rewards.yaml")
-    reward = MyReward(**config.reward.settings)
+    reward = MyReward()
     trainer = RxnFlowTrainer(
         config,
-        reward,
+        reward=reward,
         output_dir="runs/custom_reward",
         device="cuda",
         num_workers=4,
@@ -36,14 +40,14 @@ Trainer's `num_workers` sets the number of retrosynthesis workers (default `4`);
 
 ## Resume training
 
-To resume an interrupted run, pass the previous run’s checkpoint path to `resume_from_checkpoint`.
+Construct the rewards with the same parameters and in the same order as the original run. The checkpoint records their names and classes. To resume an interrupted run, pass the previous run’s checkpoint path to `resume_from_checkpoint`.
 
 ```python
 config = Config.from_file("configs/custom_rewards.yaml")
-reward = MyReward(**config.reward.settings)
+reward = MyReward()
 trainer = RxnFlowTrainer(
     config,
-    reward,
+    reward=reward,
     output_dir="runs/custom_reward_resumed",
     device="cuda",
     num_workers=4,
@@ -80,8 +84,8 @@ Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewa
 The iteration index `step` starts at one; the `sample` index starts at zero within each step.
 
 - External condition entries appear as `cond_<key>` fields, for example `cond_target_mw`.
-- `objective_rewards` follows the reward class's `objectives` order.
-- `preference` stores effective weights: their sum is the number of objectives for `mul`, or one for `sum`.
+- `objective_rewards` contains per-objective scores and follows the order of the named rewards passed to the trainer.
+- `preference` stores the effective objective weights, which sum to one.
 - `traj` records the synthesis trajectory.
 
 ### Training log metrics
@@ -97,7 +101,7 @@ Generation metrics describe all new online attempts, including invalid ones; los
 | `num_online`, `num_replay` | Actual numbers of new and replay trajectories used in the update. |
 | `num_valid`, `num_invalid` | Valid and invalid online trajectory counts. |
 | `num_unique` | Number of distinct valid online SMILES. |
-| `reward` | Mean combined online reward before applying temperature scaling. |
+| `reward` | Mean online task score plus log property penalty, before beta and prior guidance. |
 | `objective_rewards` | Mean online scores by objective, keyed as `r_qed`, etc. |
 | `property_reward` | Mean online property penalty multiplier. |
 | `prior_score` | Mean normalized teacher score for display; null when guidance is disabled. |
@@ -116,7 +120,7 @@ Its `replay` value is the current buffer size, rather than the number used in th
 | `online_loss`, `replay_loss` | Mean loss within each source. |
 | `valid_losses`, `invalid_losses` | Mean loss within valid and invalid trajectories. |
 | `logZ` | Mean predicted log partition function for the batch conditions. |
-| `beta` | Mean reward exponent. |
+| `beta` | Mean coefficient of the raw task score. |
 | `prior_beta` | Mean prior guidance exponent. |
 | `logit_scale` | Mean learned logit scale for the batch conditions. |
 | `traj_log_p_F`, `traj_log_p_B` | Mean forward and backward log probabilities, summed over each trajectory. |
@@ -165,8 +169,8 @@ For external conditioning, pass your conditioning module to `RxnFlowSampler` thr
 
 - `--num-samples` sets the number of trajectory attempts.
   Invalid results are excluded without retrying, so fewer molecules may be returned.
-- Sampling prints the training reward configuration and the requested sampling settings before generating molecules.
-- `--env-dir` selects another compatible prepared environment.
+- Sampling prints the training GFlowNet configuration and the requested sampling settings before generating molecules.
+- `--env-dir` selects another prepared environment with matching synthesis definitions. Both the model and the prepared environment must have been created with the exact installed RxnFlow version.
   Its reaction, synthon and exclusion definitions must match training; BB identities and library sizes may differ.
   Types defined in the templates but unused during training may have untrained embeddings.
 - `--batch-size` controls trajectories generated per batch (default 64), independently of the training batch size.
@@ -186,9 +190,9 @@ Both formats save valid samples with the fields below.
 | --- | --- |
 | `smiles` | Final generated molecule's SMILES. |
 | `traj` | Ordered list of actions, starting with initial synthon selection and ending with the terminal product. |
-| `metadata.beta` | Reward exponent. |
+| `metadata.beta` | Coefficient of the raw task score. |
 | `metadata.prior_beta` | Prior guidance exponent. |
-| `metadata.preference` | Effective objective weights in the reward class's `objectives` order. They sum to the number of objectives for `mul`, or to one for `sum`. |
+| `metadata.preference` | Effective objective weights in the order of the named rewards passed to the trainer. Weights sum to one. |
 | `metadata.cond_<key>` | Raw external condition values, when supplied; for example `cond_tpsa`. |
 
 For example, two objectives with equal weights under `mul` have:
@@ -197,7 +201,7 @@ For example, two objectives with equal weights under `mul` have:
 {
   "beta": 32.0,
   "prior_beta": 0.0,
-  "preference": [1.0, 1.0]
+  "preference": [0.5, 0.5]
 }
 ```
 
