@@ -88,6 +88,131 @@ class ActionCategorical:
         The inclusion probability p_a is K/N for K samples from an N-synthon
         library, and 1 for unimolecular actions.
         """
+        # Each state's subspaces stay adjacent when their logits are concatenated.
+        logits: list[torch.Tensor] = []
+        weights: list[float] = []
+        subspace_sizes: list[int] = []
+        state_sizes: list[int] = []
+        for state_logits in self.action_logits:
+            assert state_logits
+            state_size = 0
+            for entry in state_logits:
+                size = entry.logits.numel()
+                state_size += size
+                subspace_sizes.append(size)
+                logits.append(entry.logits)
+                library_name = entry.subspace.name[1]
+                weights.append(
+                    0.0
+                    if library_name is None
+                    else self.subsampling[library_name].log_importance
+                )
+            state_sizes.append(state_size)
+
+        # Each subspace shares one -log(p_a) correction across its candidates.
+        flat_logits = torch.cat(logits)
+        subspace_lengths = torch.tensor(subspace_sizes, device=flat_logits.device)
+        offsets = flat_logits.new_tensor(weights).repeat_interleave(
+            subspace_lengths, output_size=flat_logits.numel()
+        )
+        corrected_logits = flat_logits + offsets
+        state_lengths = torch.tensor(state_sizes, device=flat_logits.device)
+        # Both reductions use state lengths so each state gets its own log-sum-exp.
+        maxima = torch.segment_reduce(
+            corrected_logits.detach(), "max", lengths=state_lengths, unsafe=True
+        )
+        # A fully masked state uses a zero shift to avoid -inf - (-inf).
+        # Its exponential sum stays zero and takes the floor below.
+        maxima = torch.where(torch.isfinite(maxima), maxima, 0)
+        shifted = corrected_logits - maxima.repeat_interleave(
+            state_lengths, output_size=flat_logits.numel()
+        )
+        totals = torch.segment_reduce(
+            shifted.exp(), "sum", lengths=state_lengths, unsafe=True
+        )
+        return maxima + totals.clamp_min(1e-38).log()
+
+    def sample(
+        self, softmax_temperature: float, random_action_prob: float, importance: float
+    ) -> list[Action]:
+        """Draw one action per state from the exploration distribution.
+
+        Add importance * log(N/K) to sampled synthon logits, then divide by
+        softmax_temperature. random_action_prob selects states that use
+        subspace-balanced random scores instead of model scores.
+        """
+        device = self.device
+        random_states = (
+            torch.rand(len(self.action_logits), device=device) < random_action_prob
+        )
+        logits: list[torch.Tensor] = []
+        weights: list[float] = []
+        subspace_sizes: list[int] = []
+        state_sizes: list[int] = []
+        for state_logits in self.action_logits:
+            assert state_logits
+            state_size = 0
+            for entry in state_logits:
+                size = entry.logits.numel()
+                state_size += size
+                subspace_sizes.append(size)
+                logits.append(entry.logits)
+                library_name = entry.subspace.name[1]
+                weight = (
+                    0.0
+                    if library_name is None
+                    else self.subsampling[library_name].log_importance
+                )
+                weights.append(importance * weight)
+            state_sizes.append(state_size)
+
+        flat_logits = torch.cat(logits)
+        num_candidates = flat_logits.numel()
+        subspace_lengths = torch.tensor(subspace_sizes, device=device)
+        state_lengths = torch.tensor(state_sizes, device=device)
+        offsets = flat_logits.new_tensor(weights).repeat_interleave(
+            subspace_lengths, output_size=num_candidates
+        )
+        values = flat_logits + offsets
+        if random_action_prob > 0:
+            # Equal subspace mass before masking at temperature 1.
+            random_logits = flat_logits.new_tensor(
+                [-math.log(size) for size in subspace_sizes]
+            ).repeat_interleave(subspace_lengths, output_size=num_candidates)
+            explore = random_states.repeat_interleave(
+                state_lengths, output_size=num_candidates
+            )
+            values = torch.where(explore, random_logits, values)
+
+        valid = torch.isfinite(flat_logits)
+        values = values.masked_fill(~valid, -torch.inf)
+        # Relax the mask only for states with no valid candidates.
+        has_valid = torch.segment_reduce(
+            valid.to(values.dtype), "max", lengths=state_lengths, unsafe=True
+        ).bool()
+        values = values.masked_fill(
+            ~has_valid.repeat_interleave(state_lengths, output_size=num_candidates), 0
+        )
+        uniform = torch.rand_like(values).clamp_min(torch.finfo(values.dtype).tiny)
+        gumbels = -(-uniform.log()).log()
+        scores = values / softmax_temperature + gumbels
+        columns = [state_scores.argmax() for state_scores in scores.split(state_sizes)]
+
+        # Transfer indices to CPU once for the whole batch, then decode actions.
+        actions: list[Action] = []
+        for state_logits, column in zip(
+            self.action_logits, torch.stack(columns).tolist(), strict=True
+        ):
+            for entry in state_logits:
+                if column < len(entry.logits):
+                    actions.append(entry.subspace.action_at(column))
+                    break
+                column -= len(entry.logits)
+        return actions
+
+    """The readable but slower version of log_partition() and sample()"""
+
+    def __log_partition(self) -> torch.Tensor:
         device = self.device
         partitions = []
         for state_logits in self.action_logits:
@@ -115,15 +240,9 @@ class ActionCategorical:
             partitions.append(maximum + total.clamp_min(1e-38).log())
         return torch.stack(partitions)
 
-    def sample(
+    def __sample(
         self, softmax_temperature: float, random_action_prob: float, importance: float
     ) -> list[Action]:
-        """Draw one action per state from the exploration distribution.
-
-        Add importance * log(N/K) to sampled synthon logits, then divide by
-        softmax_temperature. random_action_prob selects states that use
-        subspace-balanced random scores instead of model scores.
-        """
         device = self.device
         random_states = (
             torch.rand(len(self.action_logits), device=device) < random_action_prob

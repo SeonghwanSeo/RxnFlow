@@ -407,38 +407,39 @@ class RxnFlowTrainer:
         norm = torch.nn.utils.clip_grad_norm_(self.policy_parameters, grad_clip)
         return norm
 
-    def _write_samples(self, trajectories: list[Trajectory]) -> None:
-        """Retain online molecules, rewards and complete synthesis routes."""
-        with self.sample_path.open("a") as handle:
-            for index, value in enumerate(trajectories):
-                traj = []
-                for transition in value.steps:
-                    traj.append(
-                        {
-                            "state": transition.state.smiles,
-                            **self.env.action_to_dict(transition.action),
-                            "product_smiles": transition.product_smiles,
-                        }
-                    )
-                sample = {
-                    "step": self.step,
-                    "sample": index,
-                    "final_smiles": value.final_smiles,
-                    "reward": value.reward,
-                    "objective_rewards": value.objective_rewards,
-                    "property_reward": value.property_reward,
-                    "property_violation": value.property_violation,
-                    "beta": value.beta,
-                    "prior_beta": value.prior_beta,
-                    "prior_score": value.prior_score,
-                    "prior_log_prob": value.prior_log_prob,
-                    "preference": value.preference,
-                    **{f"cond_{key}": item for key, item in (value.cond or {}).items()},
-                    "valid": value.valid,
-                    "invalid_reason": value.invalid_reason,
-                    "traj": traj,
-                }
-                handle.write(json.dumps(sample) + "\n")
+    def _serialize_samples(self, trajectories: list[Trajectory]) -> list[str]:
+        """Serialize online molecules, rewards and complete synthesis routes."""
+        lines: list[str] = []
+        for index, value in enumerate(trajectories):
+            traj = []
+            for transition in value.steps:
+                traj.append(
+                    {
+                        "state": transition.state.smiles,
+                        **self.env.action_to_dict(transition.action),
+                        "product_smiles": transition.product_smiles,
+                    }
+                )
+            sample = {
+                "step": self.step,
+                "sample": index,
+                "final_smiles": value.final_smiles,
+                "reward": value.reward,
+                "objective_rewards": value.objective_rewards,
+                "property_reward": value.property_reward,
+                "property_violation": value.property_violation,
+                "beta": value.beta,
+                "prior_beta": value.prior_beta,
+                "prior_score": value.prior_score,
+                "prior_log_prob": value.prior_log_prob,
+                "preference": value.preference,
+                **{f"cond_{key}": item for key, item in (value.cond or {}).items()},
+                "valid": value.valid,
+                "invalid_reason": value.invalid_reason,
+                "traj": traj,
+            }
+            lines.append(json.dumps(sample) + "\n")
+        return lines
 
     def close(self) -> None:
         """Release environment workers; model and replay remain available."""
@@ -459,6 +460,8 @@ class RxnFlowTrainer:
                 raise ValueError("steps must be non-negative")
             final_step = self.step + num_steps
             log_path = self.output_dir / "training.jsonl"
+            sample_lines: list[str] = []
+            log_lines: list[str] = []
             last_saved_step = -1
             checkpoint = None
             logger.info("Starting training; full log at %s", log_path)
@@ -582,14 +585,22 @@ class RxnFlowTrainer:
                     "time": perf_counter() - started,
                 }
 
-                # Log the generated trajectories and training metrics.
-                self._write_samples(online_trajs)
-                with log_path.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(record, sort_keys=True) + "\n")
-                if (
+                sample_lines.extend(self._serialize_samples(online_trajs))
+                log_lines.append(json.dumps(record, sort_keys=True) + "\n")
+                report_step = (
                     self.step == final_step
                     or self.step % self.config.training.log_every == 0
-                ):
+                )
+                checkpoint_step = self.step % self.config.training.checkpoint_every == 0
+                # Save every step's records while amortizing file opens and flushes.
+                if report_step or checkpoint_step:
+                    with self.sample_path.open("a") as handle:
+                        handle.write("".join(sample_lines))
+                    sample_lines.clear()
+                    with log_path.open("a", encoding="utf-8") as handle:
+                        handle.write("".join(log_lines))
+                    log_lines.clear()
+                if report_step:
                     objectives = " ".join(
                         f"{name}={value:.4f}"
                         for name, value in record["objective_rewards"].items()
@@ -610,7 +621,7 @@ class RxnFlowTrainer:
                         record["time"],
                         objectives,
                     )
-                if self.step % self.config.training.checkpoint_every == 0:
+                if checkpoint_step:
                     checkpoint = self.save_checkpoint()
                     last_saved_step = self.step
             if last_saved_step != self.step:
