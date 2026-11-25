@@ -42,12 +42,11 @@ class ConditionSampler:
         self,
         beta: tuple[str, list[float]],
         preference: tuple[str, list[float]],
+        prior_strength: tuple[str, list[float]],
         num_objectives: int,
-        *,
-        prior_beta: tuple[str, list[float]],
     ):
         pref_dist, pref_params = preference
-        self.prior_beta = prior_beta
+        self.prior_strength = prior_strength
         if pref_dist == "none":
             if pref_params:
                 raise ValueError("none preference takes no parameters")
@@ -75,7 +74,7 @@ class ConditionSampler:
     def sample(
         self, count: int, rng: np.random.Generator
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Sample task beta, preference, then prior beta in checkpoint RNG order."""
+        """Sample task beta, preference, then prior strength in checkpoint RNG order."""
         beta = sample_distribution(self.beta, count, rng).squeeze(-1)
         preference = (
             torch.ones(count, self.num_objectives)
@@ -83,5 +82,5 @@ class ConditionSampler:
             else sample_distribution(self.preference, count, rng, self.num_objectives)
         )
         preference = preference / preference.sum(-1, keepdim=True)
-        prior_beta = sample_distribution(self.prior_beta, count, rng).squeeze(-1)
-        return beta, preference, prior_beta
+        prior_strength = sample_distribution(self.prior_strength, count, rng).squeeze(-1)
+        return beta, preference, prior_strength

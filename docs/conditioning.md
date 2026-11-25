@@ -30,7 +30,7 @@ Set `gflownet.moo_scalarization` to choose how raw component scores form the tas
 
 For example, component scores of 0.2 and 0.8 give `R(x) = 0.5` with `sum` and `R(x) = 0.4` with `mul`. In both cases the task factor is `exp(beta * R(x))`. These means follow REINVENT4's `custom_sum` and `custom_product` for finite component scores, including the component floor in `mul`. [REINVENT4 aggregation code](https://github.com/MolecularAI/REINVENT4/blob/main/reinvent/scoring/aggregators/means.py)
 
-## Property rewards
+## Property penalties
 
 Molecules exceeding `property_penalty` limits or `generation.max_atoms` receive lower rewards, independently of MOO preferences.
 
@@ -71,12 +71,14 @@ gflownet:
 
 Sampling defaults to checkpoint settings.
 
-- For either beta, use the trained fixed value or choose a value or range within the training bounds.
+- For task beta and prior guidance strength, use the trained fixed value or choose a value or range within the training bounds.
 - `none` keeps equal weights.
   Fixed-preference training requires the same relative weights.
 - Training with `dirichlet` or `dirichlet(...)` allows you to choose a fixed trade-off or another preference distribution at sampling.
 
-In `RxnFlowSampler.sample()`, `beta` sets the task beta, `prior_beta` sets the prior guidance strength and `preference` sets the objective weights. The corresponding CLI options are `--task-beta`, `--prior-beta` and `--preference`. See the [sampling guide](training.md#sampling).
+In `RxnFlowSampler.sample()`, `beta` sets the task beta, `prior_strength` sets the prior guidance strength and `preference` sets the objective weights.
+The corresponding CLI options are `--task-beta`, `--prior-strength` and `--preference`.
+See the [sampling guide](training.md#sampling).
 
 ## External conditions
 

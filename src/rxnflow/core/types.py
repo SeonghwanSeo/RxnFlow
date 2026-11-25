@@ -203,13 +203,13 @@ class Trajectory:
     beta: float
     preference: list[float]
     objective_rewards: list[float] = field(default_factory=list)
-    property_reward: float = 1.0
+    property_penalty: float = 1.0
     property_violation: bool = False
     reward: float = 0.0
     valid: bool = True
     invalid_reason: InvalidReason | None = None
     cond: Condition | None = None
-    prior_beta: float = 0.0
+    prior_strength: float = 0.0
     prior_score: float | None = None
     prior_log_prob: float | None = None
 
@@ -218,13 +218,13 @@ class Trajectory:
             "steps": [step.to_dict() for step in self.steps],
             "final_smiles": self.final_smiles,
             "beta": self.beta,
-            "prior_beta": self.prior_beta,
+            "prior_strength": self.prior_strength,
             "prior_score": self.prior_score,
             "prior_log_prob": self.prior_log_prob,
             "preference": list(self.preference),
             "cond": deepcopy(self.cond),
             "objective_rewards": list(self.objective_rewards),
-            "property_reward": self.property_reward,
+            "property_penalty": self.property_penalty,
             "property_violation": self.property_violation,
             "reward": self.reward,
             "valid": self.valid,
@@ -237,13 +237,13 @@ class Trajectory:
             steps=[Transition.from_dict(step) for step in data["steps"]],
             final_smiles=data["final_smiles"],
             beta=data["beta"],
-            prior_beta=data["prior_beta"],
+            prior_strength=data["prior_strength"],
             prior_score=data["prior_score"],
             prior_log_prob=data["prior_log_prob"],
             preference=list(data["preference"]),
             cond=deepcopy(data["cond"]),
             objective_rewards=list(data["objective_rewards"]),
-            property_reward=data["property_reward"],
+            property_penalty=data["property_penalty"],
             property_violation=data["property_violation"],
             reward=data["reward"],
             valid=data["valid"],

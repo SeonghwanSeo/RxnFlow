@@ -17,21 +17,22 @@ Use `gflownet` to control how the objective scores shape the sampling distributi
 | `gflownet.beta` | `64` | Larger values concentrate sampling on higher task rewards. Accepts a fixed number, `uniform(lower,upper)` or `log_uniform(lower,upper)`. |
 | `gflownet.moo_scalarization` | `sum` | Combine raw objective scores with a weighted arithmetic mean (`sum`) or weighted geometric mean (`mul`). |
 | `gflownet.moo_preference` | `"none"` | Objective weights: `none`, `fixed(...)`, `dirichlet` or `dirichlet(...)`. |
-| `gflownet.property_penalty_ratio` | `0.2` | Property reward smoothing width relative to each upper bound; `0` gives zero reward for violations. |
+| `gflownet.property_penalty_ratio` | `0.2` | Property penalty smoothing width relative to each upper bound; `0` gives zero reward for violations. |
 
 `dirichlet` defaults to concentration `1.5`.
 Use `dirichlet(alpha)` for a shared concentration or `dirichlet(alpha1,alpha2,...)` for per-objective concentrations.
 
 ## Chemical prior guidance
 
-`prior_guidance` defaults to `null` (disabled).
+Omit the prior guidance block to train without a prior.
+Set `prior_guidance.model_name_or_path` to a model such as `chembl` to enable guidance.
 See [chemical prior guidance](../docs/prior_guidance.md).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `prior_guidance.model_name_or_path` | `chembl` | Model alias, model directory or Hub repository ID. |
-| `prior_guidance.strength` | `"uniform(0,1)"` | Larger values favor molecules with higher prior probability. Accepts the same formats as `gflownet.beta`. |
-| `prior_guidance.batch_size` | `16` | Scoring batch size. |
+| `prior_guidance.model_name_or_path` | `null` | Model alias, model directory or Hub repository ID. |
+| `prior_guidance.strength` | `0.5` | Larger values favor molecules with higher prior probability. Accepts the same formats as `gflownet.beta`. |
+| `prior_guidance.batch_size` | `32` | Scoring batch size. |
 
 ## External conditioning
 
@@ -60,7 +61,7 @@ Example:
 
 Set property upper bounds to guide sampling and reduce rewards for molecules that exceed them.
 The template uses `property_penalty: {}`, so only the generation settings apply until you add property bounds.
-See [property rewards](../docs/conditioning.md#property-rewards) for details.
+See [property penalties](../docs/conditioning.md#property-penalties) for details.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

@@ -9,25 +9,39 @@ from .nn import mlp
 
 
 class GFNConditionEncoder(nn.Module):
-    """Encode GFlowNet conditions, i.e., temperature and preference vector."""
+    """Embed only the GFlowNet inputs used by this policy."""
 
-    def __init__(self, num_objectives: int, hidden_dim: int) -> None:
+    def __init__(
+        self,
+        num_objectives: int,
+        hidden_dim: int,
+        use_cond_beta: bool = False,
+        use_cond_prior: bool = False,
+        use_cond_preference: bool = False,
+    ) -> None:
         super().__init__()
-        self.emb_temp = mlp(1, hidden_dim, hidden_dim, 2)
-        self.emb_pref = mlp(num_objectives, hidden_dim, hidden_dim, 2)
-        self.emb_prior_temp = mlp(1, hidden_dim, hidden_dim, 2)
+        self.hidden_dim = hidden_dim
+        self.emb_beta = mlp(1, hidden_dim, hidden_dim, 2) if use_cond_beta else None
+        self.emb_prior = mlp(1, hidden_dim, hidden_dim, 2) if use_cond_prior else None
+        self.emb_pref = (
+            mlp(num_objectives, hidden_dim, hidden_dim, 2)
+            if use_cond_preference
+            else None
+        )
 
     def forward(
         self,
-        temperature: torch.Tensor,
+        beta: torch.Tensor,
         preference: torch.Tensor,
-        prior_beta: torch.Tensor,
+        prior_strength: torch.Tensor,
     ) -> torch.Tensor:
-        """Encode two [B] exponents and [B, num_objectives] preferences as [B, H]."""
-        embedding = self.emb_temp(temperature[:, None]) + self.emb_pref(preference)
-        if prior_beta.shape != temperature.shape:
-            raise ValueError("prior_beta must have shape [B]")
-        embedding = embedding + self.emb_prior_temp(prior_beta[:, None])
+        embedding = beta.new_zeros((len(beta), self.hidden_dim))
+        if self.emb_beta is not None:
+            embedding = self.emb_beta(beta[:, None])
+        if self.emb_prior is not None:
+            embedding = embedding + self.emb_prior(prior_strength[:, None])
+        if self.emb_pref is not None:
+            embedding = embedding + self.emb_pref(preference)
         return embedding
 
 

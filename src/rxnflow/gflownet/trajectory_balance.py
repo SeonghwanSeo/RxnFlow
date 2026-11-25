@@ -72,7 +72,9 @@ class TrajectoryBalance:
         )
 
         # 2. Compute the prior guidance
-        prior_beta = np.array([t.prior_beta for t in trajectories], dtype=np.float64)
+        prior_strength = np.array(
+            [t.prior_strength for t in trajectories], dtype=np.float64
+        )
         log_p_prior = np.array(
             [0.0 if t.prior_log_prob is None else t.prior_log_prob for t in trajectories],
             dtype=np.float64,
@@ -80,17 +82,19 @@ class TrajectoryBalance:
 
         # 3. Compute the property penalty
         property_penalty = np.array(
-            [t.property_reward for t in trajectories], dtype=np.float64
+            [t.property_penalty for t in trajectories], dtype=np.float64
         ).clip(min=self.eps)
         log_property_penalty = np.log(property_penalty)
 
         # 4. Compute the scaled log rewards for TB loss
-        log_R_gfn = beta * task_reward + prior_beta * log_p_prior + log_property_penalty
+        log_R_gfn = (
+            beta * task_reward + prior_strength * log_p_prior + log_property_penalty
+        )
 
         # Move to torch tensors
         to_tensor = lambda x: torch.as_tensor(x, dtype=torch.float32, device=device)  # noqa
         beta = to_tensor(beta)
-        prior_beta = to_tensor(prior_beta)
+        prior_strength = to_tensor(prior_strength)
         preference = to_tensor(preference)
         log_R_gfn = to_tensor(log_R_gfn)
 
@@ -98,7 +102,7 @@ class TrajectoryBalance:
         if cond is not None:
             assert cond.shape == (len(trajectories), model.condition_dim)
             cond = cond.to(device)
-        cond_emb = model.encode_cond(beta, preference, cond, prior_beta=prior_beta)
+        cond_emb = model.encode_cond(beta, preference, prior_strength, cond)
         log_Z = model.logZ(cond_emb).squeeze(-1)
         logit_scale = model.logit_scale(cond_emb).squeeze(-1)
 
@@ -117,6 +121,7 @@ class TrajectoryBalance:
             for transition in trajectory.steps:
                 transitions.append(transition)
                 traj_indices.append(traj_idx)
+        traj_log_p_F = torch.zeros(len(trajectories), device=device)
         if transitions:
             batch_idx = torch.tensor(traj_indices, dtype=torch.long, device=device)
             log_p_F = self.policy.log_prob(
@@ -125,12 +130,9 @@ class TrajectoryBalance:
                 beta[batch_idx],
                 preference[batch_idx],
                 cond=cond[batch_idx] if cond is not None else None,
-                prior_beta=prior_beta[batch_idx],
+                prior_strength=prior_strength[batch_idx],
             )
-            traj_log_p_F = torch.zeros(len(trajectories), device=device)
             traj_log_p_F.index_add_(0, batch_idx, log_p_F)
-        else:
-            traj_log_p_F = torch.zeros(len(trajectories), device=device)
 
         # 4. Compute the trajectory-balance loss.
         tb_error = log_Z + traj_log_p_F - traj_log_p_B - log_R_gfn
@@ -155,6 +157,7 @@ class TrajectoryBalance:
                 "loss": loss.detach(),
                 "logZ": log_Z.mean(),
                 "beta": beta.mean(),
+                "prior_strength": prior_strength.mean(),
                 "logit_scale": logit_scale.mean(),
                 "batch_entropy": -traj_log_p_F.mean(),
                 "traj_log_p_F": traj_log_p_F.mean(),
@@ -172,5 +175,4 @@ class TrajectoryBalance:
                 / (~is_valid).sum().clamp_min(1),
                 "invalid_trajectories": (~is_valid).float().mean(),
             }
-        info["prior_beta"] = prior_beta.mean().detach()
         return loss, info

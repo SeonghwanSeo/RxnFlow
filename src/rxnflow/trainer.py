@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
 
@@ -23,7 +25,7 @@ from rxnflow.core.types import Trajectory
 from rxnflow.envs.env import SynthesisEnv
 from rxnflow.gflownet.conditioning import ConditionSampler
 from rxnflow.gflownet.policy import RxnFlowPolicy
-from rxnflow.gflownet.property_penalty import compute_property_rewards
+from rxnflow.gflownet.property_penalty import compute_property_penalties
 from rxnflow.gflownet.replay import ReplayBuffer
 from rxnflow.gflownet.trajectory_balance import TrajectoryBalance, scalarize_rewards
 from rxnflow.models import RxnFlowModel
@@ -93,6 +95,8 @@ class RxnFlowTrainer:
         self.config.save(self.output_dir / "config.yaml")
         self.checkpoint_dir: Path = self.output_dir / "checkpoints"
         self.checkpoint_dir.mkdir()
+        self.weights_dir = self.output_dir / "weights"
+        self.weights_dir.mkdir()
         self.sample_path: Path = self.output_dir / "sample.jsonl"
         self.log_file: Path = self.output_dir / "training.log"
         init_logger(self.log_file)
@@ -123,19 +127,22 @@ class RxnFlowTrainer:
         self.conditioning: ConditioningModule | None = conditioning
         self.prior_guidance: PriorGuidance | None = (
             PriorGuidance(config.prior_guidance, self.device)
-            if config.prior_guidance is not None
-            and config.prior_guidance.model_name_or_path is not None
+            if config.prior_guidance.model_name_or_path is not None
             else None
         )
 
         self.setup()
 
     def setup(self) -> None:
-        self._setup_env()
-        self._setup_model()
-        self._setup_optimizer()
-        self._setup_replay()
-        self._setup_training()
+        try:
+            self._setup_env()
+            self._setup_model()
+            self._setup_optimizer()
+            self._setup_replay()
+            self._setup_training()
+        except Exception:
+            self.close()
+            raise
 
     def _setup_env(self) -> None:
         cfg = self.config
@@ -158,21 +165,67 @@ class RxnFlowTrainer:
         )
 
     def _setup_model(self) -> None:
-        """Initialize the model and policy for online training"""
+        """Initialize the model and policy for online training."""
         cfg = self.config
         condition_dim = (
             self.conditioning.encoding_dim if self.conditioning is not None else None
         )
-        self.model = RxnFlowModel(
-            self.env, cfg.model, self.num_objectives, condition_dim
-        ).to(self.device)
+        use_cond_beta = cfg.gflownet.beta[0] != "fixed"
+        use_cond_prior = (
+            self.prior_guidance is not None and cfg.prior_guidance.strength[0] != "fixed"
+        )
+        use_cond_preference = (
+            self.num_objectives > 1 and cfg.gflownet.moo_preference[0] == "dirichlet"
+        )
 
-        # EMA sampling model
-        self.sampling_model = RxnFlowModel(
-            self.env, cfg.model, self.num_objectives, condition_dim
-        ).to(self.device)
-        self.sampling_model.eval()
-        self.sampling_model.load_state_dict(self.model.state_dict())
+        if cfg.pretrained_model is not None:
+            logger.info("Loading pretrained model: %s", cfg.pretrained_model)
+            ckpt = torch.load(
+                cfg.pretrained_model, map_location="cpu", weights_only=False
+            )
+            check_model_compatibility(ckpt["rxnflow_version"])
+            check_library_compatibility(ckpt["environment"]["rxnflow_version"])
+            if ckpt["environment"]["synthesis"] != self.env.signature["synthesis"]:
+                raise ValueError("pretrained synthesis definitions differ")
+            if ckpt["config"]["model"] != asdict(cfg.model):
+                raise ValueError("pretrained model architecture differs")
+            if ckpt["condition_dim"] != condition_dim:
+                raise ValueError("pretrained external condition dimension differs")
+            if (
+                ckpt["use_cond_preference"]
+                and tuple(ckpt["objectives"]) != self.objectives
+            ):
+                raise ValueError(
+                    "pretrained preference conditioning requires matching objectives"
+                )
+            use_cond_beta = use_cond_beta or ckpt["use_cond_beta"]
+            use_cond_prior = use_cond_prior or ckpt["use_cond_prior"]
+            use_cond_preference = use_cond_preference or ckpt["use_cond_preference"]
+
+        self.model = RxnFlowModel(
+            self.env,
+            cfg.model,
+            self.num_objectives,
+            condition_dim,
+            use_cond_beta=use_cond_beta,
+            use_cond_prior=use_cond_prior,
+            use_cond_preference=use_cond_preference,
+        )
+        if cfg.pretrained_model is not None:
+            weights = dict(ckpt["sampling_model"])
+            # Preserve the initial weights of newly enabled branches.
+            encoder = self.model.gfn_condition_encoder
+            for name, layer, learned in (
+                ("emb_beta", encoder.emb_beta, ckpt["use_cond_beta"]),
+                ("emb_prior", encoder.emb_prior, ckpt["use_cond_prior"]),
+                ("emb_pref", encoder.emb_pref, ckpt["use_cond_preference"]),
+            ):
+                if layer is not None and not learned:
+                    for key, value in layer.state_dict().items():
+                        weights[f"gfn_condition_encoder.{name}.{key}"] = value
+            self.model.load_state_dict(weights)
+        self.model.to(self.device)
+        self.sampling_model = deepcopy(self.model).eval()
 
         self.policy = RxnFlowPolicy(self.env, self.model, cfg, self.device, self.rng)
         self.sampling_policy = RxnFlowPolicy(
@@ -231,41 +284,47 @@ class RxnFlowTrainer:
         self.condition_sampler: ConditionSampler = ConditionSampler(
             cfg.gflownet.beta,
             cfg.gflownet.moo_preference,
-            self.num_objectives,
-            prior_beta=(
-                cfg.prior_guidance.strength
-                if cfg.prior_guidance is not None
-                else ("fixed", [0.0])
-            ),
+            cfg.prior_guidance.strength,
+            num_objectives=self.num_objectives,
         )
 
     def _reward_class_names(self) -> list[str]:
         return [f"{type(r).__module__}.{type(r).__qualname__}" for r in self.rewards]
 
-    def save_checkpoint(self, path: str | Path | None = None) -> Path:
+    def save_checkpoint(self, name: str) -> Path:
         """Save model, optimizer, replay, and RNG state for an exact restart."""
-        destination = (
-            Path(path)
-            if path is not None
-            else self.checkpoint_dir / f"step_{self.step:06d}.ckpt"
-        )
+        ckpt_path = self.checkpoint_dir / f"{name}.ckpt"
+        model_path = self.weights_dir / f"{name}_model.pth"
+        ema_path = self.weights_dir / f"{name}_ema.pth"
+
+        logger.info("Saving checkpoint at step %d: %s", self.step, ckpt_path)
         started = perf_counter()
-        logger.info("Saving checkpoint at step %d: %s", self.step, destination)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_suffix(".tmp")
+        metadata = {
+            "rxnflow_version": __version__,
+            "step": self.step,
+            "config": self.config.to_dict(),
+            "environment": self.env.signature,
+            "condition_dim": self.model.condition_dim,
+            "use_cond_beta": self.model.use_cond_beta,
+            "use_cond_prior": self.model.use_cond_prior,
+            "use_cond_preference": self.model.use_cond_preference,
+            "objectives": self.objectives,
+        }
+
+        model_state_dict = self.model.state_dict()
+        sampling_model_state_dict = self.sampling_model.state_dict()
+
+        ckpt_tmp = ckpt_path.with_suffix(".tmp")
         torch.save(
             {
-                "rxnflow_version": __version__,
-                "step": self.step,
-                "config": self.config.to_dict(),
+                **metadata,
                 "run": {
                     "output_dir": str(self.output_dir),
                     "device": str(self.device),
                     "seed": self.seed,
                 },
-                "environment": self.env.signature,
-                "model": self.model.state_dict(),
-                "sampling_model": self.sampling_model.state_dict(),
+                "model": model_state_dict,
+                "sampling_model": sampling_model_state_dict,
                 "optimizer": self.optimizer.state_dict(),
                 "lr_scheduler": self.lr_scheduler.state_dict(),
                 "replay": self.replay.state_dict(),
@@ -276,25 +335,44 @@ class RxnFlowTrainer:
                     if self.device.type == "cuda"
                     else None
                 ),
-                "condition_dim": self.model.condition_dim,
-                "objectives": self.objectives,
                 "reward_classes": self._reward_class_names(),
             },
-            temporary,
+            ckpt_tmp,
         )
-        temporary.replace(destination)
-        latest = self.checkpoint_dir / "latest.ckpt"
-        latest_temporary = latest.with_suffix(".tmp")
-        # Copy serialized bytes; do not deserialize the replay and optimizer
-        # just to serialize the identical checkpoint again.
-        shutil.copyfile(destination, latest_temporary)
-        latest_temporary.replace(latest)
-        logger.info("Checkpoint saved: %s (%.1fs)", destination, perf_counter() - started)
-        return destination
+        model_tmp = model_path.with_suffix(".tmp")
+        torch.save(
+            {
+                **metadata,
+                "sampling_model": model_state_dict,
+            },
+            model_tmp,
+        )
+        ema_tmp = ema_path.with_suffix(".tmp")
+        torch.save(
+            {
+                **metadata,
+                "sampling_model": sampling_model_state_dict,
+            },
+            ema_tmp,
+        )
+
+        latest_ckpt = self.checkpoint_dir / "latest.ckpt"
+        latest_model = self.weights_dir / "latest_model.pth"
+        latest_ema = self.weights_dir / "latest_ema.pth"
+        shutil.copyfile(ckpt_tmp, latest_ckpt.with_suffix(".tmp"))
+        shutil.copyfile(model_tmp, latest_model.with_suffix(".tmp"))
+        shutil.copyfile(ema_tmp, latest_ema.with_suffix(".tmp"))
+
+        ckpt_tmp.rename(ckpt_path)
+        model_tmp.rename(model_path)
+        ema_tmp.rename(ema_path)
+        latest_ckpt.with_suffix(".tmp").rename(latest_ckpt)
+        latest_model.with_suffix(".tmp").rename(latest_model)
+        latest_ema.with_suffix(".tmp").rename(latest_ema)
+        logger.info("Checkpoint saved: %s (%.1fs)", ckpt_path, perf_counter() - started)
+        return ckpt_path
 
     def load_checkpoint(self, path: str | Path) -> None:
-        # RNG states are CPU byte tensors even for a CUDA model. Parameter and
-        # optimizer loaders move their own tensors to the model device.
         logger.info("Loading checkpoint: %s", path)
         checkpoint = torch.load(path, map_location="cpu", weights_only=False)
         check_model_compatibility(checkpoint["rxnflow_version"])
@@ -365,7 +443,7 @@ class RxnFlowTrainer:
             [reward.run(smiles_list, cond_list) for reward in self.rewards], axis=1
         ).astype(np.float64)
         reward_floor = self.config.training.reward_floor
-        property_rewards, violations = compute_property_rewards(
+        property_penalties, violations = compute_property_penalties(
             smiles_list,
             self.env.property_limits,
             self.env.max_atoms,
@@ -378,18 +456,18 @@ class RxnFlowTrainer:
             self.config.gflownet.moo_scalarization,
             valid=np.array([t.valid for t in trajectories], dtype=bool),
         )
-        rewards += np.log(property_rewards.astype(np.float64).clip(min=reward_floor))
+        rewards += np.log(property_penalties.astype(np.float64).clip(min=reward_floor))
         # Replay priority uses the untempered task and property terms.
-        for trajectory, objectives, property_reward, violation, scalar in zip(
+        for trajectory, objectives, property_penalty, violation, scalar in zip(
             trajectories,
             scores.tolist(),
-            property_rewards.tolist(),
+            property_penalties.tolist(),
             violations.tolist(),
             rewards.tolist(),
             strict=True,
         ):
             trajectory.objective_rewards = objectives
-            trajectory.property_reward = property_reward
+            trajectory.property_penalty = property_penalty
             trajectory.property_violation = violation
             trajectory.reward = scalar
 
@@ -426,10 +504,10 @@ class RxnFlowTrainer:
                 "final_smiles": value.final_smiles,
                 "reward": value.reward,
                 "objective_rewards": value.objective_rewards,
-                "property_reward": value.property_reward,
+                "property_penalty": value.property_penalty,
                 "property_violation": value.property_violation,
                 "beta": value.beta,
-                "prior_beta": value.prior_beta,
+                "prior_strength": value.prior_strength,
                 "prior_score": value.prior_score,
                 "prior_log_prob": value.prior_log_prob,
                 "preference": value.preference,
@@ -454,23 +532,21 @@ class RxnFlowTrainer:
         """Run additional optimization steps and return the final checkpoint."""
         run_started = perf_counter()
         try:
-            if resume_from_checkpoint is not None:
-                self.load_checkpoint(resume_from_checkpoint)
             if num_steps < 0:
                 raise ValueError("steps must be non-negative")
+            if resume_from_checkpoint is not None:
+                self.load_checkpoint(resume_from_checkpoint)
             final_step = self.step + num_steps
             log_path = self.output_dir / "training.jsonl"
             sample_lines: list[str] = []
             log_lines: list[str] = []
-            last_saved_step = -1
-            checkpoint = None
             logger.info("Starting training; full log at %s", log_path)
             while self.step < final_step:
                 # 1. Generate online trajectories with the EMA model and score rewards.
                 started = perf_counter()
                 self.sampling_model.eval()
                 count = self.config.training.num_online
-                beta, preference, prior_beta = self.condition_sampler.sample(
+                beta, preference, prior_strength = self.condition_sampler.sample(
                     count, self.rng
                 )
                 cond_list, cond = None, None
@@ -480,9 +556,9 @@ class RxnFlowTrainer:
                         self.device
                     )
                 online_trajs = self.sampling_policy.sample_from_model(
-                    self.config.training.num_online,
+                    count,
                     beta=beta,
-                    prior_beta=prior_beta,
+                    prior_strength=prior_strength,
                     preference=preference,
                     cond=cond,
                     cond_list=cond_list,
@@ -552,7 +628,7 @@ class RxnFlowTrainer:
                     "step": self.step,
                     **loss_metrics,
                     "num_online": len(online_trajs),
-                    "num_replay": len(batch) - len(online_trajs),
+                    "num_replay": len(replay_trajs),
                     "num_valid": num_valid,
                     "num_invalid": len(online_trajs) - num_valid,
                     "num_unique": num_unique,
@@ -564,7 +640,7 @@ class RxnFlowTrainer:
                         / len(online_trajs)
                         for i, name in enumerate(self.objectives)
                     },
-                    "property_reward": sum(t.property_reward for t in online_trajs)
+                    "property_penalty": sum(t.property_penalty for t in online_trajs)
                     / len(online_trajs),
                     "prior_score": (
                         sum(t.prior_score for t in online_trajs) / len(online_trajs)
@@ -606,27 +682,23 @@ class RxnFlowTrainer:
                         for name, value in record["objective_rewards"].items()
                     )
                     logger.info(
-                        "Step %d/%d: loss=%.4f reward=%.4f valid=%.1f%% "
-                        "unique=%.1f%% property_reward=%.4f violations=%d "
+                        "Step %d/%d: loss=%.4f reward=%.4f valid=%.2f "
+                        "unique=%.2f violation=%.2f "
                         "replay=%d time=%.2fs | %s",
                         self.step,
                         final_step,
                         record["loss"],
                         record["reward"],
-                        100 * record["num_valid"] / record["num_online"],
-                        100 * record["num_unique"] / max(1, record["num_valid"]),
-                        record["property_reward"],
-                        record["num_property_violations"],
+                        record["num_valid"] / record["num_online"],
+                        record["num_unique"] / max(1, record["num_valid"]),
+                        record["num_property_violations"] / record["num_online"],
                         len(self.replay),
                         record["time"],
                         objectives,
                     )
-                if checkpoint_step:
-                    checkpoint = self.save_checkpoint()
-                    last_saved_step = self.step
-            if last_saved_step != self.step:
-                checkpoint = self.save_checkpoint()
-            assert checkpoint is not None
+                if checkpoint_step and self.step < final_step:
+                    self.save_checkpoint(f"step_{self.step:06d}")
+            checkpoint = self.save_checkpoint(f"step_{self.step:06d}")
             logger.info(
                 "Training complete: step=%d, elapsed=%.1fs",
                 self.step,

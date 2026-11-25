@@ -85,11 +85,9 @@ class SubsamplingConfig:
 
 @dataclass
 class PriorGuidanceConfig:
-    model_name_or_path: str | None = "chembl"
-    strength: tuple[str, list[float]] = field(
-        default_factory=lambda: ("uniform", [0.0, 1.0])
-    )
-    batch_size: int = 16
+    model_name_or_path: str | None = None
+    strength: tuple[str, list[float]] = field(default_factory=lambda: ("fixed", [0.5]))
+    batch_size: int = 32
 
     def validate(self) -> None:
         if self.model_name_or_path is not None and (
@@ -259,18 +257,18 @@ class Config:
 
     env_dir: str = ""
     gflownet: GFNConditionConfig = field(default_factory=GFNConditionConfig)
-    prior_guidance: PriorGuidanceConfig | None = None
+    prior_guidance: PriorGuidanceConfig = field(default_factory=PriorGuidanceConfig)
     conditioning: dict[str, Any] = field(default_factory=dict)
     property_penalty: dict[str, float] = field(default_factory=dict)
     subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)
     generation: GenerationConfig = field(default_factory=GenerationConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     training: TrainingConfig = field(default_factory=TrainingConfig)
+    pretrained_model: str | None = None
 
     def validate(self) -> None:
         self.gflownet.validate()
-        if self.prior_guidance is not None:
-            self.prior_guidance.validate()
+        self.prior_guidance.validate()
         from rxnflow.envs.features import PROPERTY_PENALTY_INDICES
 
         if not isinstance(self.property_penalty, dict):
@@ -314,8 +312,6 @@ class Config:
             ("gflownet", "moo_preference"),
             ("prior_guidance", "strength"),
         ):
-            if raw[section] is None:
-                continue
             distribution, params = raw[section][key]
             if distribution == "none":
                 raw[section][key] = "none"
@@ -337,12 +333,8 @@ class Config:
         if unknown:
             raise ValueError(f"unknown configuration fields: {sorted(unknown)}")
 
-        prior = raw.get("prior_guidance")
-        if prior is not None:
-            if not isinstance(prior, dict):
-                raise ValueError("prior_guidance must be a mapping or null")
-            raw["prior_guidance"] = PriorGuidanceConfig(**prior)
         for name, config_type in (
+            ("prior_guidance", PriorGuidanceConfig),
             ("gflownet", GFNConditionConfig),
             ("subsampling", SubsamplingConfig),
             ("generation", GenerationConfig),

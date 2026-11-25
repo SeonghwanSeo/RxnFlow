@@ -32,6 +32,9 @@ def main() -> None:
             "environment",
             "rxnflow_version",
             "condition_dim",
+            "use_cond_beta",
+            "use_cond_prior",
+            "use_cond_preference",
         )
     }
     torch.save(model, args.output)

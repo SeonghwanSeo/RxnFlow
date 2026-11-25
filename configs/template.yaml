@@ -1,5 +1,6 @@
 # Complete RxnFlow configuration template. See configs/README.md for settings.
 env_dir: /path/to/prepared/environment
+pretrained_model: null
 
 # GFlowNet configuration
 gflownet:
@@ -9,7 +10,10 @@ gflownet:
   property_penalty_ratio: 0.2
 
 # Chemical prior guidance
-prior_guidance: null
+prior_guidance:
+  model_name_or_path: null # null disables guidance
+  strength: 0.5
+  batch_size: 32
 
 # External conditioning configuration
 conditioning: {}

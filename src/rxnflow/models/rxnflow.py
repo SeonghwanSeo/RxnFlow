@@ -25,10 +25,18 @@ class RxnFlowModel(nn.Module):
         cfg: ModelConfig,
         num_objectives: int = 1,
         condition_dim: int | None = None,
+        *,
+        use_cond_beta: bool = False,
+        use_cond_prior: bool = False,
+        use_cond_preference: bool = False,
     ):
         super().__init__()
         self.num_objectives: int = num_objectives
         self.condition_dim: int | None = condition_dim
+
+        self.use_cond_beta = use_cond_beta
+        self.use_cond_prior = use_cond_prior
+        self.use_cond_preference = use_cond_preference
 
         # State encoder
         self.state_encoder = MPNN(
@@ -40,7 +48,13 @@ class RxnFlowModel(nn.Module):
         )
 
         # GFN condition encoders, i.e., temperature and preference vector
-        self.gfn_condition_encoder = GFNConditionEncoder(num_objectives, cfg.hidden_dim)
+        self.gfn_condition_encoder = GFNConditionEncoder(
+            num_objectives,
+            cfg.hidden_dim,
+            use_cond_beta=use_cond_beta,
+            use_cond_prior=use_cond_prior,
+            use_cond_preference=use_cond_preference,
+        )
         # External condition encoder
         if condition_dim is not None:
             self.condition_encoder = ExternalConditionEncoder(
@@ -123,16 +137,15 @@ class RxnFlowModel(nn.Module):
         self,
         beta: torch.Tensor,
         preference: torch.Tensor,
+        prior_strength: torch.Tensor,
         cond: torch.Tensor | None = None,
-        *,
-        prior_beta: torch.Tensor,
     ) -> torch.Tensor:
-        """Encode both betas [B], preference [B, O] and optional cond [B, condition_dim].
+        """Encode beta, preference, prior strength and optional external conditions.
 
         Return [B, 2*hidden_dim], with a zero external embedding when no external
         condition encoder is configured.
         """
-        gfn_cond_emb = self.gfn_condition_encoder(beta, preference, prior_beta)
+        gfn_cond_emb = self.gfn_condition_encoder(beta, preference, prior_strength)
         if self.condition_encoder is not None:
             assert cond is not None, "external conditions must be provided"
             ext_cond_emb = self.condition_encoder(cond)

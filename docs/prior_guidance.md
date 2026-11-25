@@ -17,10 +17,13 @@ prior_guidance:
 
 See the [QED example configuration](../configs/examples/qed_prior.yaml).
 
-Increasing `gflownet.beta` favors molecules with higher task rewards. Increasing `prior_guidance.strength` favors molecules with higher sequence probability under the prior. Setting either value to zero removes that factor from the target. The property penalty applies independently.
+Increasing β (`gflownet.beta`) favors molecules with higher task rewards.
+Increasing λ (`prior_guidance.strength`) favors molecules with higher sequence probability under the prior.
+Setting either coefficient to zero removes its contribution to the log target.
+The property penalty applies independently.
 
 ```text
-log p(x) = beta * R_task(x) + prior_strength * log p_prior(x) + log(property_penalty) - log Z
+log p(x) = β R_task(x) + λ log p_prior(x) + log(property_penalty) - log Z
 ```
 
 The optional normalized score is a human-readable representation:
@@ -31,12 +34,12 @@ s_prior = clip(1 + log p_prior(x) / 100, 0, 1)
 
 ## Adjust prior guidance strength
 
-If you train with a range of guidance strengths, use `--prior-beta` to select a value within that range when sampling.
+If you train with a range of guidance strengths, use `--prior-strength` to select a value within that range when sampling.
 
 ```bash
 python scripts/sample.py \
   --checkpoint runs/qed_prior/checkpoints/latest.ckpt \
-  --prior-beta 0.5 \
+  --prior-strength 0.5 \
   --num-samples 100 \
   --output samples.jsonl
 ```

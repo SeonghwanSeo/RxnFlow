@@ -40,7 +40,8 @@ Trainer's `num_workers` sets the number of retrosynthesis workers (default `4`);
 
 ## Resume training
 
-Construct the rewards with the same parameters and in the same order as the original run. The checkpoint records their names and classes. To resume an interrupted run, pass the previous run’s checkpoint path to `resume_from_checkpoint`.
+Construct the rewards with the same parameters and in the same order as the original run.
+To resume an interrupted run, pass the previous run’s checkpoint path to `resume_from_checkpoint`.
 
 ```python
 config = Config.from_file("configs/custom_rewards.yaml")
@@ -80,7 +81,7 @@ Invalid attempts, such as trajectories with no feasible continuation, are also r
 ### Sample records
 
 `sample.jsonl` stores individual online attempts.
-Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_reward`, `property_violation`, `beta`, `prior_beta`, `prior_score`, `prior_log_prob`, `preference`, `valid`, `invalid_reason` and `traj`.
+Each record contains `step`, `sample`, `final_smiles`, `reward`, `objective_rewards`, `property_penalty`, `property_violation`, `beta`, `prior_strength`, `prior_score`, `prior_log_prob`, `preference`, `valid`, `invalid_reason` and `traj`.
 The iteration index `step` starts at one; the `sample` index starts at zero within each step.
 
 - External condition entries appear as `cond_<key>` fields, for example `cond_target_mw`.
@@ -103,7 +104,7 @@ Generation metrics describe all new online attempts, including invalid ones; los
 | `num_unique` | Number of distinct valid online SMILES. |
 | `reward` | Mean online task score plus log property penalty, before beta and prior guidance. |
 | `objective_rewards` | Mean online scores by objective, keyed as `r_qed`, etc. |
-| `property_reward` | Mean online property penalty multiplier. |
+| `property_penalty` | Mean online property penalty multiplier. |
 | `prior_score` | Mean normalized teacher score for display; null when guidance is disabled. |
 | `prior_log_prob` | Mean teacher sequence log p(x) used by guidance; null when guidance is disabled. |
 | `num_property_violations` | Number of online trajectories violating at least one property limit. |
@@ -121,7 +122,7 @@ Its `replay` value is the current buffer size, rather than the number used in th
 | `valid_losses`, `invalid_losses` | Mean loss within valid and invalid trajectories. |
 | `logZ` | Mean predicted log partition function for the batch conditions. |
 | `beta` | Mean coefficient of the raw task score. |
-| `prior_beta` | Mean prior guidance exponent. |
+| `prior_strength` | Mean prior guidance strength. |
 | `logit_scale` | Mean learned logit scale for the batch conditions. |
 | `traj_log_p_F`, `traj_log_p_B` | Mean forward and backward log probabilities, summed over each trajectory. |
 | `scaled_log_R` | Mean log training target. |
@@ -163,7 +164,7 @@ python scripts/sample.py \
   --output samples.jsonl
 ```
 
-Override [sampling conditions](conditioning.md#choose-conditions-when-sampling) with `--beta`, `--prior-beta` or `--preference`.
+Override [sampling conditions](conditioning.md#choose-conditions-when-sampling) with `--beta`, `--prior-strength` or `--preference`.
 
 For external conditioning, pass your conditioning module to `RxnFlowSampler` through the [Python interface](conditioning.md#sample-with-explicit-targets).
 
@@ -191,7 +192,7 @@ Both formats save valid samples with the fields below.
 | `smiles` | Final generated molecule's SMILES. |
 | `traj` | Ordered list of actions, starting with initial synthon selection and ending with the terminal product. |
 | `metadata.beta` | Coefficient of the raw task score. |
-| `metadata.prior_beta` | Prior guidance exponent. |
+| `metadata.prior_strength` | Prior guidance strength. |
 | `metadata.preference` | Effective objective weights in the order of the named rewards passed to the trainer. Weights sum to one. |
 | `metadata.cond_<key>` | Raw external condition values, when supplied; for example `cond_tpsa`. |
 
@@ -200,7 +201,7 @@ For example, two objectives with equal weights under `mul` have:
 ```json
 {
   "beta": 32.0,
-  "prior_beta": 0.0,
+  "prior_strength": 0.0,
   "preference": [0.5, 0.5]
 }
 ```

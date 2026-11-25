@@ -23,6 +23,7 @@ class QEDReward(RewardFunction):
     # example of `score()`
     def score(self, smiles: str, cond=None) -> float:
         return QED.qed(Chem.MolFromSmiles(smiles))
+
     # example of `score_list()`
     def score_list(self, smiles_list: list[str], cond_list=None) -> list[float]:
         return [QED.qed(Chem.MolFromSmiles(s)) for s in smiles_list]

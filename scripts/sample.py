@@ -55,7 +55,7 @@ def main(argv: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument(
-        "--prior-beta",
+        "--prior-strength",
         default=None,
         help="Prior guidance strength (default: checkpoint setting)",
     )
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> None:
     results = sampler.sample(
         args.num_samples,
         beta=args.beta,
-        prior_beta=args.prior_beta,
+        prior_strength=args.prior_strength,
         preference=args.preference,
         batch_size=args.batch_size,
         softmax_temperature=args.softmax_temperature,

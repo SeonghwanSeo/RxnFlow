@@ -53,6 +53,8 @@ class RxnFlowSampler:
             )
         self.config = config
         self.objectives = tuple(ckpt["objectives"])
+        self.num_objectives = len(self.objectives)
+
         self.device = torch.device(device)
         self.env = SynthesisEnv(
             config.env_dir,
@@ -72,8 +74,11 @@ class RxnFlowSampler:
             RxnFlowModel(
                 self.env,
                 config.model,
-                len(self.objectives),
-                condition_dim,
+                num_objectives=len(self.objectives),
+                condition_dim=condition_dim,
+                use_cond_beta=ckpt["use_cond_beta"],
+                use_cond_prior=ckpt["use_cond_prior"],
+                use_cond_preference=ckpt["use_cond_preference"],
             )
             .to(self.device)
             .eval()
@@ -97,7 +102,7 @@ class RxnFlowSampler:
             traj=actions,
             metadata={
                 "beta": trajectory.beta,
-                "prior_beta": trajectory.prior_beta,
+                "prior_strength": trajectory.prior_strength,
                 "preference": trajectory.preference,
                 **{
                     f"cond_{key}": value for key, value in (trajectory.cond or {}).items()
@@ -110,7 +115,7 @@ class RxnFlowSampler:
         num_samples: int,
         *,
         beta: str | tuple[str, list[float]] | None = None,
-        prior_beta: str | tuple[str, list[float]] | None = None,
+        prior_strength: str | tuple[str, list[float]] | None = None,
         preference: str | tuple[str, list[float]] | None = None,
         batch_size: int = 64,
         softmax_temperature: float = 1.0,
@@ -131,16 +136,12 @@ class RxnFlowSampler:
             beta = trained_beta
         else:
             beta = self.config.validate_sampling_beta(trained_beta, beta)
-        trained_prior_beta = (
-            self.config.prior_guidance.strength
-            if self.config.prior_guidance is not None
-            else ("fixed", [0.0])
-        )
-        if prior_beta is None:
-            prior_beta = trained_prior_beta
+        trained_prior_strength = self.config.prior_guidance.strength
+        if prior_strength is None:
+            prior_strength = trained_prior_strength
         else:
-            prior_beta = self.config.validate_sampling_beta(
-                trained_prior_beta, prior_beta
+            prior_strength = self.config.validate_sampling_beta(
+                trained_prior_strength, prior_strength
             )
         if preference is None:
             preference = self.config.gflownet.moo_preference
@@ -153,8 +154,8 @@ class RxnFlowSampler:
         conditions = ConditionSampler(
             beta,
             preference,
-            len(self.objectives),
-            prior_beta=prior_beta,
+            prior_strength,
+            num_objectives=len(self.objectives),
         )
         trained_preference = self.config.gflownet.moo_preference
         if trained_preference[0] == "fixed":
@@ -185,7 +186,7 @@ class RxnFlowSampler:
                     "num_samples": num_samples,
                     "batch_size": batch_size,
                     "beta": beta,
-                    "prior_beta": prior_beta,
+                    "prior_strength": prior_strength,
                     "preference": preference,
                     "softmax_temperature": softmax_temperature,
                     "seed": seed,
@@ -207,7 +208,7 @@ class RxnFlowSampler:
         trajectories: list[Trajectory] = []
         for start in range(0, num_samples, batch_size):
             batch_count = min(batch_size, num_samples - start)
-            sampled_beta, weights, sampled_prior_beta = conditions.sample(
+            sampled_beta, weights, sampled_prior_strength = conditions.sample(
                 batch_count, self.rng
             )
             batch_conditions, cond = None, None
@@ -223,7 +224,7 @@ class RxnFlowSampler:
             batch = self.policy.sample_from_model(
                 batch_count,
                 beta=sampled_beta,
-                prior_beta=sampled_prior_beta,
+                prior_strength=sampled_prior_strength,
                 preference=weights,
                 cond=cond,
                 cond_list=batch_conditions,
