@@ -13,7 +13,7 @@ from rxnflow.envs.graph import EDGE_DIM, GRAPH_DIM, NODE_DIM, GraphBatch
 
 from .encoders import ExternalConditionEncoder, GFNConditionEncoder, SynthonEncoder
 from .mpnn import MPNN
-from .nn import mlp
+from .nn import Linear
 
 
 class RxnFlowModel(nn.Module):
@@ -47,7 +47,7 @@ class RxnFlowModel(nn.Module):
             num_layers=cfg.num_state_layers,
         )
 
-        # GFN condition encoders, i.e., temperature and preference vector
+        # GFN condition encoders
         self.gfn_condition_encoder = GFNConditionEncoder(
             num_objectives,
             cfg.hidden_dim,
@@ -71,6 +71,8 @@ class RxnFlowModel(nn.Module):
         self.rxn_embedding = nn.ParameterDict(
             (name, nn.Parameter(torch.empty(cfg.hidden_dim))) for name in reaction_names
         )
+        for embedding in self.rxn_embedding.values():
+            nn.init.uniform_(embedding, a=-0.1, b=0.1)
         rxn_dim = cfg.hidden_dim
 
         # Synthon encoder
@@ -84,46 +86,37 @@ class RxnFlowModel(nn.Module):
         # Action heads
         hidden_dim = cfg.hidden_dim
 
-        def _action_mlp(in_dim, out_dim):
-            return mlp(in_dim, hidden_dim, out_dim, cfg.num_action_layers, layernorm=True)
-
-        action_heads = {
-            ActionType.FIRST_SYNTHON: _action_mlp(state_dim, synthon_dim),
-            ActionType.UNIRXN_TRANSFORM: _action_mlp(state_dim + rxn_dim, 1),
-            ActionType.UNIRXN_TERMINAL: _action_mlp(state_dim + rxn_dim, 1),
-            ActionType.BIRXN_BRICK: _action_mlp(state_dim + rxn_dim, synthon_dim),
-            ActionType.BIRXN_LINKER: _action_mlp(state_dim + rxn_dim, synthon_dim),
+        action_dims = {
+            ActionType.FIRST_SYNTHON: (state_dim, synthon_dim),
+            ActionType.UNIRXN_TRANSFORM: (state_dim + rxn_dim, 1),
+            ActionType.UNIRXN_TERMINAL: (state_dim + rxn_dim, 1),
+            ActionType.BIRXN_BRICK: (state_dim + rxn_dim, synthon_dim),
+            ActionType.BIRXN_LINKER: (state_dim + rxn_dim, synthon_dim),
         }
-        self.action_heads = nn.ModuleDict({k.name: v for k, v in action_heads.items()})
+        self.action_heads = nn.ModuleDict()
+        for action, (in_dim, out_dim) in action_dims.items():
+            head = nn.Sequential()
+            for _ in range(cfg.num_action_layers - 1):
+                head.append(Linear(in_dim, hidden_dim))
+                head.append(nn.LayerNorm(hidden_dim))
+                head.append(nn.LeakyReLU())
+                in_dim = hidden_dim
+            head.append(Linear(in_dim, out_dim, init="xavier_small"))
+            self.action_heads[action.name] = head
 
         # Logit scaling (LogitGFN)
-        self._logit_scale = mlp(cond_dim, hidden_dim, d_out=1, n_layer=2)
+        self._logit_scale = nn.Sequential(
+            Linear(cond_dim, hidden_dim),
+            nn.LeakyReLU(),
+            Linear(hidden_dim, 1, init="zero"),
+        )
 
         # Trajectory-balance (TB)
-        self._logZ = mlp(cond_dim, hidden_dim, d_out=1, n_layer=2)
-
-        self.init_weight()
-
-    def init_weight(self) -> None:
-        # Keep policy outputs nonzero so both dot-product branches receive
-        # gradients from the first update. All Linear layers share this rule.
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
-            elif isinstance(module, nn.LayerNorm):
-                module.reset_parameters()
-            elif isinstance(module, nn.Embedding):
-                # Keep categorical contributions small at initialization.
-                nn.init.uniform_(module.weight, -0.1, 0.1)
-        for embedding in self.rxn_embedding.values():
-            nn.init.uniform_(embedding, -0.1, 0.1)
-        # Start from unscaled logits and log Z = 0.
-        nn.init.zeros_(self._logit_scale[-1].weight)
-        nn.init.zeros_(self._logit_scale[-1].bias)
-        nn.init.zeros_(self._logZ[-1].weight)
-        nn.init.zeros_(self._logZ[-1].bias)
+        self._logZ = nn.Sequential(
+            Linear(cond_dim, hidden_dim),
+            nn.LeakyReLU(),
+            Linear(hidden_dim, 1, init="zero"),
+        )
 
     def logit_scale(self, cond: torch.Tensor) -> torch.Tensor:
         r"""[B, 2*hidden_dim] → [B] \in [0, ∞)."""

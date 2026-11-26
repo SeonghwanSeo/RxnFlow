@@ -1,11 +1,11 @@
-"""Condition and synthon encoders; weights are initialized by RxnFlowModel."""
+"""Condition and synthon encoders for the reaction policy."""
 
 import torch
 from torch import nn
 
 from rxnflow.envs.features import FINGERPRINT_DIM, PROPERTY_DIM, PROPERTY_SCALE
 
-from .nn import mlp
+from .nn import Linear
 
 
 class GFNConditionEncoder(nn.Module):
@@ -21,13 +21,27 @@ class GFNConditionEncoder(nn.Module):
     ) -> None:
         super().__init__()
         self.hidden_dim = hidden_dim
-        self.emb_beta = mlp(1, hidden_dim, hidden_dim, 2) if use_cond_beta else None
-        self.emb_prior = mlp(1, hidden_dim, hidden_dim, 2) if use_cond_prior else None
-        self.emb_pref = (
-            mlp(num_objectives, hidden_dim, hidden_dim, 2)
-            if use_cond_preference
-            else None
-        )
+        self.emb_beta = None
+        if use_cond_beta:
+            self.emb_beta = nn.Sequential(
+                Linear(1, hidden_dim),
+                nn.SiLU(),
+                Linear(hidden_dim, hidden_dim, init="zero"),
+            )
+        self.emb_prior = None
+        if use_cond_prior:
+            self.emb_prior = nn.Sequential(
+                Linear(1, hidden_dim),
+                nn.SiLU(),
+                Linear(hidden_dim, hidden_dim, init="zero"),
+            )
+        self.emb_pref = None
+        if use_cond_preference:
+            self.emb_pref = nn.Sequential(
+                Linear(num_objectives, hidden_dim),
+                nn.SiLU(),
+                Linear(hidden_dim, hidden_dim, init="zero"),
+            )
 
     def forward(
         self,
@@ -50,7 +64,11 @@ class ExternalConditionEncoder(nn.Module):
 
     def __init__(self, condition_dim: int, hidden_dim: int) -> None:
         super().__init__()
-        self.emb_cond = mlp(condition_dim, hidden_dim, hidden_dim, 2)
+        self.emb_cond = nn.Sequential(
+            Linear(condition_dim, hidden_dim),
+            nn.SiLU(),
+            Linear(hidden_dim, hidden_dim),
+        )
 
     def forward(
         self,
@@ -70,10 +88,22 @@ class SynthonEncoder(nn.Module):
         )
         # The two positions share a vocabulary, but retain their ordered roles.
         self.emb_type = nn.Embedding(num_types, hidden_dim)
-        self.lin_fp = nn.Linear(FINGERPRINT_DIM, hidden_dim)
-        self.lin_prop = nn.Linear(PROPERTY_DIM, hidden_dim)
+        nn.init.uniform_(self.emb_type.weight, a=-0.1, b=0.1)
+        self.lin_fp = Linear(FINGERPRINT_DIM, hidden_dim)
+        self.lin_prop = Linear(PROPERTY_DIM, hidden_dim)
         # Normalize in the fusion MLP after the separate linear projections.
-        self.mlp = mlp(4 * hidden_dim, hidden_dim, hidden_dim, num_layers, layernorm=True)
+        self.mlp = nn.Sequential()
+        in_dim = 4 * hidden_dim
+        for _ in range(num_layers - 1):
+            self.mlp.extend(
+                [
+                    Linear(in_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    nn.SiLU(),
+                ]
+            )
+            in_dim = hidden_dim
+        self.mlp.append(Linear(in_dim, hidden_dim))
 
     def forward(
         self, fp: torch.Tensor, prop: torch.Tensor, types: torch.Tensor

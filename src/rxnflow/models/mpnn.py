@@ -7,7 +7,7 @@ from torch.nn import functional as F
 from rxnflow.envs.features import PROPERTY_SCALE
 from rxnflow.envs.graph import GraphBatch
 
-from .nn import mlp
+from .nn import Linear
 
 
 class ConvLayer(nn.Module):
@@ -17,9 +17,13 @@ class ConvLayer(nn.Module):
         super().__init__()
         self.norm_h = nn.LayerNorm(model_dim)
         self.norm_v = nn.LayerNorm(model_dim)
-        self.v_to_h = nn.Linear(model_dim, model_dim)
-        self.h_to_v = nn.Linear(model_dim, model_dim)
-        self.mlp = mlp(model_dim, 2 * model_dim, model_dim, 2)
+        self.v_to_h = Linear(model_dim, model_dim)
+        self.h_to_v = Linear(model_dim, model_dim)
+        self.mlp = nn.Sequential(
+            Linear(model_dim, 2 * model_dim),
+            nn.LeakyReLU(),
+            Linear(2 * model_dim, model_dim, init="zero"),
+        )
 
     def forward(
         self,
@@ -80,18 +84,31 @@ class MPNN(nn.Module):
         self.register_buffer(
             "property_scale", torch.tensor(PROPERTY_SCALE), persistent=False
         )
+
         # Initialize the node and edge embeddings
-        self.node_emb = mlp(node_dim, model_dim, model_dim, 2)
-        self.edge_emb = mlp(edge_dim, model_dim, model_dim, 2)
+        self.node_emb = nn.Sequential(
+            Linear(node_dim, model_dim),
+            nn.SiLU(),
+            Linear(model_dim, model_dim),
+        )
+        self.edge_emb = nn.Sequential(
+            Linear(edge_dim, model_dim),
+            nn.SiLU(),
+            Linear(model_dim, model_dim),
+        )
 
         # Initialize the virtual node with the graph features.
-        self.graph_emb = mlp(graph_dim, model_dim, model_dim, 2)
+        self.graph_emb = nn.Sequential(
+            Linear(graph_dim, model_dim),
+            nn.SiLU(),
+            Linear(model_dim, model_dim),
+        )
 
-        self.layers = nn.ModuleList([ConvLayer(model_dim) for _ in range(num_layers)])
+        self.layers = nn.ModuleList(ConvLayer(model_dim) for _ in range(num_layers))
 
         self.norm_g = nn.LayerNorm(model_dim)
         self.norm_v = nn.LayerNorm(model_dim)
-        self.readout = nn.Linear(2 * model_dim, model_dim)
+        self.readout = Linear(2 * model_dim, model_dim)
 
     def forward(self, batch: GraphBatch) -> torch.Tensor:
         h = batch.node_features
