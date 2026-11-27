@@ -1,6 +1,7 @@
-# Training configuration for low-budget optimization tasks (e.g., 10-20k budget)
+# Standard short-run optimization (typically below 10k online draws).
 
 training:
+  checkpoint_every: 100
   # lower online batch size for more frequent updates
   num_online: 32
   num_replay: 96

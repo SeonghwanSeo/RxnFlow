@@ -1,4 +1,4 @@
-# Training configuration for large-budget optimization tasks (e.g., >100k budget)
+# Large-budget optimization (typically 30k–100k online draws).
 
 training:
   # training batch size
@@ -9,7 +9,7 @@ training:
   # higher random probability for more exploration
   random_action_prob: 0.05
   # replay
-  replay_capacity: 64000
+  replay_capacity: 12800
   num_replay_insert: null # null(entire) | int
   replay_insert_priority: uniform # uniform | reward
   replay_sample_priority: reward # uniform | reward

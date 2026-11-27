@@ -1,0 +1,13 @@
+# Short-run optimization with more policy updates per online draw.
+
+training:
+  checkpoint_every: 100
+  num_online: 16
+  num_replay: 64
+  ema_decay: 0.95
+  random_action_prob: 0.02
+  replay_capacity: 1600
+  num_replay_insert: null
+  replay_insert_priority: reward
+  replay_sample_priority: reward
+  learning_rate: 0.0001

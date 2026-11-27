@@ -30,8 +30,6 @@ pip install -e .
 
 ## Quick start
 
-Start with the supplied [example SMILES file](data/building_blocks/example_5k.smi), which contains 5,000 ZINC building blocks.
-
 ### Prepare a synthesis environment
 
 To prepare a synthesis environment, you need a building-block library and reaction templates. Three template sets are available in `data/templates/`:
@@ -40,7 +38,8 @@ To prepare a synthesis environment, you need a building-block library and reacti
 - `explore-expanded`: the same reactions without these compatibility constraints, allowing a broader chemical space.
 - `cgflow`: the set of 38 bimolecular reaction templates used in [CGFlow](https://github.com/tsa87/cgflow).
 
-Save your building-block library, for example from [eMolecules](https://www.emolecules.com/data-downloads) or [Enamine](https://enamine.net/building-blocks/building-blocks-catalog), as a `.smi` file with one `SMILES<TAB>ID` record per line.
+Save your building-block library, for example from [eMolecules](https://www.emolecules.com/data-downloads) or [Enamine](https://enamine.net/building-blocks/building-blocks-catalog), as a `.smi` file with one `SMILES<TAB>ID` record per line (see [example](data/building_blocks/example_5k.smi))
+We note that the supplied smiles file is just a small example for demonstration purposes; for real applications, we recommend using a real building-block library with at least 10,000 compounds.
 
 Prepare the supplied example library using the default templates:
 

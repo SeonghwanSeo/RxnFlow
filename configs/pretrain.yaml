@@ -1,0 +1,32 @@
+# Complete RxnFlow configuration template. See configs/README.md for settings.
+env_dir: /path/to/prepared/environment
+pretrained_model: null
+
+# GFlowNet configuration
+gflownet:
+  beta: 0
+
+# Chemical prior guidance
+prior_guidance:
+  model_name_or_path: "chembl"
+  strength: "uniform(0,1)"
+  batch_size: 64
+
+# Property penalty configuration
+property_penalty: {}
+
+# RxnFlow training configuration
+training:
+  log_every: 100
+  checkpoint_every: 2000
+  # training batch size
+  num_online: 64
+  num_replay: 64
+  # ema for sampler.
+  ema_decay: 0.99
+  # random action probability for exploration
+  random_action_prob: 0.1
+  # replay
+  replay_capacity: 128000
+  replay_insert_priority: reward
+  replay_sample_priority: reward
