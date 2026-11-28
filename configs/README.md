@@ -97,6 +97,18 @@ MLP layer counts include the output linear layer.
 | `model.hidden_dim` | `256` | Condition/reaction embedding and action-head hidden width. |
 | `model.num_action_layers` | `3` | Action-head MLP layers. |
 
+## Exploration
+
+Use `exploration` to choose how random exploration actions (selected with probability `training.random_action_prob`) are drawn during online training.
+Set `exploration.source` to `prior` with `pretrained_model` set to draw exploration actions from the frozen pretrained prior policy.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `exploration.source` | `uniform` | Exploration policy: subspace-balanced random (`uniform`) or frozen pretrained prior (`prior`). |
+| `exploration.prior_ratio` | `1.0` | Fraction of exploration steps drawn from the prior policy when `source` is `prior`; the remainder uses `uniform`. |
+| `exploration.strength` | `0.25` | Prior strength passed to the frozen prior policy; `null` reuses `prior_guidance.strength`. |
+| `exploration.temperature` | `1.0` | Sampling temperature for the frozen prior policy. |
+
 ## Training settings
 
 | Setting | Default | Meaning |

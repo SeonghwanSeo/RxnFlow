@@ -118,7 +118,7 @@ class RxnFlowSampler:
         prior_strength: str | tuple[str, list[float]] | None = None,
         preference: str | tuple[str, list[float]] | None = None,
         batch_size: int = 64,
-        softmax_temperature: float = 1.0,
+        temperature: float = 1.0,
         seed: int | None = None,
         cond_list: list[Condition] | None = None,
     ) -> list[SamplingResult]:
@@ -172,8 +172,8 @@ class RxnFlowSampler:
         if seed is not None:
             self.rng.bit_generator.state = np.random.default_rng(seed).bit_generator.state
             torch.manual_seed(seed)  # Device-side categorical draws.
-        if softmax_temperature <= 0:
-            raise ValueError("softmax temperature must be positive")
+        if temperature <= 0:
+            raise ValueError("temperature must be positive")
         print(
             "Training GFlowNet config: "
             + json.dumps(self.config.to_file_dict()["gflownet"], sort_keys=True),
@@ -188,7 +188,7 @@ class RxnFlowSampler:
                     "beta": beta,
                     "prior_strength": prior_strength,
                     "preference": preference,
-                    "softmax_temperature": softmax_temperature,
+                    "temperature": temperature,
                     "seed": seed,
                     "device": str(self.device),
                     "env_dir": str(self.env.env_dir),
@@ -228,7 +228,7 @@ class RxnFlowSampler:
                 preference=weights,
                 cond=cond,
                 cond_list=batch_conditions,
-                softmax_temperature=softmax_temperature,
+                temperature=temperature,
                 random_action_prob=0.0,
                 analyze_backward=False,
             )

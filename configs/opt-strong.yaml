@@ -1,13 +1,16 @@
-# Short-run optimization with more policy updates per online draw.
+# Standard short-run optimization (typically below 10k online draws).
 
 training:
   checkpoint_every: 100
-  num_online: 16
-  num_replay: 64
+  # lower online batch size for more frequent updates
+  num_online: 32
+  num_replay: 96
+  # lower ema decay for faster adaptation to new online data
   ema_decay: 0.95
+  # lower random probability for more exploitation
   random_action_prob: 0.02
-  replay_capacity: 1600
-  num_replay_insert: null
-  replay_insert_priority: reward
-  replay_sample_priority: reward
-  learning_rate: 0.0001
+  # replay buffer including high-reward samples
+  replay_capacity: 6400
+  num_replay_insert: null # null(entire) | int
+  replay_insert_priority: reward # uniform | reward
+  replay_sample_priority: reward # uniform | reward

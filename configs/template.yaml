@@ -44,6 +44,13 @@ model:
   num_action_layers: 3
   num_synthon_layers: 2
 
+# Exploration configuration
+exploration:
+  source: uniform # uniform | prior
+  prior_ratio: 1.0 # fraction of exploration steps using prior vs uniform (when source=prior)
+  strength: 0.25 # null reuses prior_guidance.strength
+  temperature: 1.0
+
 # RxnFlow training configuration
 training:
   log_every: 10

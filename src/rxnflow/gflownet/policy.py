@@ -133,12 +133,12 @@ class ActionCategorical:
         return maxima + totals.clamp_min(1e-38).log()
 
     def sample(
-        self, softmax_temperature: float, random_action_prob: float, importance: float
+        self, temperature: float, random_action_prob: float, importance: float
     ) -> list[Action]:
         """Draw one action per state from the exploration distribution.
 
         Add importance * log(N/K) to sampled synthon logits, then divide by
-        softmax_temperature. random_action_prob selects states that use
+        temperature. random_action_prob selects states that use
         subspace-balanced random scores instead of model scores.
         """
         device = self.device
@@ -195,7 +195,7 @@ class ActionCategorical:
         )
         uniform = torch.rand_like(values).clamp_min(torch.finfo(values.dtype).tiny)
         gumbels = -(-uniform.log()).log()
-        scores = values / softmax_temperature + gumbels
+        scores = values / temperature + gumbels
         columns = [state_scores.argmax() for state_scores in scores.split(state_sizes)]
 
         # Transfer indices to CPU once for the whole batch, then decode actions.
@@ -241,7 +241,7 @@ class ActionCategorical:
         return torch.stack(partitions)
 
     def __sample(
-        self, softmax_temperature: float, random_action_prob: float, importance: float
+        self, temperature: float, random_action_prob: float, importance: float
     ) -> list[Action]:
         device = self.device
         random_states = (
@@ -278,7 +278,7 @@ class ActionCategorical:
             values = values.masked_fill(~valid, -torch.inf)
             # If all candidates are masked, relax the mask and sample uniformly.
             values = torch.where(valid.any(), values, torch.zeros_like(values))
-            values = values / softmax_temperature
+            values = values / temperature
             # Gumbel-max samples from softmax without constructing probabilities.
             uniform = torch.rand_like(values).clamp_min(torch.finfo(values.dtype).tiny)
             gumbels = -(-uniform.log()).log()
@@ -699,7 +699,7 @@ class RxnFlowPolicy:
         prior_strength: torch.Tensor,
         cond: torch.Tensor | None = None,
         *,
-        softmax_temperature: float = 1.0,
+        temperature: float = 1.0,
         random_action_prob: float = 0.0,
     ) -> list[Action]:
         assert states
@@ -716,7 +716,7 @@ class RxnFlowPolicy:
             apply_property_penalty=True,
         )
         return fwd_cat.sample(
-            softmax_temperature,
+            temperature,
             random_action_prob,
             self.config.subsampling.importance_temp,
         )
@@ -782,8 +782,9 @@ class RxnFlowPolicy:
         prior_strength: torch.Tensor,
         cond: torch.Tensor | None = None,
         cond_list: list[Condition] | None = None,
-        softmax_temperature: float = 1.0,
+        temperature: float = 1.0,
         random_action_prob: float = 0.0,
+        exploration_policy: RxnFlowPolicy | None = None,
         analyze_backward: bool = True,
     ) -> list[Trajectory]:
         """Grow trajectories using fixed conditions and optional backward analysis.
@@ -839,15 +840,87 @@ class RxnFlowPolicy:
             ]
             if not active:
                 break
-            selected = self.sample_actions(
-                [states[index] for index in active],
-                beta[active],
-                preference[active],
-                cond=cond[active] if cond is not None else None,
-                prior_strength=prior_strength[active],
-                softmax_temperature=softmax_temperature,
-                random_action_prob=random_action_prob,
-            )
+            if exploration_policy is not None and random_action_prob > 0.0:
+                use_prior = (
+                    torch.rand(len(active), device=self.device) < random_action_prob
+                ).tolist()
+                policy_pos = [pos for pos, flag in enumerate(use_prior) if not flag]
+                explore_pos = [pos for pos, flag in enumerate(use_prior) if flag]
+                selected_opt: list[Action | None] = [None] * len(active)
+                if policy_pos:
+                    policy_active = [active[pos] for pos in policy_pos]
+                    policy_actions = self.sample_actions(
+                        [states[i] for i in policy_active],
+                        beta[policy_active],
+                        preference[policy_active],
+                        prior_strength[policy_active],
+                        cond=cond[policy_active] if cond is not None else None,
+                        temperature=temperature,
+                        random_action_prob=0.0,
+                    )
+                    for pos, action in zip(policy_pos, policy_actions, strict=True):
+                        selected_opt[pos] = action
+                if explore_pos:
+                    explore_active = [active[pos] for pos in explore_pos]
+                    exp_cfg = self.config.exploration
+                    exp_beta = torch.zeros(
+                        (len(explore_active),), dtype=beta.dtype, device=self.device
+                    )
+                    exp_strength = (
+                        torch.full(
+                            (len(explore_active),),
+                            exp_cfg.strength,
+                            dtype=prior_strength.dtype,
+                            device=self.device,
+                        )
+                        if exp_cfg.strength is not None
+                        else prior_strength[explore_active]
+                    )
+                    same_objectives = (
+                        exploration_policy.model.num_objectives
+                        == self.model.num_objectives
+                    )
+                    exp_pref = (
+                        preference[explore_active]
+                        if same_objectives
+                        else torch.full(
+                            (
+                                len(explore_active),
+                                exploration_policy.model.num_objectives,
+                            ),
+                            1.0 / exploration_policy.model.num_objectives,
+                            dtype=preference.dtype,
+                            device=self.device,
+                        )
+                    )
+                    exp_cond = (
+                        cond[explore_active]
+                        if exploration_policy.model.condition_dim is not None
+                        and cond is not None
+                        else None
+                    )
+                    explore_actions = exploration_policy.sample_actions(
+                        [states[i] for i in explore_active],
+                        exp_beta,
+                        exp_pref,
+                        exp_strength,
+                        cond=exp_cond,
+                        temperature=exp_cfg.temperature,
+                        random_action_prob=1.0 - exp_cfg.prior_ratio,
+                    )
+                    for pos, action in zip(explore_pos, explore_actions, strict=True):
+                        selected_opt[pos] = action
+                selected = [action for action in selected_opt if action is not None]
+            else:
+                selected = self.sample_actions(
+                    [states[index] for index in active],
+                    beta[active],
+                    preference[active],
+                    prior_strength[active],
+                    cond=cond[active] if cond is not None else None,
+                    temperature=temperature,
+                    random_action_prob=random_action_prob,
+                )
             # Collect the preceding reverse search after forward sampling so
             # worker processes can overlap it with model computation. Parent
             # routes must be ready before the next transition is submitted.

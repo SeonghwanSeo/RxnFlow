@@ -107,6 +107,47 @@ class PriorGuidanceConfig:
 
 
 @dataclass
+class ExplorationConfig:
+    """Exploration source and frozen pretrained prior policy settings."""
+
+    source: Literal["uniform", "prior"] = "uniform"
+    prior_ratio: float = 1.0
+    strength: float | None = 0.25
+    temperature: float = 1.0
+
+    def validate(self) -> None:
+        if self.source not in ("uniform", "prior"):
+            raise ValueError("exploration.source must be uniform or prior")
+        if (
+            isinstance(self.prior_ratio, bool)
+            or not isinstance(self.prior_ratio, (int, float))
+            or not math.isfinite(self.prior_ratio)
+            or not 0.0 <= self.prior_ratio <= 1.0
+        ):
+            raise ValueError("exploration.prior_ratio must be in [0, 1]")
+        self.prior_ratio = float(self.prior_ratio)
+        if self.strength is not None:
+            if (
+                isinstance(self.strength, bool)
+                or not isinstance(self.strength, (int, float))
+                or not math.isfinite(self.strength)
+                or self.strength < 0
+            ):
+                raise ValueError(
+                    "exploration.strength must be finite and non-negative or null"
+                )
+            self.strength = float(self.strength)
+        if (
+            isinstance(self.temperature, bool)
+            or not isinstance(self.temperature, (int, float))
+            or not math.isfinite(self.temperature)
+            or self.temperature <= 0
+        ):
+            raise ValueError("exploration.temperature must be finite and positive")
+        self.temperature = float(self.temperature)
+
+
+@dataclass
 class GFNConditionConfig:
     """GFlowNet task, preference and property-penalty settings."""
 
@@ -258,6 +299,7 @@ class Config:
     env_dir: str = ""
     gflownet: GFNConditionConfig = field(default_factory=GFNConditionConfig)
     prior_guidance: PriorGuidanceConfig = field(default_factory=PriorGuidanceConfig)
+    exploration: ExplorationConfig = field(default_factory=ExplorationConfig)
     conditioning: dict[str, Any] = field(default_factory=dict)
     property_penalty: dict[str, float] = field(default_factory=dict)
     subsampling: SubsamplingConfig = field(default_factory=SubsamplingConfig)
@@ -269,6 +311,7 @@ class Config:
     def validate(self) -> None:
         self.gflownet.validate()
         self.prior_guidance.validate()
+        self.exploration.validate()
         from rxnflow.envs.features import PROPERTY_PENALTY_INDICES
 
         if not isinstance(self.property_penalty, dict):
@@ -284,6 +327,8 @@ class Config:
         self.generation.validate()
         self.model.validate()
         self.training.validate()
+        if self.exploration.source == "prior" and not self.pretrained_model:
+            raise ValueError("exploration.source='prior' requires pretrained_model")
         if not self.env_dir:
             raise ValueError("env_dir must point to a prepared synthon environment")
 
@@ -335,6 +380,7 @@ class Config:
 
         for name, config_type in (
             ("prior_guidance", PriorGuidanceConfig),
+            ("exploration", ExplorationConfig),
             ("gflownet", GFNConditionConfig),
             ("subsampling", SubsamplingConfig),
             ("generation", GenerationConfig),

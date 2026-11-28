@@ -39,10 +39,10 @@ def main(argv: list[str] | None = None) -> None:
         "--batch-size", type=int, default=64, help="Trajectories per batch (default: 64)"
     )
     parser.add_argument(
-        "--softmax-temperature",
+        "--temperature",
         type=float,
         default=1.0,
-        help="Softmax temperature (default: 1); independent of task beta",
+        help="Sampling temperature (default: 1); independent of task beta",
     )
     parser.add_argument(
         "--beta",
@@ -94,7 +94,7 @@ def main(argv: list[str] | None = None) -> None:
         prior_strength=args.prior_strength,
         preference=args.preference,
         batch_size=args.batch_size,
-        softmax_temperature=args.softmax_temperature,
+        temperature=args.temperature,
         seed=args.seed,
     )
     sampler.write(results, args.output, output_format=args.format)

@@ -175,7 +175,7 @@ For external conditioning, pass your conditioning module to `RxnFlowSampler` thr
   Its reaction, synthon and exclusion definitions must match training; BB identities and library sizes may differ.
   Types defined in the templates but unused during training may have untrained embeddings.
 - `--batch-size` controls trajectories generated per batch (default 64), independently of the training batch size.
-- `--softmax-temperature` is an additional softmax temperature (default 1), separate from beta.
+- `--temperature` is an additional sampling temperature (default 1), separate from beta.
 
 Supported output formats:
 

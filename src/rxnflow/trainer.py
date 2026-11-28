@@ -213,6 +213,9 @@ class RxnFlowTrainer:
         )
         if cfg.pretrained_model is not None:
             weights = dict(ckpt["sampling_model"])
+            # Reset _logZ for the downstream reward scale instead of copying it.
+            for key, value in self.model._logZ.state_dict().items():
+                weights[f"_logZ.{key}"] = value
             # Preserve the initial weights of newly enabled branches.
             encoder = self.model.gfn_condition_encoder
             for name, layer, learned in (
@@ -231,9 +234,52 @@ class RxnFlowTrainer:
         self.sampling_policy = RxnFlowPolicy(
             self.env, self.sampling_model, cfg, self.device, self.rng
         )
+        self.prior_model: RxnFlowModel | None = None
+        self.prior_policy: RxnFlowPolicy | None = None
+        if cfg.exploration.source == "prior":
+            assert cfg.pretrained_model is not None
+            self._setup_prior_policy(ckpt)
+        if cfg.pretrained_model is not None:
+            del ckpt
         logger.info(
             "Model initialized: %s parameters",
             format(sum(p.numel() for p in self.model.parameters()), ","),
+        )
+
+    def _setup_prior_policy(self, ckpt: dict[str, object]) -> None:
+        """Build the frozen pretrained prior policy used for prior-based exploration."""
+        cfg = self.config
+        exp_cfg = cfg.exploration
+        saved_cfg = Config.from_dict(ckpt["config"])
+        trained_prior_strength = saved_cfg.prior_guidance.strength
+        if exp_cfg.strength is not None:
+            Config.validate_sampling_beta(
+                trained_prior_strength, ("fixed", [exp_cfg.strength])
+            )
+        else:
+            Config.validate_sampling_beta(
+                trained_prior_strength, cfg.prior_guidance.strength
+            )
+        if ckpt["use_cond_beta"]:
+            Config.validate_sampling_beta(saved_cfg.gflownet.beta, ("fixed", [0.0]))
+        self.prior_model = (
+            RxnFlowModel(
+                self.env,
+                saved_cfg.model,
+                len(ckpt["objectives"]),
+                ckpt["condition_dim"],
+                use_cond_beta=ckpt["use_cond_beta"],
+                use_cond_prior=ckpt["use_cond_prior"],
+                use_cond_preference=ckpt["use_cond_preference"],
+            )
+            .to(self.device)
+            .eval()
+        )
+        self.prior_model.load_state_dict(ckpt["sampling_model"])
+        for parameter in self.prior_model.parameters():
+            parameter.requires_grad_(False)
+        self.prior_policy = RxnFlowPolicy(
+            self.env, self.prior_model, cfg, self.device, self.rng
         )
 
     def _setup_optimizer(self) -> None:
@@ -545,6 +591,8 @@ class RxnFlowTrainer:
                 # 1. Generate online trajectories with the EMA model and score rewards.
                 started = perf_counter()
                 self.sampling_model.eval()
+                if self.prior_model is not None:
+                    self.prior_model.eval()
                 count = self.config.training.num_online
                 beta, preference, prior_strength = self.condition_sampler.sample(
                     count, self.rng
@@ -563,6 +611,7 @@ class RxnFlowTrainer:
                     cond=cond,
                     cond_list=cond_list,
                     random_action_prob=self.config.training.random_action_prob,
+                    exploration_policy=self.prior_policy,
                 )
                 sample_time = perf_counter() - started
                 self._assign_rewards(online_trajs)
